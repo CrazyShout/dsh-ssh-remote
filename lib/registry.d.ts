@@ -10,6 +10,12 @@ export interface SshHostEntry {
     identityFile: string;
     proxyJump: string;
 }
+declare module '@deepseek-ai/cordis' {
+    interface Context {
+        /** SSH remote workspaces service (this plugin). */
+        sshRemote: SshRemoteService;
+    }
+}
 type StatusListener = (change: {
     workspaceId: string;
     status: SshConnectionStatus;
