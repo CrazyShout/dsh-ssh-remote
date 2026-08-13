@@ -14,6 +14,8 @@
       "types": "./lib/client/index.d.ts",
       "default": "./lib/client/index.js"
     },
+    "./typert": "./lib/typert.host.js",
+    "./remote": "./lib/typert.remote-client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -40,7 +42,8 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.0",
-    "ssh2": "^1.16.0"
+    "ssh2": "^1.16.0",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
