@@ -1,7 +1,18 @@
 import { Client, type SFTPWrapper, type ConnectConfig } from 'ssh2';
+import type { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { formatSshUri, parseSshUri, type SshConnectionStatus, type SshUri } from './types.js';
 import { loadUserSshConfig, resolveSshAlias } from './ssh-config.js';
+
+/** A resolved host target, possibly reached through a ProxyJump. */
+export interface SshHostConfig {
+  host: string;
+  port: number;
+  username?: string;
+  privateKey?: string;
+  /** `user@host:port` of the jump host, or another host config name. */
+  proxyJump?: string;
+}
 
 /** A single SSH transport (host-scoped), owned by the connection manager. */
 export interface SshTransport {
@@ -9,9 +20,7 @@ export interface SshTransport {
   readonly uri: SshUri;
   status: SshConnectionStatus;
   lastError?: string;
-  /** Perform an SFTP operation against the live session. */
   sftp<T>(op: (sftp: SFTPWrapper) => Promise<T>): Promise<T>;
-  /** Run a command and collect stdout/stderr. */
   exec(command: string): Promise<{ code: number; stdout: string; stderr: string }>;
   close(): void;
 }
@@ -34,44 +43,112 @@ const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 30000;
 const READY_TIMEOUT_MS = 15000;
 
-/** Resolve an SSH uri against ~/.ssh/config into an ssh2 ConnectConfig. */
-export function toConnectConfig(uri: SshUri): ConnectConfig {
+/** Parse a `user@host:port` jump spec into its parts. */
+export function parseJumpSpec(spec: string): SshHostConfig {
+  let s = spec;
+  let username: string | undefined;
+  const at = s.lastIndexOf('@');
+  if (at !== -1) {
+    username = s.slice(0, at);
+    s = s.slice(at + 1);
+  }
+  const colon = s.lastIndexOf(':');
+  let host = s;
+  let port = 22;
+  if (colon !== -1) {
+    host = s.slice(0, colon);
+    const p = Number.parseInt(s.slice(colon + 1), 10);
+    if (!Number.isNaN(p)) port = p;
+  }
+  return { host, port, username };
+}
+
+/** Resolve a host config from ~/.ssh/config by alias, or from the host itself. */
+export function toConnectConfig(
+  uri: SshUri,
+  hostConfig?: SshHostConfig,
+): { config: ConnectConfig; proxyJump?: SshHostConfig } {
   const config = loadUserSshConfig();
-  // An alias in ~/.ssh/config may name the host; otherwise use the uri host.
   const alias = resolveSshAlias(uri.host, config);
-  const host = alias?.hostName ?? uri.host;
-  const port = alias?.port ?? uri.port;
-  const username = alias?.user ?? uri.user ?? undefined;
-  let privateKey: string | undefined;
-  if (alias?.identityFile) {
+  const host = hostConfig?.host ?? alias?.hostName ?? uri.host;
+  const port = hostConfig?.port ?? alias?.port ?? uri.port;
+  const username = hostConfig?.username ?? alias?.user ?? uri.user ?? undefined;
+  let privateKey = hostConfig?.privateKey;
+  if (!privateKey && alias?.identityFile) {
     try {
       privateKey = readFileSync(alias.identityFile, 'utf8');
     } catch {
-      // leave undefined; fall back to agent
+      /* fall back to agent */
     }
   }
+  const jumpSpec = hostConfig?.proxyJump;
+  const proxyJump = jumpSpec ? parseJumpSpec(jumpSpec) : undefined;
   return {
-    host,
-    port,
-    username,
-    privateKey,
-    agent: process.env.SSH_AUTH_SOCK,
-    readyTimeout: READY_TIMEOUT_MS,
-    keepaliveInterval: 15000,
-    keepaliveCountMax: 4,
-    // Never fall back to interactive password prompts in a headless agent.
-    tryKeyboard: false,
+    config: {
+      host,
+      port,
+      username,
+      privateKey,
+      agent: process.env.SSH_AUTH_SOCK,
+      readyTimeout: READY_TIMEOUT_MS,
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 4,
+      tryKeyboard: false,
+    },
+    proxyJump,
   };
 }
 
+/** Establish a jump connection and return a direct-tcpip stream to the target. */
+function openJumpStream(jump: SshHostConfig, targetHost: string, targetPort: number): Promise<{ stream: Readable; jumpClient: Client }> {
+  return new Promise((resolve, reject) => {
+    const jumpClient = new Client();
+    let settled = false;
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    };
+    jumpClient
+      .on('ready', () => {
+        jumpClient.forwardOut('127.0.0.1', 0, targetHost, targetPort, (err, stream) => {
+          if (err) {
+            jumpClient.end();
+            fail(err);
+            return;
+          }
+          if (settled) return;
+          settled = true;
+          resolve({ stream, jumpClient });
+        });
+      })
+      .on('error', fail)
+      .connect({
+        host: jump.host,
+        port: jump.port,
+        username: jump.username,
+        agent: process.env.SSH_AUTH_SOCK,
+        readyTimeout: READY_TIMEOUT_MS,
+        tryKeyboard: false,
+      });
+  });
+}
+
 /**
- * Owns the SSH transport pool. Connections are keyed by `host:port:user` so
- * multiple workspaces on one host share a single TCP connection, and each
- * connection auto-reconnects with exponential backoff while still wanted.
+ * Owns the SSH transport pool. Connections are keyed by `host:port:user`, and
+ * each connection auto-reconnects with exponential backoff while still wanted.
+ * A connection with a `proxyJump` first opens a direct-tcpip channel through
+ * the jump host and uses it as the target's socket.
  */
 export class SshConnectionManager {
   private readonly connections = new Map<string, ManagedConnection>();
   private readonly listeners = new Set<StatusListener>();
+  /** Optional resolver: a hostname/alias → explicit host config (from settings). */
+  private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
+
+  constructor(hostResolver?: (host: string) => SshHostConfig | undefined) {
+    this.hostResolver = hostResolver;
+  }
 
   onStatus(listener: StatusListener): () => void {
     this.listeners.add(listener);
@@ -86,7 +163,6 @@ export class SshConnectionManager {
     return `${uri.host}:${uri.port}:${uri.user}`;
   }
 
-  /** Ensure a live transport for a uri string, connecting on demand. */
   async transport(uriString: string): Promise<SshTransport> {
     const uri = parseSshUri(uriString);
     const key = this.keyOf(uri);
@@ -102,7 +178,6 @@ export class SshConnectionManager {
     if (existing.status !== 'connecting' && existing.status !== 'connected') {
       void this.connect(key);
     }
-    // Wait for the connection to reach connected or error.
     await this.waitConnected(existing);
     if (existing.status !== 'connected' || !existing.sftp) {
       throw new Error(`ssh connect failed: ${existing.lastError ?? 'timeout'}`);
@@ -110,7 +185,6 @@ export class SshConnectionManager {
     return this.wrap(uriString, existing);
   }
 
-  /** Disconnect a transport and stop reconnecting it. */
   async close(uriString: string): Promise<void> {
     const key = this.keyOf(parseSshUri(uriString));
     const conn = this.connections.get(key);
@@ -122,7 +196,6 @@ export class SshConnectionManager {
     this.setStatus(conn, 'disconnected', 'closed');
   }
 
-  /** Dispose every connection. */
   async dispose(): Promise<void> {
     for (const conn of this.connections.values()) {
       conn.wanted = false;
@@ -133,9 +206,12 @@ export class SshConnectionManager {
   }
 
   private allocate(uri: SshUri): ManagedConnection {
+    const hostConfig = this.hostResolver?.(uri.host);
+    const { config, proxyJump } = toConnectConfig(uri, hostConfig);
+    const withSock = proxyJump ? { ...config, _proxyJump: proxyJump } : config;
     return {
       key: this.keyOf(uri),
-      config: toConnectConfig(uri),
+      config: withSock as ConnectConfig,
       client: null,
       sftp: null,
       status: 'disconnected',
@@ -149,6 +225,30 @@ export class SshConnectionManager {
     const conn = this.connections.get(key);
     if (!conn || !conn.wanted) return;
     this.setStatus(conn, conn.status === 'error' ? 'reconnecting' : 'connecting');
+
+    const proxyJump = (conn.config as { _proxyJump?: SshHostConfig })._proxyJump;
+    if (proxyJump) {
+      openJumpStream(proxyJump, conn.config.host as string, conn.config.port as number)
+        .then(({ stream, jumpClient }) => {
+          if (conn.client) {
+            // stale reconnection raced; discard this attempt
+            jumpClient.end();
+            return;
+          }
+          this.finishConnect(key, { ...conn.config, sock: stream } as ConnectConfig, jumpClient);
+        })
+        .catch((e: Error) => this.fail(conn, `jump failed: ${e.message}`));
+    } else {
+      this.finishConnect(key, conn.config, null);
+    }
+  }
+
+  private finishConnect(key: string, config: ConnectConfig, jumpClient: Client | null): void {
+    const conn = this.connections.get(key);
+    if (!conn || !conn.wanted) {
+      jumpClient?.end();
+      return;
+    }
     const client = new Client();
     conn.client = client;
     client
@@ -167,11 +267,12 @@ export class SshConnectionManager {
         this.fail(conn, err.message);
       })
       .on('close', () => {
+        jumpClient?.end();
         if (conn.status === 'connected') {
           this.fail(conn, 'connection lost');
         }
       })
-      .connect(conn.config);
+      .connect(config);
   }
 
   private fail(conn: ManagedConnection, reason: string): void {
@@ -237,31 +338,19 @@ export class SshConnectionManager {
         return op(conn.sftp);
       },
       async exec(command: string) {
-        return thisExec(conn.client, command);
+        return execOn(conn.client, command);
       },
-      close() {
+      close: () => {
         if (conn.wanted) {
           conn.wanted = false;
-          thisTeardown(conn);
+          this.teardown(conn);
         }
       },
     };
   }
 }
 
-function thisTeardown(conn: ManagedConnection): void {
-  conn.sftp = null;
-  if (conn.client) {
-    try {
-      conn.client.end();
-    } catch {
-      /* ignore */
-    }
-    conn.client = null;
-  }
-}
-
-function thisExec(client: Client | null, command: string): Promise<{ code: number; stdout: string; stderr: string }> {
+function execOn(client: Client | null, command: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     if (!client) {
       reject(new Error('ssh not connected'));
@@ -288,5 +377,4 @@ function thisExec(client: Client | null, command: string): Promise<{ code: numbe
   });
 }
 
-// re-export used elsewhere
 export { formatSshUri };

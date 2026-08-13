@@ -1,5 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis';
-import { SshConnectionManager } from './connection.js';
+import { SshConnectionManager, type SshHostConfig } from './connection.js';
 import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 /** A remote `ssh://` filesystem provider keyed by a workspace uri. */
 export interface RemoteFsProvider {
@@ -30,7 +30,7 @@ export declare class SshRemoteService extends Service {
     readonly connections: SshConnectionManager;
     private readonly workspaces;
     private readonly listeners;
-    constructor(ctx: Context);
+    constructor(ctx: Context, hostResolver?: (host: string) => SshHostConfig | undefined);
     onStatus(listener: StatusListener): () => void;
     list(): RemoteWorkspace[];
     get(id: string): RemoteWorkspace | undefined;

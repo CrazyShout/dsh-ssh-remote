@@ -44,11 +44,28 @@ ssh_remote { action: "list" }
 
 `path` 支持远程绝对路径（`/home/user/exp/a.py`）或相对 workspace 根（`a.py`）。
 
+## 配置（设置 + ProxyJump）
+
+在 DSH 设置里配置命名主机（含跳板机），存于 `ssh-remote` 命名空间：
+
+```yaml
+# settings.yaml
+ssh-remote:
+  hosts:
+    - name: hk-wsl
+      host: 10.x.x.x
+      port: 22
+      user: ubuntu
+      identityFile: ~/.ssh/hk-wsl_key
+      proxyJump: "user@jump-host:22"   # 可选：跳板机
+```
+
+`ssh_remote add` 的 uri 里 host 名若匹配设置里的 `name`（或 `host`），就会采用该配置（含 ProxyJump）。ProxyJump 通过跳板机建立 `direct-tcpip` 通道直达目标，支持免密跳板。
+
 ## 认证
 
-- 优先本机 **ssh-agent**（`SSH_AUTH_SOCK`）。
-- `~/.ssh/config` 里的 `IdentityFile` 会读取对应私钥。
-- 目标机需开启 `sftp` 子系统（`Subsystem sftp internal-sftp`）。
+- 优先本机 **ssh-agent**（`SSH_AUTH_SOCK`）；`identityFile` / `~/.ssh/config` 的 `IdentityFile` 会读取对应私钥。
+- 目标机需开启 `sftp` 子系统（`Subsystem sftp internal-sftp`）；跳板机需开启 `AllowTcpForwarding yes`。
 
 ## 后续里程碑
 

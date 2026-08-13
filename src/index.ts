@@ -1,9 +1,42 @@
 import { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import z from '@deepseek-ai/schemastery';
+import { readFileSync } from 'node:fs';
 import { SshRemoteService } from './registry.js';
+import { type SshHostConfig } from './connection.js';
+import { expandHome } from './ssh-config.js';
 
 export const name = 'dsh-ssh-remote';
 export const inject = ['tools'];
+
+/** Settings namespace name. */
+const SETTINGS_NS = settingsNamespace('ssh-remote');
+
+/** `ssh-remote` settings schema: named hosts with optional ProxyJump. */
+const SshRemoteSettingsSchema = z.object({
+  hosts: z
+    .array(
+      z.object({
+        name: z.string(),
+        host: z.string(),
+        port: z.number().min(1).max(65535).default(22),
+        user: z.string().default(''),
+        identityFile: z.string().default(''),
+        proxyJump: z.string().default(''),
+      }),
+    )
+    .default([]),
+});
+
+interface HostEntry {
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  identityFile: string;
+  proxyJump: string;
+}
 
 const OUTPUT = {
   schema: { type: 'string' } as const,
@@ -14,10 +47,33 @@ const TOOL_DESCRIPTION =
   'Manage SSH remote workspaces for DeepSeek Harness. ' +
   'Actions: list (all workspaces), add (register ssh://user@host:port/path), remove, connect, disconnect, ' +
   'exec (run a shell command), read (read a text file), write (write a text file), stat, list_dir. ' +
-  'Connection status is tracked per workspace.';
+  'Host names may match entries configured in Settings (ssh-remote), which can carry a ProxyJump.';
 
 export function apply(ctx: Context) {
-  const service = new SshRemoteService(ctx);
+  // Resolve host configs from the `ssh-remote` settings namespace when a
+  // settings provider is mounted; otherwise fall back to ~/.ssh/config alone.
+  let hostResolver: ((host: string) => SshHostConfig | undefined) | undefined;
+  const settings = (ctx as { settings?: { register(ns: unknown, schema: unknown): { get(): { hosts: HostEntry[] } } } }).settings;
+  if (settings) {
+    const scope = settings.register(SETTINGS_NS, SshRemoteSettingsSchema);
+    const resolve = () => {
+      const hosts = scope.get().hosts;
+      return (host: string): SshHostConfig | undefined => {
+        const h = hosts.find((x) => x.name === host || x.host === host);
+        if (!h) return undefined;
+        return {
+          host: h.host,
+          port: h.port,
+          username: h.user || undefined,
+          privateKey: h.identityFile ? readPrivateKey(h.identityFile) : undefined,
+          proxyJump: h.proxyJump || undefined,
+        };
+      };
+    };
+    hostResolver = resolve();
+  }
+
+  const service = new SshRemoteService(ctx, hostResolver);
 
   ctx.tools.register(
     defineTool({
@@ -65,6 +121,14 @@ export function apply(ctx: Context) {
   return () => {
     void service.dispose();
   };
+}
+
+function readPrivateKey(path: string): string | undefined {
+  try {
+    return readFileSync(expandHome(path), 'utf8');
+  } catch {
+    return undefined;
+  }
 }
 
 async function run(

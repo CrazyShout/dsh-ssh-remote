@@ -2,7 +2,7 @@ import { Context, Service } from '@deepseek-ai/cordis';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { SshConnectionManager } from './connection.js';
+import { SshConnectionManager, type SshHostConfig } from './connection.js';
 import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
@@ -27,12 +27,13 @@ type StatusListener = (change: { workspaceId: string; status: SshConnectionStatu
  * and (later) the transparent filesystem routing.
  */
 export class SshRemoteService extends Service {
-  readonly connections = new SshConnectionManager();
+  readonly connections: SshConnectionManager;
   private readonly workspaces = new Map<string, RemoteWorkspace>();
   private readonly listeners = new Set<StatusListener>();
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, hostResolver?: (host: string) => SshHostConfig | undefined) {
     super(ctx, 'sshRemote');
+    this.connections = new SshConnectionManager(hostResolver);
     this.load();
     this.connections.onStatus((key, status, reason) => {
       for (const ws of this.workspaces.values()) {
