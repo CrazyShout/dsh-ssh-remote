@@ -1,20 +1,14 @@
-import { Context, Service } from '@deepseek-ai/cordis';
-import { SshConnectionManager, type SshHostConfig } from './connection.js';
+import { Context } from '@deepseek-ai/cordis';
+import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
+import { SshConnectionManager } from './connection.js';
 import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
-/** A remote `ssh://` filesystem provider keyed by a workspace uri. */
-export interface RemoteFsProvider {
-    readonly uri: string;
-    stat(path: string): Promise<{
-        type: string;
-        size: number;
-    } | undefined>;
-    listDir(path: string): Promise<Array<{
-        name: string;
-        type: string;
-        size: number;
-    }>>;
-    readText(path: string): Promise<string>;
-    writeText(path: string, content: string): Promise<void>;
+export interface SshHostEntry {
+    name: string;
+    host: string;
+    port: number;
+    user: string;
+    identityFile: string;
+    proxyJump: string;
 }
 type StatusListener = (change: {
     workspaceId: string;
@@ -23,14 +17,28 @@ type StatusListener = (change: {
 }) => void;
 /**
  * The `ctx.sshRemote` service: registers remote workspaces, owns their SSH
- * connections and status, and exposes file/exec operations for the model tool
- * and (later) the transparent filesystem routing.
+ * connections and status, and exposes workspace + host-config operations to
+ * both the model tool and (through `@Remote` methods) the Web client.
  */
-export declare class SshRemoteService extends Service {
+export declare class SshRemoteService extends TypertRemoteService {
     readonly connections: SshConnectionManager;
     private readonly workspaces;
     private readonly listeners;
-    constructor(ctx: Context, hostResolver?: (host: string) => SshHostConfig | undefined);
+    private readonly hostResolver?;
+    constructor(ctx: Context);
+    private get settings();
+    private registerSettings;
+    private readKey;
+    /** Read the configured hosts (Web Remote). */
+    config(): {
+        hosts: SshHostEntry[];
+    };
+    /** Replace the configured hosts (Web Remote). */
+    saveConfig(args: {
+        hosts: SshHostEntry[];
+    }): Promise<{
+        ok: boolean;
+    }>;
     onStatus(listener: StatusListener): () => void;
     list(): RemoteWorkspace[];
     get(id: string): RemoteWorkspace | undefined;

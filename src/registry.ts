@@ -1,39 +1,69 @@
-import { Context, Service } from '@deepseek-ai/cordis';
+import { Context } from '@deepseek-ai/cordis';
+import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
+import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import z from '@deepseek-ai/schemastery';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SshConnectionManager, type SshHostConfig } from './connection.js';
+import { expandHome } from './ssh-config.js';
 import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 import { formatSshUri, parseSshUri } from './types.js';
+
+const SETTINGS_NS = settingsNamespace('ssh-remote');
+
+/** `ssh-remote` settings schema: named hosts with optional ProxyJump. */
+const SshRemoteSettingsSchema = z.object({
+  hosts: z
+    .array(
+      z.object({
+        name: z.string(),
+        host: z.string(),
+        port: z.number().min(1).max(65535).default(22),
+        user: z.string().default(''),
+        identityFile: z.string().default(''),
+        proxyJump: z.string().default(''),
+      }),
+    )
+    .default([]),
+});
+
+export interface SshHostEntry {
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  identityFile: string;
+  proxyJump: string;
+}
+
+type StatusListener = (change: { workspaceId: string; status: SshConnectionStatus; reason?: string }) => void;
+
+interface SettingsLike {
+  register(ns: unknown, schema: unknown): void;
+  get(ns: unknown): { hosts: SshHostEntry[] } | undefined;
+  update(ns: unknown, patch: unknown): Promise<void>;
+}
 
 function persistPath(): string {
   return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-remote-workspaces.json');
 }
 
-/** A remote `ssh://` filesystem provider keyed by a workspace uri. */
-export interface RemoteFsProvider {
-  readonly uri: string;
-  stat(path: string): Promise<{ type: string; size: number } | undefined>;
-  listDir(path: string): Promise<Array<{ name: string; type: string; size: number }>>;
-  readText(path: string): Promise<string>;
-  writeText(path: string, content: string): Promise<void>;
-}
-
-type StatusListener = (change: { workspaceId: string; status: SshConnectionStatus; reason?: string }) => void;
-
 /**
  * The `ctx.sshRemote` service: registers remote workspaces, owns their SSH
- * connections and status, and exposes file/exec operations for the model tool
- * and (later) the transparent filesystem routing.
+ * connections and status, and exposes workspace + host-config operations to
+ * both the model tool and (through `@Remote` methods) the Web client.
  */
-export class SshRemoteService extends Service {
+export class SshRemoteService extends TypertRemoteService {
   readonly connections: SshConnectionManager;
   private readonly workspaces = new Map<string, RemoteWorkspace>();
   private readonly listeners = new Set<StatusListener>();
+  private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
 
-  constructor(ctx: Context, hostResolver?: (host: string) => SshHostConfig | undefined) {
+  constructor(ctx: Context) {
     super(ctx, 'sshRemote');
-    this.connections = new SshConnectionManager(hostResolver);
+    this.hostResolver = this.registerSettings();
+    this.connections = new SshConnectionManager(this.hostResolver);
     this.load();
     this.connections.onStatus((key, status, reason) => {
       for (const ws of this.workspaces.values()) {
@@ -45,6 +75,50 @@ export class SshRemoteService extends Service {
       }
       this.save();
     });
+  }
+
+  private get settings(): SettingsLike | undefined {
+    return this.ctx.get('settings') as SettingsLike | undefined;
+  }
+
+  private registerSettings(): ((host: string) => SshHostConfig | undefined) | undefined {
+    const settings = this.settings;
+    if (!settings) return undefined;
+    settings.register(SETTINGS_NS, SshRemoteSettingsSchema);
+    return (host: string) => {
+      const hosts = settings.get(SETTINGS_NS)?.hosts ?? [];
+      const h = hosts.find((x) => x.name === host || x.host === host);
+      if (!h) return undefined;
+      return {
+        host: h.host,
+        port: h.port,
+        username: h.user || undefined,
+        privateKey: h.identityFile ? this.readKey(h.identityFile) : undefined,
+        proxyJump: h.proxyJump || undefined,
+      };
+    };
+  }
+
+  private readKey(path: string): string | undefined {
+    try {
+      return readFileSync(expandHome(path), 'utf8');
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Read the configured hosts (Web Remote). */
+  @Remote('config')
+  config(): { hosts: SshHostEntry[] } {
+    return { hosts: this.settings?.get(SETTINGS_NS)?.hosts ?? [] };
+  }
+
+  /** Replace the configured hosts (Web Remote). */
+  @Remote('saveConfig')
+  async saveConfig(args: { hosts: SshHostEntry[] }): Promise<{ ok: boolean }> {
+    if (!this.settings) throw new Error('settings provider not mounted');
+    await this.settings.update(SETTINGS_NS, { hosts: args.hosts });
+    return { ok: true };
   }
 
   onStatus(listener: StatusListener): () => void {
