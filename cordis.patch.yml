@@ -1,0 +1,8 @@
+# dsh-ssh-remote profile bundle patch (declared by `dsh.bundle.patch`).
+# Inserts the SSH remote workspaces plugin row into any profile that lists
+# `dsh-ssh-remote` in its `dsh.profile.bundles`. The row loads the plugin by
+# package name from the profile's node_modules, so it survives dsh upgrades.
+
+- insert:
+    - id: dsh-ssh-remote
+      name: 'dsh-ssh-remote'
