@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
  * Client bundle build: emits the closure-factory artifact the DSH web loader
- * consumes — `window.__ModuleLoader__.load({ id, factory: (require) => {
- * ... return module.exports; } })`. Externals resolve through the loader
- * module table; everything else inlines. The web shell serves this artifact
- * at `/plugins/<id>/client.js` and executes it as a CLASSIC <script>, so the
- * emitted text must contain NO `import.meta` and no top-level ESM statements.
+ * consumes. Externals resolve through the loader module table; everything else
+ * inlines. The web shell serves this artifact at /plugins/<id>/client.js and
+ * executes it as a CLASSIC script, so the emitted text must contain NO
+ * import.meta and no top-level ESM statements.
  */
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -32,13 +31,16 @@ const CLIENT_EXTERNALS = [
 const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(\/|$)/;
 /**
  * Generated descriptor/codec contribution with no shared runtime identity.
- * NOTE: this plugin is UNscoped (`dsh-ssh-remote`), so its own `/remote` export
- * (`dsh-ssh-remote/remote`) does NOT match this regex (nor the `@deepseek-ai/`
- * onResolve filter) — the client half inlines its own descriptors via the
+ * NOTE: this plugin is UNscoped (dsh-ssh-remote), so its own /remote export
+ * (dsh-ssh-remote/remote) does NOT match this regex (nor the @deepseek-ai/
+ * onResolve filter) - the client half inlines its own descriptors via the
  * ordinary bundle path. This regex only matters for BUILT-IN
- * `@deepseek-ai/dsh-*/remote` imports, which this plugin does not make.
+ * @deepseek-ai/dsh-<pkg>/remote imports, which this plugin does not make.
  */
 const GENERATED_REMOTE = /^@deepseek-ai\/dsh-[a-z0-9]+(?:-[a-z0-9]+)*\/remote$/;
+
+const bannerJs = `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;`;
+const footerJs = 'return module.exports; } });';
 
 const result = await build({
   entryPoints: [ENTRY],
@@ -54,25 +56,18 @@ const result = await build({
     'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),
     'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
   },
-  banner: {
-    js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;`,
-  },
-  footer: {
-    js: 'return module.exports; } });',
-  },
+  banner: { js: bannerJs },
+  footer: { js: footerJs },
   plugins: [{
     // Bundle purity gate: platform seed entries stay external, inline-safe wire
-    // layers inline, and every other @deepseek-ai value import is a build error —
-    // a cross-plugin value import either inlines a duplicate runtime instance or
-    // requires a specifier the frozen module table cannot answer.
+    // layers inline, and every other @deepseek-ai value import is a build error.
     name: 'dsh-client-bundle-purity',
     setup(build) {
       build.onResolve({ filter: /^@deepseek-ai\// }, (args) => {
-        if (CLIENT_EXTERNALS.includes(args.path)) return undefined; // platform module: external wins
-        if (INLINE_SAFE.test(args.path) || GENERATED_REMOTE.test(args.path)) return undefined; // wire contribution: inline is the point
+        if (CLIENT_EXTERNALS.includes(args.path)) return undefined;
+        if (INLINE_SAFE.test(args.path) || GENERATED_REMOTE.test(args.path)) return undefined;
         throw new Error(
-          `client bundle purity: "${args.path}" is not a platform module (CLIENT_EXTERNALS), an inline-safe wire layer, or a generated /remote contribution — `
-          + 'cross-plugin value imports are forbidden; collaborate through cordis services (type-only imports are erased and never reach this gate)',
+          `client bundle purity: "${args.path}" is not a platform module (CLIENT_EXTERNALS), an inline-safe wire layer, or a generated /remote contribution - cross-plugin value imports are forbidden (type-only imports are erased and never reach this gate)`,
         );
       });
     },
@@ -97,6 +92,6 @@ for (const match of text.matchAll(/require\(\s*["'](@deepseek-ai\/[^"']+)["']\s*
   }
 }
 
-// Flat type re-export the loader-facing `exports["./client"].types` points at.
+// Flat type re-export the loader-facing exports["./client"].types points at.
 writeFileSync('lib/client.d.ts', `export * from './client/index.js';\n`);
 console.log(`built ${OUT_FILE} (closure-factory, id=${ID}, ${text.length} bytes) + lib/client.d.ts`);
