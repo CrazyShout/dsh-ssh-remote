@@ -1,8 +1,13 @@
-# ADR-0001：第三方插件无法向 Web 客户端暴露 Remote（客户端发现是构建期烘焙，非运行时）
+# ADR-0001：第三方插件向 Web 客户端暴露 Remote 的方式（自我注册，非运行时发现）
 
-- 状态：**已确认（dead end）**
+- 状态：**已修正（原结论过于悲观）**
 - 日期：2026-08-14
-- 影响范围：`dsh-ssh-remote` 的「Web 设置 GUI」计划
+- 影响范围：`dsh-ssh-remote` 的「Web 设置 GUI」/「工作区选择器」计划
+
+> ⚠️ **修正（同日后续核实）**：本 ADR 原结论「第三方插件无法向 Web 客户端暴露 Remote」
+> 是**错的**。正确结论见文末「修正」一节。核心事实：`dsh-api-remotes` 的 client 半
+> `inject = ["remote"]` 后，在运行时调用 `ctx.remote.$mount(contribution)` 注册描述符——
+> 这是**运行时调用**，任何第三方 client half 都能照做。
 
 ## 背景
 
@@ -59,8 +64,40 @@ DSH 的标准做法是通过 Typert Remote：host 侧 `@Remote('config')` / `@Re
 - 保留已就位的 `./typert` + `./remote` 产物与 `TypertRemoteService`：一旦 DSH 补上客户端发现，
   这些是即插即用的地基，无需返工。
 
+## 修正（2026-08-14 后续核实，推翻原「dead end」结论）
+
+原结论把「运行时自动发现」和「自我注册」混为一谈。重新核实 `dsh-api-remotes/lib/client.js`：
+
+```js
+// dsh-api-remotes/lib/client.js（client 半）
+const inject = ["remote"];                       // 注入 ctx.remote
+async function apply(ctx) {
+  for (const contribution of [TYPERT_REMOTE$4, ...]) {
+    disposers.push(await ctx.remote.$mount(contribution));  // 运行时注册！
+  }
+}
+```
+
+关键事实：
+
+- `ctx.remote.$mount(contribution)`（`contribution = { package, descriptors }`）是**运行时**注册 API；
+- `dsh-api-remotes` 的 5 个 `TYPERT_REMOTE` 常量是「构建期烘焙进来的描述符」，但**注册动作本身是运行时 `$mount`**；
+- 因此**任何第三方 client half 都能**：`inject = ["remote"]`，`apply` 里 `ctx.remote.$mount(自己的 TYPERT_REMOTE)`，
+  从而让 `ctx.remote.sshRemote.config()` 可用。
+
+这正是 `dsh-typert-loader/README` 所说「client runtimes need a separate composition owner」——那个
+「composition owner」**由插件自己的 client half 充当**，不是死路。
+
+### 修订后的决定
+
+- 「Web 设置 GUI」/「工作区选择器」**可行**：client half 自我注册 Remote 后，即可渲染表单、
+  读 `ctx.remote.sshRemote.config()`、写 `ctx.remote.sshRemote.saveConfig()`。
+- 保留 `./remote` 产物（`TYPERT_REMOTE`）+ host 侧 `./typert` + `TypertRemoteService`，两者都派上用场。
+- 仍需验证：client half 里 `$mount` 后的 `ctx.remote.sshRemote.*` 真机调用闭环（下一步 spike）。
+
 ## 后果 / 后续
 
-- host 侧 Remote（`./typert` + `TypertRemoteService` + Context 增广）保留，但当前无客户端消费者。
-- 优先转向**「新建远程会话」（透明文件路由）**：host 侧 `isolate` scope + `RemoteFileSystem` 路由，
-  不依赖客户端 Remote 发现。
+- host 侧 Remote（`./typert` + `TypertRemoteService` + Context 增广）**照常需要**，是 `$mount` 对端。
+- client half 需：`inject: ["remote"]` + `apply` 里 `$mount(TYPERT_REMOTE)`。
+- 优先顺序修正为：先做 **client half 自我注册 + 工作区选择器 GUI**（用户明确诉求），
+  再做「透明文件路由」。
