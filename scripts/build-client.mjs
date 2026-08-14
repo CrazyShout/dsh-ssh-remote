@@ -30,7 +30,14 @@ const CLIENT_EXTERNALS = [
 
 /** Wire/type layers with no shared runtime identity that may inline. */
 const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(\/|$)/;
-/** Generated descriptor/codec contribution with no shared runtime identity. */
+/**
+ * Generated descriptor/codec contribution with no shared runtime identity.
+ * NOTE: this plugin is UNscoped (`dsh-ssh-remote`), so its own `/remote` export
+ * (`dsh-ssh-remote/remote`) does NOT match this regex (nor the `@deepseek-ai/`
+ * onResolve filter) — the client half inlines its own descriptors via the
+ * ordinary bundle path. This regex only matters for BUILT-IN
+ * `@deepseek-ai/dsh-*/remote` imports, which this plugin does not make.
+ */
 const GENERATED_REMOTE = /^@deepseek-ai\/dsh-[a-z0-9]+(?:-[a-z0-9]+)*\/remote$/;
 
 const result = await build({
