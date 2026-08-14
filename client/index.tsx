@@ -29,10 +29,19 @@ export async function apply(ctx: ClientContext) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const slots = ctx.slots as any;
+  // register(options, component): the component receives the composed props
+  // (runtime + locale + render slots + the inject share). Business data rides
+  // the options.inject factory, not a closure over the component.
   const disposeTab = slots.inject('settings.plugins.tab', () =>
     slots.register(
-      { name: 'settings.plugins.tab', id: 'ssh-remote', order: 20, label: () => 'SSH Remote' },
-      () => <SshRemotePanel ssh={ssh} />,
+      {
+        name: 'settings.plugins.tab',
+        id: 'ssh-remote',
+        order: 20,
+        label: () => 'SSH Remote',
+        inject: () => ({ ssh }),
+      },
+      SshRemotePanel,
     ),
   );
 
