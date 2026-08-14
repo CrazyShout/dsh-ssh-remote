@@ -28,6 +28,11 @@ const CLIENT_EXTERNALS = [
   '@deepseek-ai/dsh-client-runtime/client',
 ];
 
+/** Wire/type layers with no shared runtime identity that may inline. */
+const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(\/|$)/;
+/** Generated descriptor/codec contribution with no shared runtime identity. */
+const GENERATED_REMOTE = /^@deepseek-ai\/dsh-[a-z0-9]+(?:-[a-z0-9]+)*\/remote$/;
+
 const result = await build({
   entryPoints: [ENTRY],
   outfile: OUT_FILE,
@@ -48,6 +53,23 @@ const result = await build({
   footer: {
     js: 'return module.exports; } });',
   },
+  plugins: [{
+    // Bundle purity gate: platform seed entries stay external, inline-safe wire
+    // layers inline, and every other @deepseek-ai value import is a build error —
+    // a cross-plugin value import either inlines a duplicate runtime instance or
+    // requires a specifier the frozen module table cannot answer.
+    name: 'dsh-client-bundle-purity',
+    setup(build) {
+      build.onResolve({ filter: /^@deepseek-ai\// }, (args) => {
+        if (CLIENT_EXTERNALS.includes(args.path)) return undefined; // platform module: external wins
+        if (INLINE_SAFE.test(args.path) || GENERATED_REMOTE.test(args.path)) return undefined; // wire contribution: inline is the point
+        throw new Error(
+          `client bundle purity: "${args.path}" is not a platform module (CLIENT_EXTERNALS), an inline-safe wire layer, or a generated /remote contribution — `
+          + 'cross-plugin value imports are forbidden; collaborate through cordis services (type-only imports are erased and never reach this gate)',
+        );
+      });
+    },
+  }],
 });
 
 if (result.errors.length > 0) {
@@ -60,6 +82,12 @@ if (!text.includes('window.__ModuleLoader__.load(') || !text.includes(JSON.strin
 }
 if (text.includes('import.meta') || /(^|\n)\s*(import|export)\s/.test(text)) {
   throw new Error('client bundle contract: emitted bundle contains import.meta / ESM statements');
+}
+for (const match of text.matchAll(/require\(\s*["'](@deepseek-ai\/[^"']+)["']\s*\)/g)) {
+  const specifier = match[1];
+  if (!CLIENT_EXTERNALS.includes(specifier)) {
+    throw new Error(`client bundle contract: "${specifier}" VALUE import survived the purity gate`);
+  }
 }
 
 // Flat type re-export the loader-facing `exports["./client"].types` points at.
