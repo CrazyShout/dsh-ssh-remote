@@ -11,8 +11,8 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client/index.d.ts",
-      "default": "./lib/client/index.js"
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
     },
     "./typert": "./lib/typert.host.js",
     "./remote": "./lib/typert.remote-client.js",
@@ -64,12 +64,13 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.2.0",
     "@types/ssh2": "^1.15.0",
+    "esbuild": "^0.28.2",
     "react": "^18.2.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "vitest run"
   },
   "license": "MIT",

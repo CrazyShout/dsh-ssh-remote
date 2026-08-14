@@ -7,7 +7,7 @@
     "jsx": "react-jsx",
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
+    "emitDeclarationOnly": true,
     "outDir": "lib/client",
     "rootDir": "client",
     "strict": true,
