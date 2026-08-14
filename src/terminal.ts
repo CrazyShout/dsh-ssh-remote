@@ -40,6 +40,7 @@ class RemoteSendOperation implements TerminalSendOperation {
   constructor(
     private readonly onCancel: () => void,
     private readonly onSettle: () => void,
+    private readonly getSessionStatus: () => TerminalSessionStatus,
   ) {
     this.done = new Promise<TerminalSendResult>((resolve, reject) => {
       this.resolveDone = resolve;
@@ -72,7 +73,7 @@ class RemoteSendOperation implements TerminalSendOperation {
     if (this.idleTimer !== undefined) clearTimeout(this.idleTimer);
     if (this.deadlineTimer !== undefined) clearTimeout(this.deadlineTimer);
     this.onSettle();
-    this.resolveDone({ viewport: this.output, waitReason, sessionStatus: { kind: 'running' }, truncated: false });
+    this.resolveDone({ viewport: this.output, waitReason, sessionStatus: this.getSessionStatus(), truncated: false });
   }
 
   fail(error: Error) {
@@ -125,6 +126,7 @@ class RemoteTerminalBackendSession implements TerminalBackendSession {
       () => {
         if (this.active === op) this.active = undefined;
       },
+      () => this.statusValue,
     );
     this.active = op;
     if (request.text) this.channel.write(request.text);
@@ -149,6 +151,7 @@ class RemoteTerminalBackendSession implements TerminalBackendSession {
   }
 
   async signal(signal: TerminalSignal): Promise<TerminalSignalResult> {
+    if (this.closed) throw new Error('PTY session has exited');
     this.channel.signal(signal.replace(/^SIG/, ''));
     return { delivered: true, targetPgid: 0 };
   }
