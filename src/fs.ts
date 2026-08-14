@@ -241,6 +241,23 @@ export class RemoteFileSystem extends FileSystem {
   }
 }
 
+/**
+ * Build the remote half of the URI router without registering a second
+ * `ctx.fs` service. DSH exposes one filesystem service per host; the router
+ * delegates only mapped SSH targets to this adapter.
+ */
+export function createRemoteFileSystemAdapter(
+  connections: SshConnectionManager,
+): RemoteFileSystem {
+  const adapter = Object.create(RemoteFileSystem.prototype) as RemoteFileSystem;
+  Object.defineProperties(adapter, {
+    connections: { value: connections },
+    baseUri: { value: parseSshUri('ssh://unresolved/') },
+  });
+  return adapter;
+}
+
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function promisify<T>(fn: (cb: (err: Error | null | undefined, result: T) => void) => void, signal?: AbortSignal): Promise<T> {

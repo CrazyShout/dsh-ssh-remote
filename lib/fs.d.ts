@@ -36,4 +36,10 @@ export declare class RemoteFileSystem extends FileSystem {
     private statOrAbsent;
     private mapError;
 }
+/**
+ * Build the remote half of the URI router without registering a second
+ * `ctx.fs` service. DSH exposes one filesystem service per host; the router
+ * delegates only mapped SSH targets to this adapter.
+ */
+export declare function createRemoteFileSystemAdapter(connections: SshConnectionManager): RemoteFileSystem;
 //# sourceMappingURL=fs.d.ts.map

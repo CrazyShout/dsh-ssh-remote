@@ -1,8 +1,9 @@
 import { Client, type SFTPWrapper, type ConnectConfig } from 'ssh2';
-import type { Readable } from 'node:stream';
+import { spawn } from 'node:child_process';
+import { Duplex } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { formatSshUri, parseSshUri, type SshConnectionStatus, type SshUri } from './types.js';
-import { loadUserSshConfig, resolveSshAlias } from './ssh-config.js';
+import { resolveOpenSshHost } from './ssh-config.js';
 
 /** A resolved host target, possibly reached through a ProxyJump. */
 export interface SshHostConfig {
@@ -36,7 +37,18 @@ interface ManagedConnection {
   lastError?: string;
   reconnectDelay: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  proxyClose: (() => void) | null;
   wanted: boolean;
+}
+
+interface ProxySpec {
+  kind: 'jump' | 'command';
+  value: string;
+}
+
+interface ProxyStream {
+  stream: Duplex;
+  close: () => void;
 }
 
 const RETRY_BASE_MS = 1000;
@@ -63,26 +75,32 @@ export function parseJumpSpec(spec: string): SshHostConfig {
   return { host, port, username };
 }
 
-/** Resolve a host config from ~/.ssh/config by alias, or from the host itself. */
-export function toConnectConfig(
+/** Resolve effective connection settings through the local OpenSSH client. */
+export async function toConnectConfig(
   uri: SshUri,
   hostConfig?: SshHostConfig,
-): { config: ConnectConfig; proxyJump?: SshHostConfig } {
-  const config = loadUserSshConfig();
-  const alias = resolveSshAlias(uri.host, config);
+): Promise<{ config: ConnectConfig; proxy?: ProxySpec }> {
+  const alias = await resolveOpenSshHost(uri.host);
   const host = hostConfig?.host ?? alias?.hostName ?? uri.host;
   const port = hostConfig?.port ?? alias?.port ?? uri.port;
   const username = hostConfig?.username ?? alias?.user ?? uri.user ?? undefined;
   let privateKey = hostConfig?.privateKey;
-  if (!privateKey && alias?.identityFile) {
-    try {
-      privateKey = readFileSync(alias.identityFile, 'utf8');
-    } catch {
-      /* fall back to agent */
+  if (!privateKey) {
+    for (const identityFile of alias?.identityFiles ?? []) {
+      try {
+        privateKey = readFileSync(identityFile, 'utf8');
+        break;
+      } catch {
+        /* OpenSSH may list default keys that do not exist; try the next one. */
+      }
     }
   }
-  const jumpSpec = hostConfig?.proxyJump;
-  const proxyJump = jumpSpec ? parseJumpSpec(jumpSpec) : undefined;
+  const jumpSpec = hostConfig?.proxyJump ?? alias?.proxyJump;
+  const proxy = jumpSpec
+    ? { kind: 'jump' as const, value: jumpSpec }
+    : alias?.proxyCommand
+      ? { kind: 'command' as const, value: alias.proxyCommand }
+      : undefined;
   return {
     config: {
       host,
@@ -95,55 +113,116 @@ export function toConnectConfig(
       keepaliveCountMax: 4,
       tryKeyboard: false,
     },
-    proxyJump,
+    proxy,
   };
 }
 
-/** Establish a jump connection and return a direct-tcpip stream to the target. */
-function openJumpStream(jump: SshHostConfig, targetHost: string, targetPort: number): Promise<{ stream: Readable; jumpClient: Client }> {
+/** Build the system OpenSSH command used for one or more ProxyJump hops. */
+export function buildOpenSshJumpArgs(proxyJump: string, targetHost: string, targetPort: number): string[] {
+  const hops = proxyJump.split(',').map((hop) => hop.trim()).filter(Boolean);
+  if (hops.length === 0) throw new Error('ProxyJump is empty');
+  const finalJump = hops.pop() as string;
+  const args = ['-T'];
+  if (hops.length > 0) args.push('-J', hops.join(','));
+  args.push('-W', `${targetHost}:${targetPort}`, finalJump);
+  return args;
+}
+
+/** Let OpenSSH establish the configured ProxyJump/ProxyCommand byte stream. */
+function openProxyStream(
+  proxy: ProxySpec,
+  targetHost: string,
+  targetPort: number,
+  username?: string,
+): Promise<ProxyStream> {
+  if (proxy.kind === 'jump') {
+    return spawnProxyProcess('ssh', buildOpenSshJumpArgs(proxy.value, targetHost, targetPort));
+  }
+  const command = expandProxyCommand(proxy.value, targetHost, targetPort, username);
+  return spawnProxyProcess(process.env.SHELL || '/bin/sh', ['-lc', command]);
+}
+
+function spawnProxyProcess(command: string, args: string[]): Promise<ProxyStream> {
   return new Promise((resolve, reject) => {
-    const jumpClient = new Client();
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
     let settled = false;
-    const fail = (e: Error) => {
+    const stream = new Duplex({
+      read() {
+        child.stdout.resume();
+      },
+      write(chunk, encoding, callback) {
+        if (child.stdin.write(chunk, encoding)) callback();
+        else child.stdin.once('drain', callback);
+      },
+      final(callback) {
+        child.stdin.end(callback);
+      },
+      destroy(error, callback) {
+        if (!child.killed) child.kill();
+        callback(error);
+      },
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (!stream.push(chunk)) child.stdout.pause();
+    });
+    child.stdout.on('end', () => stream.push(null));
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-4_000);
+    });
+    child.once('error', (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      } else {
+        stream.destroy(error);
+      }
+    });
+    child.once('spawn', () => {
       if (settled) return;
       settled = true;
-      reject(e);
-    };
-    jumpClient
-      .on('ready', () => {
-        jumpClient.forwardOut('127.0.0.1', 0, targetHost, targetPort, (err, stream) => {
-          if (err) {
-            jumpClient.end();
-            fail(err);
-            return;
-          }
-          if (settled) return;
-          settled = true;
-          resolve({ stream, jumpClient });
-        });
-      })
-      .on('error', fail)
-      .connect({
-        host: jump.host,
-        port: jump.port,
-        username: jump.username,
-        agent: process.env.SSH_AUTH_SOCK,
-        readyTimeout: READY_TIMEOUT_MS,
-        tryKeyboard: false,
+      queueMicrotask(() => stream.emit('connect'));
+      resolve({
+        stream,
+        close: () => {
+          stream.destroy();
+          if (!child.killed) child.kill();
+        },
       });
+    });
+    child.once('close', (code, signal) => {
+      if (code === 0 || stream.destroyed) return;
+      const detail = stderr.trim() || `exited with code ${String(code)}, signal ${String(signal)}`;
+      stream.destroy(new Error(`OpenSSH proxy failed: ${detail}`));
+    });
   });
+}
+
+function expandProxyCommand(command: string, host: string, port: number, username?: string): string {
+  return command
+    .replaceAll('%%', '\0')
+    .replaceAll('%h', shellQuote(host))
+    .replaceAll('%p', String(port))
+    .replaceAll('%r', shellQuote(username ?? ''))
+    .replaceAll('\0', '%');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /**
  * Owns the SSH transport pool. Connections are keyed by `host:port:user`, and
  * each connection auto-reconnects with exponential backoff while still wanted.
- * A connection with a `proxyJump` first opens a direct-tcpip channel through
- * the jump host and uses it as the target's socket.
+ * ProxyJump and ProxyCommand byte streams are delegated to system OpenSSH, so
+ * Include files, wildcard defaults, Match rules, and multi-hop jumps keep the
+ * same semantics as `ssh <alias>`.
  */
 export class SshConnectionManager {
   private readonly connections = new Map<string, ManagedConnection>();
   private readonly listeners = new Set<StatusListener>();
-  /** Optional resolver: a hostname/alias → explicit host config (from settings). */
+  /** Read-only fallback for legacy DSH settings that have not been migrated. */
   private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
 
   constructor(hostResolver?: (host: string) => SshHostConfig | undefined) {
@@ -171,7 +250,7 @@ export class SshConnectionManager {
       return this.wrap(uriString, existing);
     }
     if (!existing) {
-      existing = this.allocate(uri);
+      existing = await this.allocate(uri);
       this.connections.set(key, existing);
     }
     existing.wanted = true;
@@ -205,18 +284,19 @@ export class SshConnectionManager {
     this.connections.clear();
   }
 
-  private allocate(uri: SshUri): ManagedConnection {
+  private async allocate(uri: SshUri): Promise<ManagedConnection> {
     const hostConfig = this.hostResolver?.(uri.host);
-    const { config, proxyJump } = toConnectConfig(uri, hostConfig);
-    const withSock = proxyJump ? { ...config, _proxyJump: proxyJump } : config;
+    const { config, proxy } = await toConnectConfig(uri, hostConfig);
+    const withProxy = proxy ? { ...config, _proxy: proxy } : config;
     return {
       key: this.keyOf(uri),
-      config: withSock as ConnectConfig,
+      config: withProxy as ConnectConfig,
       client: null,
       sftp: null,
       status: 'disconnected',
       reconnectDelay: RETRY_BASE_MS,
       reconnectTimer: null,
+      proxyClose: null,
       wanted: false,
     };
   }
@@ -226,27 +306,33 @@ export class SshConnectionManager {
     if (!conn || !conn.wanted) return;
     this.setStatus(conn, conn.status === 'error' ? 'reconnecting' : 'connecting');
 
-    const proxyJump = (conn.config as { _proxyJump?: SshHostConfig })._proxyJump;
-    if (proxyJump) {
-      openJumpStream(proxyJump, conn.config.host as string, conn.config.port as number)
-        .then(({ stream, jumpClient }) => {
-          if (conn.client) {
+    const { _proxy: proxy, ...sshConfig } = conn.config as ConnectConfig & { _proxy?: ProxySpec };
+    if (proxy) {
+      openProxyStream(
+        proxy,
+        sshConfig.host as string,
+        sshConfig.port as number,
+        sshConfig.username,
+      )
+        .then(({ stream, close }) => {
+          if (!conn.wanted || conn.client) {
             // stale reconnection raced; discard this attempt
-            jumpClient.end();
+            close();
             return;
           }
-          this.finishConnect(key, { ...conn.config, sock: stream } as ConnectConfig, jumpClient);
+          conn.proxyClose = close;
+          this.finishConnect(key, { ...sshConfig, sock: stream } as ConnectConfig);
         })
-        .catch((e: Error) => this.fail(conn, `jump failed: ${e.message}`));
+        .catch((error: Error) => this.fail(conn, `OpenSSH proxy failed: ${error.message}`));
     } else {
-      this.finishConnect(key, conn.config, null);
+      this.finishConnect(key, sshConfig);
     }
   }
 
-  private finishConnect(key: string, config: ConnectConfig, jumpClient: Client | null): void {
+  private finishConnect(key: string, config: ConnectConfig): void {
     const conn = this.connections.get(key);
     if (!conn || !conn.wanted) {
-      jumpClient?.end();
+      conn?.proxyClose?.();
       return;
     }
     const client = new Client();
@@ -267,7 +353,6 @@ export class SshConnectionManager {
         this.fail(conn, err.message);
       })
       .on('close', () => {
-        jumpClient?.end();
         if (conn.status === 'connected') {
           this.fail(conn, 'connection lost');
         }
@@ -277,7 +362,7 @@ export class SshConnectionManager {
 
   private fail(conn: ManagedConnection, reason: string): void {
     conn.lastError = reason;
-    this.teardown(conn, /* keepClient */ true);
+    this.teardown(conn);
     if (!conn.wanted) return;
     this.setStatus(conn, 'error');
     this.scheduleReconnect(conn);
@@ -293,7 +378,7 @@ export class SshConnectionManager {
     }, delay);
   }
 
-  private teardown(conn: ManagedConnection, keepClient = false): void {
+  private teardown(conn: ManagedConnection): void {
     conn.sftp = null;
     if (conn.client) {
       try {
@@ -301,8 +386,10 @@ export class SshConnectionManager {
       } catch {
         /* ignore */
       }
-      if (!keepClient) conn.client = null;
+      conn.client = null;
     }
+    conn.proxyClose?.();
+    conn.proxyClose = null;
   }
 
   private setStatus(conn: ManagedConnection, status: SshConnectionStatus, reason?: string): void {

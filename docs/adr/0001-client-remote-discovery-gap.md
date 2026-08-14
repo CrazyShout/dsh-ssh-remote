@@ -101,3 +101,55 @@ async function apply(ctx) {
 - client half 需：`inject: ["remote"]` + `apply` 里 `$mount(TYPERT_REMOTE)`。
 - 优先顺序修正为：先做 **client half 自我注册 + 工作区选择器 GUI**（用户明确诉求），
   再做「透明文件路由」。
+
+## 第二次修正：挂载者不能在同一注入作用域直接消费动态 namespace
+
+真机验证发现，`ctx.remote.$mount(TYPERT_REMOTE)` 虽然已经注册描述符，但 Cordis 仍要求
+消费者显式注入动态子服务 `remote.sshRemote`。仅声明 `inject = ['remote']` 后直接读取
+`ctx.remote.sshRemote` 会报：
+
+```text
+cannot get property "remote.sshRemote" without inject
+```
+
+也不能把 `remote.sshRemote` 加进同一个顶层 `inject`：顶层 `apply` 必须先运行 `$mount()`
+才能提供它，这会形成自等待。最终结构是：
+
+1. 顶层 client half 只注入 `remote` 并挂载 contribution；
+2. 挂载完成后创建 `ctx.inject(['remote.sshRemote', 'slots'], ...)` 子作用域；
+3. 子作用域消费 Remote namespace 并注册 UI；
+4. 卸载时先等待子作用域销毁，再等待 contribution unmount。
+
+这保持了 Cordis 的显式依赖和生命周期所有权，也避免挂载者与消费者形成循环依赖。
+
+## 第三次修正：SSH 配置归 OpenSSH 所有，Web Remote 只做发现
+
+对照 Codex Remote 的官方文档与当前桌面端行为后，撤销“浏览器表单维护 host/user/port/
+identityFile/proxyJump”的产品设计。新的边界是：
+
+1. `~/.ssh/config` 是唯一的新连接配置源；递归发现 `Include` 中的具体 Host 别名；
+2. 最终连接字段必须通过 `ssh -G -F ~/.ssh/config <alias>` 解析，不能用插件的局部解析器模拟；
+3. Web Remote 的 `config()` 只返回发现结果与 config 路径，不再暴露 `saveConfig()`；
+4. ProxyJump/ProxyCommand 字节流委托给系统 OpenSSH，插件的 `ssh2` 仅承载最终 SSH/SFTP 会话；
+5. 旧 `ssh-remote.hosts` 只作为尚未迁移别名的只读 fallback，不能覆盖同名 OpenSSH alias。
+
+这样避免终端、Codex 和 DSH 各保存一份 SSH 参数，也让 Include、Host 通配默认值、Match 与
+多跳 ProxyJump 继续由 OpenSSH 负责解释。
+
+## 第四次修正：用本地锚点桥接 DSH Workspace，并启用精确全局路由
+
+核查 DSH Workspace Registry 后确认：当前核心创建流程会对候选目录执行本机
+`realpath/stat`，不能直接登记 `ssh://` URI。插件不修改 Workspace 私有实现，而采用兼容层：
+
+1. 用户在插件接管的「添加工作区」流程里选择 SSH alias 并通过 SFTP 浏览目录；
+2. 选择完成后，在 `$DSH_HOME/ssh-workspace-anchors/` 创建空的本地锚点，把
+   `anchorPath -> ssh://alias/remote/path` 写入 `ssh-workspace-anchors.json`；
+3. 将锚点交回 DSH 原生 `onPicked()`，由核心照常创建、展示和管理 Workspace；
+4. host 启动时包装全局 `ctx.fs` 与 `ctx.subprocess`，但只对已登记锚点自身及其子路径生效：
+   文件操作委托 SFTP，命令和 PTY 委托系统 OpenSSH；其他路径调用原 provider；
+5. 使用路径边界判断并优先最长锚点，避免 `/anchor/x` 误命中 `/anchor/xyz` 或嵌套映射。
+
+之所以需要全局包装，是 DSH 的文件系统和 subprocess 是共享服务，而 Workspace Registry
+没有公开按工作区注入 provider 的扩展点。这个决定已取得用户对“完整远程工作区路由”的明确
+授权；风险通过精确映射、可恢复 disposer、原 provider 透传和回归测试收敛。远程会话需使用
+`Full access`，否则 Harness 的本地沙箱可能阻止 `ssh` 建立网络连接。

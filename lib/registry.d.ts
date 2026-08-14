@@ -10,17 +10,43 @@ export interface SshHostEntry {
     identityFile: string;
     proxyJump: string;
 }
-/** `config` result: the configured host list. */
+/** A concrete SSH alias discovered and resolved through local OpenSSH. */
+export interface DiscoveredSshHost {
+    alias: string;
+    host: string;
+    port: number;
+    user: string;
+    identityFile: string;
+    proxyJump: string;
+    proxyCommand: string;
+}
+/** `config` result consumed by the Codex-style settings panel. */
 export interface SshConfig {
-    hosts: SshHostEntry[];
+    configPath: string;
+    configExists: boolean;
+    hosts: DiscoveredSshHost[];
+    legacyHostCount: number;
 }
-/** `saveConfig` request body: the replacement host list. */
-export interface SaveConfigRequest {
-    hosts: SshHostEntry[];
+export interface RemoteDirectoryEntry {
+    name: string;
+    path: string;
+    hidden: boolean;
 }
-/** `saveConfig` result. */
-export interface SaveConfigResult {
-    ok: boolean;
+export interface RemoteDirectoryListing {
+    path: string;
+    home: string;
+    crumbs: RemoteDirectoryEntry[];
+    entries: RemoteDirectoryEntry[];
+    truncated: boolean;
+}
+/** Durable exact mapping between a normal DSH Workspace path and SSH URI. */
+export interface SshWorkspaceAnchor {
+    anchorPath: string;
+    uri: string;
+    alias: string;
+    remotePath: string;
+    title: string;
+    createdAt: number;
 }
 declare module '@deepseek-ai/cordis' {
     interface Context {
@@ -40,17 +66,28 @@ type StatusListener = (change: {
  */
 export declare class SshRemoteService extends TypertRemoteService {
     readonly connections: SshConnectionManager;
+    private readonly settings;
     private readonly workspaces;
+    private readonly anchors;
     private readonly listeners;
     private readonly hostResolver?;
     constructor(ctx: Context);
-    private get settings();
-    private registerSettings;
+    private createHostResolver;
     private readKey;
-    /** Read the configured hosts (Web Remote). */
-    config(): SshConfig;
-    /** Replace the configured hosts (Web Remote). */
-    saveConfig(request: SaveConfigRequest): Promise<SaveConfigResult>;
+    /** Discover and resolve the user's local OpenSSH aliases (Web Remote). */
+    config(): Promise<SshConfig>;
+    /** Browse one remote directory level for the Add Workspace flow. */
+    browse(alias: string, path: string): Promise<RemoteDirectoryListing>;
+    /** Create one remote child directory from the remote directory picker. */
+    createDirectory(alias: string, parent: string, name: string): Promise<string>;
+    /**
+     * Verify a remote directory and materialize the local anchor handed to the
+     * stock DSH Workspace API. Repeated calls for one URI reuse one anchor.
+     */
+    materializeWorkspace(alias: string, remotePath: string): Promise<SshWorkspaceAnchor>;
+    /** Exact anchor/descendant resolver consumed by fs and subprocess routers. */
+    resolveRemotePath(localPath: string): string | undefined;
+    ensureDirectory(uri: string): Promise<void>;
     onStatus(listener: StatusListener): () => void;
     list(): RemoteWorkspace[];
     get(id: string): RemoteWorkspace | undefined;
@@ -81,6 +118,8 @@ export declare class SshRemoteService extends TypertRemoteService {
     private emit;
     private load;
     private save;
+    private loadAnchors;
+    private saveAnchors;
 }
 export {};
 //# sourceMappingURL=registry.d.ts.map

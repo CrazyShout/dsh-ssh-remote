@@ -1,19 +1,28 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
-import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { SshConnectionManager, type SshHostConfig } from './connection.js';
-import { expandHome } from './ssh-config.js';
+import {
+  discoverSshHosts,
+  expandHome,
+  hasConcreteSshAlias,
+  userSshConfigPath,
+} from './ssh-config.js';
 import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
 const SETTINGS_NS = settingsNamespace('ssh-remote');
 
-/** `ssh-remote` settings schema: named hosts with optional ProxyJump. */
-const SshRemoteSettingsSchema = z.object({
+/**
+ * Pre-Codex-style settings schema. Existing entries remain a read-only
+ * fallback so an upgrade does not break already registered workspaces.
+ */
+const LegacySshRemoteSettingsSchema = z.object({
   hosts: z
     .array(
       z.object({
@@ -37,19 +46,51 @@ export interface SshHostEntry {
   proxyJump: string;
 }
 
-/** `config` result: the configured host list. */
+interface LegacySshConfig {
+  hosts: SshHostEntry[];
+}
+
+/** A concrete SSH alias discovered and resolved through local OpenSSH. */
+export interface DiscoveredSshHost {
+  alias: string;
+  host: string;
+  port: number;
+  user: string;
+  identityFile: string;
+  proxyJump: string;
+  proxyCommand: string;
+}
+
+/** `config` result consumed by the Codex-style settings panel. */
 export interface SshConfig {
-  hosts: SshHostEntry[];
+  configPath: string;
+  configExists: boolean;
+  hosts: DiscoveredSshHost[];
+  legacyHostCount: number;
 }
 
-/** `saveConfig` request body: the replacement host list. */
-export interface SaveConfigRequest {
-  hosts: SshHostEntry[];
+export interface RemoteDirectoryEntry {
+  name: string;
+  path: string;
+  hidden: boolean;
 }
 
-/** `saveConfig` result. */
-export interface SaveConfigResult {
-  ok: boolean;
+export interface RemoteDirectoryListing {
+  path: string;
+  home: string;
+  crumbs: RemoteDirectoryEntry[];
+  entries: RemoteDirectoryEntry[];
+  truncated: boolean;
+}
+
+/** Durable exact mapping between a normal DSH Workspace path and SSH URI. */
+export interface SshWorkspaceAnchor {
+  anchorPath: string;
+  uri: string;
+  alias: string;
+  remotePath: string;
+  title: string;
+  createdAt: number;
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -61,14 +102,16 @@ declare module '@deepseek-ai/cordis' {
 
 type StatusListener = (change: { workspaceId: string; status: SshConnectionStatus; reason?: string }) => void;
 
-interface SettingsLike {
-  register(ns: unknown, schema: unknown): void;
-  get(ns: unknown): { hosts: SshHostEntry[] } | undefined;
-  update(ns: unknown, patch: unknown): Promise<void>;
-}
-
 function persistPath(): string {
   return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-remote-workspaces.json');
+}
+
+function anchorPersistPath(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-workspace-anchors.json');
+}
+
+function anchorRootPath(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-workspace-anchors');
 }
 
 /**
@@ -78,15 +121,19 @@ function persistPath(): string {
  */
 export class SshRemoteService extends TypertRemoteService {
   readonly connections: SshConnectionManager;
+  private readonly settings: SettingsScope<LegacySshConfig>;
   private readonly workspaces = new Map<string, RemoteWorkspace>();
+  private readonly anchors = new Map<string, SshWorkspaceAnchor>();
   private readonly listeners = new Set<StatusListener>();
   private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
 
   constructor(ctx: Context) {
     super(ctx, 'sshRemote');
-    this.hostResolver = this.registerSettings();
+    this.settings = ctx.settings.register(SETTINGS_NS, LegacySshRemoteSettingsSchema);
+    this.hostResolver = this.createHostResolver();
     this.connections = new SshConnectionManager(this.hostResolver);
     this.load();
+    this.loadAnchors();
     this.connections.onStatus((key, status, reason) => {
       for (const ws of this.workspaces.values()) {
         if (this.keyOf(ws.uri) === key) {
@@ -99,16 +146,12 @@ export class SshRemoteService extends TypertRemoteService {
     });
   }
 
-  private get settings(): SettingsLike | undefined {
-    return this.ctx.get('settings') as SettingsLike | undefined;
-  }
-
-  private registerSettings(): ((host: string) => SshHostConfig | undefined) | undefined {
-    const settings = this.settings;
-    if (!settings) return undefined;
-    settings.register(SETTINGS_NS, SshRemoteSettingsSchema);
+  private createHostResolver(): (host: string) => SshHostConfig | undefined {
     return (host: string) => {
-      const hosts = settings.get(SETTINGS_NS)?.hosts ?? [];
+      // `~/.ssh/config` is authoritative. Only consult the old DSH settings
+      // namespace when the workspace names no concrete OpenSSH alias.
+      if (hasConcreteSshAlias(host)) return undefined;
+      const hosts = this.settings.get().hosts;
       const h = hosts.find((x) => x.name === host || x.host === host);
       if (!h) return undefined;
       return {
@@ -129,18 +172,138 @@ export class SshRemoteService extends TypertRemoteService {
     }
   }
 
-  /** Read the configured hosts (Web Remote). */
+  /** Discover and resolve the user's local OpenSSH aliases (Web Remote). */
   @Remote('config')
-  config(): SshConfig {
-    return { hosts: this.settings?.get(SETTINGS_NS)?.hosts ?? [] };
+  async config(): Promise<SshConfig> {
+    const configPath = userSshConfigPath();
+    const hosts = await discoverSshHosts(configPath);
+    return {
+      configPath,
+      configExists: existsSync(configPath),
+      hosts: hosts.map((host) => ({
+        alias: host.host,
+        host: host.hostName ?? host.host,
+        port: host.port ?? 22,
+        user: host.user ?? '',
+        identityFile: host.identityFile ?? '',
+        proxyJump: host.proxyJump ?? '',
+        proxyCommand: host.proxyCommand ?? '',
+      })),
+      legacyHostCount: this.settings.get().hosts.length,
+    };
   }
 
-  /** Replace the configured hosts (Web Remote). */
-  @Remote('saveConfig')
-  async saveConfig(request: SaveConfigRequest): Promise<SaveConfigResult> {
-    if (!this.settings) throw new Error('settings provider not mounted');
-    await this.settings.update(SETTINGS_NS, { hosts: request.hosts });
-    return { ok: true };
+  /** Browse one remote directory level for the Add Workspace flow. */
+  @Remote('browse')
+  async browse(alias: string, path: string): Promise<RemoteDirectoryListing> {
+    const transport = await this.connections.transport(formatSshUri({
+      host: alias,
+      port: 22,
+      user: '',
+      path: '/',
+    }));
+    return transport.sftp(async (sftp) => {
+      const home = await realpathP(sftp, '.');
+      const target = await realpathP(sftp, path || home);
+      const status = await statP(sftp, target);
+      if (!status?.isDirectory()) throw new Error(`remote path is not a directory: ${target}`);
+      const rows = await readdirP(sftp, target);
+      const directories = (await Promise.all(rows.map(async (row) => {
+        const childPath = posix.join(target, row.filename);
+        const child = row.attrs.isDirectory() ? row.attrs : await statP(sftp, childPath);
+        if (!child?.isDirectory()) return undefined;
+        return {
+          name: row.filename,
+          path: childPath,
+          hidden: row.filename.startsWith('.'),
+        } satisfies RemoteDirectoryEntry;
+      }))).filter((entry): entry is RemoteDirectoryEntry => entry !== undefined)
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const truncated = directories.length > 1000;
+      return {
+        path: target,
+        home,
+        crumbs: remoteCrumbs(target),
+        entries: directories.slice(0, 1000),
+        truncated,
+      };
+    });
+  }
+
+  /** Create one remote child directory from the remote directory picker. */
+  @Remote('createDirectory')
+  async createDirectory(alias: string, parent: string, name: string): Promise<string> {
+    const clean = name.trim();
+    if (!clean || clean === '.' || clean === '..' || clean.includes('/')) {
+      throw new Error('folder name must be one non-empty path segment');
+    }
+    const transport = await this.connections.transport(formatSshUri({
+      host: alias,
+      port: 22,
+      user: '',
+      path: '/',
+    }));
+    const path = posix.join(parent, clean);
+    await transport.sftp((sftp) => mkdirP(sftp, path));
+    return path;
+  }
+
+  /**
+   * Verify a remote directory and materialize the local anchor handed to the
+   * stock DSH Workspace API. Repeated calls for one URI reuse one anchor.
+   */
+  @Remote('materializeWorkspace')
+  async materializeWorkspace(alias: string, remotePath: string): Promise<SshWorkspaceAnchor> {
+    const uri = formatSshUri({
+      host: alias,
+      port: 22,
+      user: '',
+      path: normalizeRemotePath(remotePath),
+    });
+    await this.ensureDirectory(uri);
+    const existing = [...this.anchors.values()].find((anchor) => anchor.uri === uri);
+    if (existing) {
+      mkdirSync(existing.anchorPath, { recursive: true });
+      return existing;
+    }
+    const title = `${basename(remotePath.replace(/\/+$/, '')) || 'root'} · ${alias}`;
+    const safeTitle = title.replace(/[/:]/g, '-').replace(/\s+/g, ' ').trim();
+    const digest = createHash('sha256').update(uri).digest('hex').slice(0, 8);
+    const rawAnchor = join(anchorRootPath(), `${safeTitle} [${digest}]`);
+    mkdirSync(rawAnchor, { recursive: true });
+    const anchor: SshWorkspaceAnchor = {
+      anchorPath: realpathSync(rawAnchor),
+      uri,
+      alias,
+      remotePath: normalizeRemotePath(remotePath),
+      title,
+      createdAt: Date.now(),
+    };
+    this.anchors.set(anchor.anchorPath, anchor);
+    this.saveAnchors();
+    return anchor;
+  }
+
+  /** Exact anchor/descendant resolver consumed by fs and subprocess routers. */
+  resolveRemotePath(localPath: string): string | undefined {
+    const absolute = resolve(localPath);
+    const candidates = [...this.anchors.values()].sort(
+      (left, right) => right.anchorPath.length - left.anchorPath.length,
+    );
+    for (const anchor of candidates) {
+      if (absolute !== anchor.anchorPath && !absolute.startsWith(`${anchor.anchorPath}${sep}`)) continue;
+      const suffix = relative(anchor.anchorPath, absolute).split(sep).filter(Boolean);
+      const base = parseSshUri(anchor.uri);
+      return formatSshUri({ ...base, path: posix.join(base.path, ...suffix) });
+    }
+    return undefined;
+  }
+
+  async ensureDirectory(uri: string): Promise<void> {
+    const parsed = parseSshUri(uri);
+    const transport = await this.connections.transport(uri);
+    const status = await transport.sftp((sftp) => statP(sftp, parsed.path));
+    if (!status?.isDirectory()) throw new Error(`remote path is not a directory: ${parsed.path}`);
   }
 
   onStatus(listener: StatusListener): () => void {
@@ -240,6 +403,7 @@ export class SshRemoteService extends TypertRemoteService {
   async dispose(): Promise<void> {
     await this.connections.dispose();
     this.workspaces.clear();
+    this.anchors.clear();
   }
 
   // ── internals ──────────────────────────────────────────────────────────
@@ -289,6 +453,26 @@ export class SshRemoteService extends TypertRemoteService {
       /* best effort */
     }
   }
+
+  private loadAnchors(): void {
+    try {
+      const list = JSON.parse(readFileSync(anchorPersistPath(), 'utf8')) as SshWorkspaceAnchor[];
+      for (const anchor of list) {
+        if (!anchor || typeof anchor.anchorPath !== 'string' || typeof anchor.uri !== 'string') continue;
+        const anchorPath = resolve(anchor.anchorPath);
+        this.anchors.set(anchorPath, { ...anchor, anchorPath });
+        mkdirSync(anchorPath, { recursive: true });
+      }
+    } catch {
+      /* no persisted anchors */
+    }
+  }
+
+  private saveAnchors(): void {
+    const file = anchorPersistPath();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify([...this.anchors.values()], null, 2));
+  }
 }
 
 // ── sftp promisify helpers ────────────────────────────────────────────────
@@ -297,6 +481,34 @@ function statP(sftp: import('ssh2').SFTPWrapper, path: string) {
   return new Promise<import('ssh2').Stats | undefined>((resolve) => {
     sftp.stat(path, (err, st) => resolve(err ? undefined : st));
   });
+}
+
+function realpathP(sftp: import('ssh2').SFTPWrapper, path: string) {
+  return new Promise<string>((resolvePath, reject) => {
+    sftp.realpath(path, (err, resolved) => (err ? reject(err) : resolvePath(resolved)));
+  });
+}
+
+function mkdirP(sftp: import('ssh2').SFTPWrapper, path: string) {
+  return new Promise<void>((resolveDirectory, reject) => {
+    sftp.mkdir(path, (err) => (err ? reject(err) : resolveDirectory()));
+  });
+}
+
+function normalizeRemotePath(path: string): string {
+  if (!path.startsWith('/')) throw new Error(`remote workspace path must be absolute: ${path}`);
+  return path.replace(/\/{2,}/g, '/').replace(/\/$/, '') || '/';
+}
+
+function remoteCrumbs(path: string): RemoteDirectoryEntry[] {
+  const parts = path.split('/').filter(Boolean);
+  const crumbs: RemoteDirectoryEntry[] = [{ name: '/', path: '/', hidden: false }];
+  let current = '';
+  for (const part of parts) {
+    current = `${current}/${part}`;
+    crumbs.push({ name: part, path: current, hidden: false });
+  }
+  return crumbs;
 }
 
 function readdirP(sftp: import('ssh2').SFTPWrapper, path: string) {

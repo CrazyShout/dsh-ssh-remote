@@ -24,23 +24,30 @@ export interface SshTransport {
     close(): void;
 }
 type StatusListener = (key: string, status: SshConnectionStatus, reason?: string) => void;
+interface ProxySpec {
+    kind: 'jump' | 'command';
+    value: string;
+}
 /** Parse a `user@host:port` jump spec into its parts. */
 export declare function parseJumpSpec(spec: string): SshHostConfig;
-/** Resolve a host config from ~/.ssh/config by alias, or from the host itself. */
-export declare function toConnectConfig(uri: SshUri, hostConfig?: SshHostConfig): {
+/** Resolve effective connection settings through the local OpenSSH client. */
+export declare function toConnectConfig(uri: SshUri, hostConfig?: SshHostConfig): Promise<{
     config: ConnectConfig;
-    proxyJump?: SshHostConfig;
-};
+    proxy?: ProxySpec;
+}>;
+/** Build the system OpenSSH command used for one or more ProxyJump hops. */
+export declare function buildOpenSshJumpArgs(proxyJump: string, targetHost: string, targetPort: number): string[];
 /**
  * Owns the SSH transport pool. Connections are keyed by `host:port:user`, and
  * each connection auto-reconnects with exponential backoff while still wanted.
- * A connection with a `proxyJump` first opens a direct-tcpip channel through
- * the jump host and uses it as the target's socket.
+ * ProxyJump and ProxyCommand byte streams are delegated to system OpenSSH, so
+ * Include files, wildcard defaults, Match rules, and multi-hop jumps keep the
+ * same semantics as `ssh <alias>`.
  */
 export declare class SshConnectionManager {
     private readonly connections;
     private readonly listeners;
-    /** Optional resolver: a hostname/alias → explicit host config (from settings). */
+    /** Read-only fallback for legacy DSH settings that have not been migrated. */
     private readonly hostResolver?;
     constructor(hostResolver?: (host: string) => SshHostConfig | undefined);
     onStatus(listener: StatusListener): () => void;

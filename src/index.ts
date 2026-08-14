@@ -1,11 +1,24 @@
 import { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { SshRemoteService } from './registry.js';
+import {
+  installRemoteFileSystemRouter,
+  installRemoteSubprocessRouter,
+} from './runtime-router.js';
+import type {} from '@deepseek-ai/dsh-fs';
+import type {} from '@deepseek-ai/dsh-subprocess';
 
-export type { SshHostEntry, SshConfig, SaveConfigRequest, SaveConfigResult } from './registry.js';
+export type {
+  DiscoveredSshHost,
+  RemoteDirectoryEntry,
+  RemoteDirectoryListing,
+  SshConfig,
+  SshHostEntry,
+  SshWorkspaceAnchor,
+} from './registry.js';
 
 export const name = 'dsh-ssh-remote';
-export const inject = ['tools'];
+export const inject = ['tools', 'settings', 'fs', 'subprocess'];
 
 const OUTPUT = {
   schema: { type: 'string' } as const,
@@ -16,10 +29,17 @@ const TOOL_DESCRIPTION =
   'Manage SSH remote workspaces for DeepSeek Harness. ' +
   'Actions: list (all workspaces), add (register ssh://user@host:port/path), remove, connect, disconnect, ' +
   'exec (run a shell command), read (read a text file), write (write a text file), stat, list_dir. ' +
-  'Host names may match entries configured in Settings (ssh-remote), which can carry a ProxyJump.';
+  'Host names may use concrete aliases discovered from ~/.ssh/config; effective settings are resolved by OpenSSH.';
 
 export function apply(ctx: Context) {
   const service = new SshRemoteService(ctx);
+  const resolveRemotePath = service.resolveRemotePath.bind(service);
+  const restoreFileSystem = installRemoteFileSystemRouter(
+    ctx.fs,
+    service.connections,
+    resolveRemotePath,
+  );
+  const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
 
   ctx.tools.register(
     defineTool({
@@ -64,8 +84,10 @@ export function apply(ctx: Context) {
     }),
   );
 
-  return () => {
-    void service.dispose();
+  return async () => {
+    restoreSubprocess();
+    restoreFileSystem();
+    await service.dispose();
   };
 }
 
