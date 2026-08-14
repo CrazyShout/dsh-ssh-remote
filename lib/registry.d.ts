@@ -10,6 +10,18 @@ export interface SshHostEntry {
     identityFile: string;
     proxyJump: string;
 }
+/** `config` result: the configured host list. */
+export interface SshConfig {
+    hosts: SshHostEntry[];
+}
+/** `saveConfig` request body: the replacement host list. */
+export interface SaveConfigRequest {
+    hosts: SshHostEntry[];
+}
+/** `saveConfig` result. */
+export interface SaveConfigResult {
+    ok: boolean;
+}
 declare module '@deepseek-ai/cordis' {
     interface Context {
         /** SSH remote workspaces service (this plugin). */
@@ -36,15 +48,9 @@ export declare class SshRemoteService extends TypertRemoteService {
     private registerSettings;
     private readKey;
     /** Read the configured hosts (Web Remote). */
-    config(): {
-        hosts: SshHostEntry[];
-    };
+    config(): SshConfig;
     /** Replace the configured hosts (Web Remote). */
-    saveConfig(args: {
-        hosts: SshHostEntry[];
-    }): Promise<{
-        ok: boolean;
-    }>;
+    saveConfig(request: SaveConfigRequest): Promise<SaveConfigResult>;
     onStatus(listener: StatusListener): () => void;
     list(): RemoteWorkspace[];
     get(id: string): RemoteWorkspace | undefined;

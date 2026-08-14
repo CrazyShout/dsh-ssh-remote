@@ -2,6 +2,8 @@ import { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { SshRemoteService } from './registry.js';
 
+export type { SshHostEntry, SshConfig, SaveConfigRequest, SaveConfigResult } from './registry.js';
+
 export const name = 'dsh-ssh-remote';
 export const inject = ['tools'];
 

@@ -37,6 +37,21 @@ export interface SshHostEntry {
   proxyJump: string;
 }
 
+/** `config` result: the configured host list. */
+export interface SshConfig {
+  hosts: SshHostEntry[];
+}
+
+/** `saveConfig` request body: the replacement host list. */
+export interface SaveConfigRequest {
+  hosts: SshHostEntry[];
+}
+
+/** `saveConfig` result. */
+export interface SaveConfigResult {
+  ok: boolean;
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** SSH remote workspaces service (this plugin). */
@@ -116,15 +131,15 @@ export class SshRemoteService extends TypertRemoteService {
 
   /** Read the configured hosts (Web Remote). */
   @Remote('config')
-  config(): { hosts: SshHostEntry[] } {
+  config(): SshConfig {
     return { hosts: this.settings?.get(SETTINGS_NS)?.hosts ?? [] };
   }
 
   /** Replace the configured hosts (Web Remote). */
   @Remote('saveConfig')
-  async saveConfig(args: { hosts: SshHostEntry[] }): Promise<{ ok: boolean }> {
+  async saveConfig(request: SaveConfigRequest): Promise<SaveConfigResult> {
     if (!this.settings) throw new Error('settings provider not mounted');
-    await this.settings.update(SETTINGS_NS, { hosts: args.hosts });
+    await this.settings.update(SETTINGS_NS, { hosts: request.hosts });
     return { ok: true };
   }
 
