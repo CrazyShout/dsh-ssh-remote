@@ -1,4 +1,4 @@
-import { Client, type SFTPWrapper, type ConnectConfig } from 'ssh2';
+import { Client, type SFTPWrapper, type ConnectConfig, type ClientChannel } from 'ssh2';
 import { spawn } from 'node:child_process';
 import { Duplex } from 'node:stream';
 import { readFileSync } from 'node:fs';
@@ -23,6 +23,7 @@ export interface SshTransport {
   lastError?: string;
   sftp<T>(op: (sftp: SFTPWrapper) => Promise<T>): Promise<T>;
   exec(command: string): Promise<{ code: number; stdout: string; stderr: string }>;
+  shell(opts?: { cols?: number; rows?: number; term?: string }): Promise<ClientChannel>;
   close(): void;
 }
 
@@ -427,6 +428,9 @@ export class SshConnectionManager {
       async exec(command: string) {
         return execOn(conn.client, command);
       },
+      async shell(opts = {}) {
+        return shellOn(conn.client, opts);
+      },
       close: () => {
         if (conn.wanted) {
           conn.wanted = false;
@@ -461,6 +465,22 @@ function execOn(client: Client | null, command: string): Promise<{ code: number;
           resolve({ code, stdout, stderr });
         });
     });
+  });
+}
+
+function shellOn(client: Client | null, opts: { cols?: number; rows?: number; term?: string }): Promise<ClientChannel> {
+  return new Promise((resolve, reject) => {
+    if (!client) {
+      reject(new Error('ssh not connected'));
+      return;
+    }
+    client.shell(
+      { term: opts.term ?? 'xterm-256color', cols: opts.cols ?? 80, rows: opts.rows ?? 24 },
+      (err, channel) => {
+        if (err) reject(err);
+        else resolve(channel);
+      },
+    );
   });
 }
 

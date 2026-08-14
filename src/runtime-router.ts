@@ -4,6 +4,7 @@ import type {
   SubprocessSpawnSpec,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess';
+import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { createRemoteFileSystemAdapter } from './fs.js';
 import type { SshConnectionManager } from './connection.js';
 import { parseSshUri } from './types.js';
@@ -169,5 +170,26 @@ export function installRemoteSubprocessRouter(
   return () => {
     subprocess.spawn = originalSpawn;
     subprocess.spawnTerminal = originalSpawnTerminal;
+  };
+}
+
+/**
+ * Route persistent PTY sessions by workspace cwd. A remote cwd selects the
+ * `ssh` backend (see `RemoteTerminalBackend`); local sessions keep the stock
+ * `bash` backend untouched.
+ */
+export function installRemoteTerminalRouter(
+  terminals: TerminalSessionService,
+  resolveRemotePath: RemotePathResolver,
+): () => void {
+  const originalSpawn = terminals.spawn;
+  terminals.spawn = function (owner, request: TerminalSpawnRequest, signal?: AbortSignal) {
+    const cwd = request.cwd;
+    const remote = cwd !== undefined && (cwd.startsWith('ssh://') || resolveRemotePath(cwd) !== undefined);
+    if (!remote) return originalSpawn.call(terminals, owner, request, signal);
+    return originalSpawn.call(terminals, owner, { ...request, type: 'ssh' }, signal);
+  };
+  return () => {
+    terminals.spawn = originalSpawn;
   };
 }

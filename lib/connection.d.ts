@@ -1,4 +1,4 @@
-import { type SFTPWrapper, type ConnectConfig } from 'ssh2';
+import { type SFTPWrapper, type ConnectConfig, type ClientChannel } from 'ssh2';
 import { formatSshUri, type SshConnectionStatus, type SshUri } from './types.js';
 /** A resolved host target, possibly reached through a ProxyJump. */
 export interface SshHostConfig {
@@ -21,6 +21,11 @@ export interface SshTransport {
         stdout: string;
         stderr: string;
     }>;
+    shell(opts?: {
+        cols?: number;
+        rows?: number;
+        term?: string;
+    }): Promise<ClientChannel>;
     close(): void;
 }
 type StatusListener = (key: string, status: SshConnectionStatus, reason?: string) => void;

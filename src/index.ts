@@ -1,10 +1,13 @@
 import { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import type { TerminalSessionService } from '@deepseek-ai/dsh-terminal';
 import { SshRemoteService } from './registry.js';
 import {
   installRemoteFileSystemRouter,
   installRemoteSubprocessRouter,
+  installRemoteTerminalRouter,
 } from './runtime-router.js';
+import { RemoteTerminalBackend } from './terminal.js';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-subprocess';
 
@@ -40,6 +43,16 @@ export function apply(ctx: Context) {
     resolveRemotePath,
   );
   const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
+
+  // Persistent PTY routing is optional: a deployment without the terminal
+  // service (e.g. a preset that composes only sandboxed bash) skips it.
+  const terminals = ctx.get('terminals') as TerminalSessionService | undefined;
+  let unregisterTerminal: (() => void) | undefined;
+  let restoreTerminal: (() => void) | undefined;
+  if (terminals !== undefined) {
+    unregisterTerminal = terminals.registerBackend(new RemoteTerminalBackend(service.connections, resolveRemotePath));
+    restoreTerminal = installRemoteTerminalRouter(terminals, resolveRemotePath);
+  }
 
   ctx.tools.register(
     defineTool({
@@ -85,6 +98,8 @@ export function apply(ctx: Context) {
   );
 
   return async () => {
+    restoreTerminal?.();
+    unregisterTerminal?.();
     restoreSubprocess();
     restoreFileSystem();
     await service.dispose();

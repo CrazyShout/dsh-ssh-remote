@@ -1,5 +1,6 @@
 import type FileSystem from '@deepseek-ai/dsh-fs';
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
+import type { TerminalSessionService } from '@deepseek-ai/dsh-terminal';
 import type { SshConnectionManager } from './connection.js';
 /** Resolve a registered local anchor or descendant to an SSH URI. */
 export type RemotePathResolver = (path: string) => string | undefined;
@@ -17,4 +18,10 @@ export declare function buildRemoteSshInvocation(cwd: string, argv: readonly str
  * mapped cwd its managed child is the system OpenSSH client.
  */
 export declare function installRemoteSubprocessRouter(subprocess: SubprocessRuntime, resolveRemotePath: RemotePathResolver): () => void;
+/**
+ * Route persistent PTY sessions by workspace cwd. A remote cwd selects the
+ * `ssh` backend (see `RemoteTerminalBackend`); local sessions keep the stock
+ * `bash` backend untouched.
+ */
+export declare function installRemoteTerminalRouter(terminals: TerminalSessionService, resolveRemotePath: RemotePathResolver): () => void;
 //# sourceMappingURL=runtime-router.d.ts.map
