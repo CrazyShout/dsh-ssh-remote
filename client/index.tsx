@@ -1,8 +1,17 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
+import {
+  Button,
+  IconFolderClose16,
+  IconPlusOutline16,
+  Input,
+  Modal,
+  Pill,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import { probeLocalBrowse, windowsDriveAnchors, type LocalAnchor } from './local-browse.js';
 import TYPERT_REMOTE from '../lib/typert.remote-client.js';
 
 export const name = 'dsh-ssh-remote-client';
@@ -66,6 +75,12 @@ export async function apply(ctx: ClientContext) {
     const flowInject = () => ({
       ssh,
       pickLocal: () => scope.workspaces.pickDirectory(),
+      // The composed picker's browse capability (in-app listing/creation).
+      // Served only when the host composes the `-browse` backend; chooseLocal
+      // probes for it and falls back to the native chooser otherwise.
+      listLocal: (path?: string) => scope.workspaces.listDirectory(path),
+      createLocalDirectory: (path: string, name: string) =>
+        scope.workspaces.createDirectory(path, name),
       createWorkspace: (input: { path: string }) => scope.workspaces.create(input),
       renameWorkspace: (workspaceId: WorkspaceId, title: string) =>
         scope.workspaces.rename(workspaceId, title),
@@ -121,12 +136,32 @@ export async function apply(ctx: ClientContext) {
   };
 }
 
+/** Which filesystem the combined dialog is currently browsing. */
+type BrowseTarget = { kind: 'local' } | { kind: 'ssh'; alias: string };
+
 type SshDirectoryFlowProps = DirectoryFlowOwnerProps & {
   ssh: SshRemote;
   pickLocal: () => Promise<string | null>;
+  /** One local directory level via the composed picker's browse capability. */
+  listLocal: (path?: string) => Promise<RemoteDirectoryListing>;
+  /** Create one child directory under an existing local parent. */
+  createLocalDirectory: (path: string, name: string) => Promise<string>;
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>;
   renameWorkspace: (workspaceId: WorkspaceId, title: string) => Promise<WorkspaceView>;
 };
+
+/** Wrap a throwing service call into the dialog's result envelope. */
+async function asResult<T>(run: () => Promise<T>): Promise<RemoteResult<T>> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (reason) {
+    return { ok: false, error: { message: messageOf(reason) } };
+  }
+}
+
+function messageOf(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
 
 function SshDirectoryFlow({
   open,
@@ -136,60 +171,97 @@ function SshDirectoryFlow({
   onError,
   ssh,
   pickLocal,
+  listLocal,
+  createLocalDirectory,
   createWorkspace,
   renameWorkspace,
 }: SshDirectoryFlowProps) {
   const [config, setConfig] = useState<SshConfig | null>(null);
-  const [alias, setAlias] = useState('');
+  const [target, setTarget] = useState<BrowseTarget | null>(null);
   const [listing, setListing] = useState<RemoteDirectoryListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [newFolder, setNewFolder] = useState('');
+  // Tri-state browse-capability probe result: null while unknown.
+  const [localCanBrowse, setLocalCanBrowse] = useState<boolean | null>(null);
+  // Windows drive anchors derived from one /mnt listing; null until probed.
+  const [driveAnchors, setDriveAnchors] = useState<LocalAnchor[] | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setAlias('');
+    setTarget(null);
     setListing(null);
     setError('');
     setNewFolder('');
+    setDriveAnchors(null);
     setLoading(true);
-    void ssh.config().then((result) => {
-      if (result.ok) setConfig(result.value);
-      else setError(result.error.message);
+    void Promise.all([
+      ssh.config(),
+      probeLocalBrowse(() => listLocal()),
+    ]).then(([configResult, canBrowse]) => {
+      setLocalCanBrowse(canBrowse);
+      if (configResult.ok) setConfig(configResult.value);
+      else setError(configResult.error.message);
     }).finally(() => setLoading(false));
-  }, [open, ssh]);
+  }, [open, ssh, listLocal]);
 
-  async function browse(hostAlias: string, path?: string) {
+  useEffect(() => {
+    if (!open || target?.kind !== 'local' || driveAnchors !== null) return;
+    let cancelled = false;
+    void asResult(() => listLocal('/mnt')).then((result) => {
+      if (!cancelled) setDriveAnchors(result.ok ? windowsDriveAnchors(result.value.entries) : []);
+    });
+    return () => { cancelled = true; };
+  }, [open, target, driveAnchors, listLocal]);
+
+  async function enter(targetNext: BrowseTarget, path?: string): Promise<boolean> {
     setLoading(true);
     setError('');
-    const result = await ssh.browse(hostAlias, path ?? '');
+    const result = targetNext.kind === 'ssh'
+      ? await ssh.browse(targetNext.alias, path ?? '')
+      : await asResult(() => listLocal(path));
     if (result.ok) {
-      setAlias(hostAlias);
+      setTarget(targetNext);
       setListing(result.value);
     } else {
       setError(result.error.message);
     }
     setLoading(false);
+    return result.ok;
+  }
+
+  function navigate(path?: string): void {
+    if (target) void enter(target, path);
   }
 
   async function chooseLocal() {
+    // Prefer the composed browse capability — it works headless and covers
+    // the WSL host filesystem together with its /mnt Windows drives — and
+    // fall back once to the OS chooser when the composition serves native
+    // instead (or the probe raced a capability change).
+    if (localCanBrowse !== false && (await enter({ kind: 'local' }))) return;
+    if (localCanBrowse !== false) setLocalCanBrowse(false);
     setLoading(true);
     setError('');
     try {
       const path = await pickLocal();
       if (path) onPicked(path);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(messageOf(reason));
     } finally {
       setLoading(false);
     }
   }
 
-  async function chooseRemote() {
-    if (!listing || !alias) return;
+  async function commit() {
+    if (!target || !listing) return;
+    if (target.kind === 'local') {
+      onPicked(listing.path);
+      return;
+    }
     setLoading(true);
     setError('');
-    const result = await ssh.materializeWorkspace(alias, listing.path);
+    const result = await ssh.materializeWorkspace(target.alias, listing.path);
     if (result.ok) {
       try {
         // The stock owner accepts only a path and initially derives the title
@@ -211,186 +283,182 @@ function SshDirectoryFlow({
   }
 
   async function createFolder() {
-    if (!listing || !alias || !newFolder.trim()) return;
+    if (!target || !listing || !newFolder.trim()) return;
     setLoading(true);
     setError('');
-    const result = await ssh.createDirectory(alias, listing.path, newFolder.trim());
-    if (result.ok) {
+    const created = target.kind === 'ssh'
+      ? await ssh.createDirectory(target.alias, listing.path, newFolder.trim())
+      : await asResult(() => createLocalDirectory(listing.path, newFolder.trim()));
+    if (created.ok) {
       setNewFolder('');
-      await browse(alias, result.value);
+      await enter(target, created.value);
     } else {
-      setError(result.error.message);
+      setError(created.error.message);
       setLoading(false);
     }
   }
 
-  if (!open) return null;
+  // Modal renders null while closed; `disabled` only gates the open dialog.
   const disabled = loading || busy;
 
   return (
-    <div
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
-      }}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 10000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(0,0,0,.38)',
-        padding: 24,
-      }}
+    <Modal
+      open={open}
+      onClose={() => { if (!busy) onCancel(); }}
+      // The Modal card defaults to min(380px, 100%) (confirm-dialog size);
+      // plugins ship no stylesheet, so one scoped rule widens the card for
+      // the browse layout.
+      className="dsh-ssh-remote-flow"
+      title={!target ? '添加工作区' : target.kind === 'local' ? '本机文件' : `SSH · ${target.alias}`}
+      closeLabel="关闭"
+      description={listing ? listing.path : '选择本机文件夹或 SSH 主机'}
+      footer={
+        <>
+          <Button variant="ghost" disabled={busy} onClick={onCancel}>取消</Button>
+          {target && listing && (
+            <Button variant="primary" disabled={disabled} onClick={() => void commit()}>
+              {busy ? '正在添加…' : '打开此文件夹'}
+            </Button>
+          )}
+        </>
+      }
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="添加工作区"
-        style={{
-          width: 'min(720px, 94vw)',
-          maxHeight: 'min(720px, 88vh)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 14,
-          overflow: 'hidden',
-          padding: 20,
-          borderRadius: 16,
-          background: 'var(--dsw-alias-bg-base, #fff)',
-          color: 'var(--dsw-alias-label-primary, #111)',
-          boxShadow: '0 24px 70px rgba(0,0,0,.24)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <h3 style={{ margin: 0 }}>{listing ? `SSH · ${alias}` : '添加工作区'}</h3>
-            <div style={{ marginTop: 4, color: '#888', fontSize: 12 }}>
-              {listing ? listing.path : '选择本机文件夹或 SSH 主机'}
-            </div>
-          </div>
-          <button disabled={busy} onClick={onCancel} aria-label="关闭">×</button>
-        </div>
-
-        {!listing ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflow: 'auto' }}>
-            <button
+      <style>{'.dsh-ssh-remote-flow{width:min(880px,94vw)}'}</style>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {!target || !listing ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button
+              variant="outline"
               disabled={disabled}
               onClick={() => void chooseLocal()}
-              style={sourceButtonStyle}
+              style={sourceRowStyle}
             >
-              <strong>这台 Mac</strong>
-              <span style={{ color: '#888', fontSize: 12 }}>使用系统文件夹选择器</span>
-            </button>
+              <strong>本机</strong>
+              <span style={subtleText}>
+                {localCanBrowse === false
+                  ? '使用系统文件夹选择器'
+                  : '在应用内浏览 Host 文件系统（含 /mnt 下的 Windows 盘）'}
+              </span>
+            </Button>
             {config?.hosts.map((host) => (
-              <button
+              <Button
                 key={host.alias}
+                variant="outline"
                 disabled={disabled}
-                onClick={() => void browse(host.alias)}
-                style={sourceButtonStyle}
+                onClick={() => void enter({ kind: 'ssh', alias: host.alias })}
+                style={sourceRowStyle}
               >
                 <strong>{host.alias}</strong>
-                <span style={{ color: '#888', fontSize: 12 }}>
+                <span style={subtleText}>
                   {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
                 </span>
-              </button>
+              </Button>
             ))}
             {!loading && config?.hosts.length === 0 && (
-              <div style={{ color: '#888' }}>~/.ssh/config 中没有可用的具体 Host。</div>
+              <div style={subtleText}>~/.ssh/config 中没有可用的具体 Host。</div>
             )}
           </div>
         ) : (
           <>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              <button disabled={disabled} onClick={() => { setAlias(''); setListing(null); }}>
-                主机
-              </button>
+            <div style={chipRowStyle}>
+              <Pill disabled={disabled} onClick={() => { setTarget(null); setListing(null); }}>
+                {target.kind === 'local' ? '本机' : '主机'}
+              </Pill>
               {listing.crumbs.map((crumb) => (
-                <button key={crumb.path} disabled={disabled} onClick={() => void browse(alias, crumb.path)}>
+                <Pill key={crumb.path} disabled={disabled} onClick={() => navigate(crumb.path)}>
                   {crumb.name}
-                </button>
+                </Pill>
               ))}
             </div>
-            <div
-              style={{
-                minHeight: 180,
-                overflow: 'auto',
-                border: '1px solid rgba(128,128,128,.25)',
-                borderRadius: 10,
-              }}
-            >
+            {target.kind === 'local' && (
+              <div style={chipRowStyle}>
+                <Pill disabled={disabled} onClick={() => navigate(listing.home)}>主目录</Pill>
+                {(driveAnchors ?? []).map((anchor) => (
+                  <Pill key={anchor.path} disabled={disabled} onClick={() => navigate(anchor.path)}>
+                    {anchor.label}
+                  </Pill>
+                ))}
+                {driveAnchors === null && <span style={subtleText}>检测 Windows 盘…</span>}
+              </div>
+            )}
+            <div style={entryListStyle}>
               {listing.entries.map((entry) => (
-                <button
+                <Button
                   key={entry.path}
+                  variant="ghost"
+                  size="sm"
+                  icon={<IconFolderClose16 />}
                   disabled={disabled}
-                  onClick={() => void browse(alias, entry.path)}
-                  style={directoryButtonStyle}
+                  onClick={() => navigate(entry.path)}
+                  style={entryRowStyle}
                 >
-                  <span aria-hidden="true">📁</span>
                   <span>{entry.name}</span>
-                  {entry.hidden && <span style={{ marginLeft: 'auto', color: '#999', fontSize: 11 }}>隐藏</span>}
-                </button>
+                  {entry.hidden && <span style={{ marginLeft: 'auto', ...dimmedText }}>隐藏</span>}
+                </Button>
               ))}
               {!loading && listing.entries.length === 0 && (
-                <div style={{ padding: 16, color: '#888' }}>此目录没有子文件夹。</div>
+                <div style={{ padding: 16, ...dimmedText }}>此目录没有子文件夹。</div>
               )}
             </div>
-            {listing.truncated && <div style={{ color: '#d97706', fontSize: 12 }}>仅显示前 1000 个目录。</div>}
+            {listing.truncated && <div style={{ fontSize: 12, ...dimmedText }}>仅显示前 1000 个目录。</div>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                value={newFolder}
-                disabled={disabled}
-                onChange={(event) => setNewFolder(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void createFolder();
-                }}
-                placeholder="新建文件夹名称"
-                style={{ flex: 1, minWidth: 0, padding: '8px 10px' }}
-              />
-              <button disabled={disabled || !newFolder.trim()} onClick={() => void createFolder()}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Input
+                  value={newFolder}
+                  disabled={disabled}
+                  onChange={(event) => setNewFolder(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void createFolder();
+                  }}
+                  placeholder="新建文件夹名称"
+                />
+              </div>
+              <Button
+                variant="ghost"
+                icon={<IconPlusOutline16 />}
+                disabled={disabled || !newFolder.trim()}
+                onClick={() => void createFolder()}
+              >
                 新建
-              </button>
+              </Button>
             </div>
           </>
         )}
 
-        {error && <div role="alert" style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button disabled={busy} onClick={onCancel}>取消</button>
-          {listing && (
-            <button disabled={disabled} onClick={() => void chooseRemote()}>
-              {busy ? '正在添加…' : '打开此文件夹'}
-            </button>
-          )}
-        </div>
+        {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{error}</div>}
       </div>
-    </div>
+    </Modal>
   );
 }
 
-const sourceButtonStyle = {
-  display: 'flex',
-  flexDirection: 'column' as const,
+const sourceRowStyle: CSSProperties = {
+  flexDirection: 'column',
   alignItems: 'flex-start',
-  gap: 4,
-  padding: 12,
-  textAlign: 'left' as const,
-  border: '1px solid rgba(128,128,128,.25)',
-  borderRadius: 10,
-  background: 'transparent',
+  gap: 2,
+  width: '100%',
+  height: 'auto',
+  padding: '10px 14px',
 };
 
-const directoryButtonStyle = {
-  width: '100%',
+const chipRowStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6 };
+
+const entryListStyle: CSSProperties = {
+  maxHeight: 320,
+  overflowY: 'auto',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 10,
+  background: 'var(--dsw-alias-bg-layer-1)',
   display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  padding: '9px 12px',
-  border: 0,
-  borderBottom: '1px solid rgba(128,128,128,.12)',
-  background: 'transparent',
-  textAlign: 'left' as const,
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  gap: 2,
+  padding: 6,
 };
+
+const entryRowStyle: CSSProperties = { justifyContent: 'flex-start', flexShrink: 0 };
+
+const subtleText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 };
+const dimmedText: CSSProperties = { color: 'var(--dsw-alias-label-dimmed)', fontSize: 11 };
 
 function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
   const [config, setConfig] = useState<SshConfig | null>(null);
@@ -415,21 +483,21 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <h3 style={{ margin: 0 }}>SSH Connections</h3>
-          <div style={{ marginTop: 4, color: '#888', fontSize: 12 }}>
+          <div style={{ marginTop: 4, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
             Concrete Host aliases are discovered from your local OpenSSH config.
           </div>
         </div>
-        <button disabled={loading} onClick={() => void load()}>
+        <Button variant="outline" size="sm" disabled={loading} onClick={() => void load()}>
           {loading ? 'Refreshing…' : 'Refresh'}
-        </button>
+        </Button>
       </div>
 
       {config && (
-        <div style={{ padding: 10, border: '1px solid rgba(128,128,128,.25)', borderRadius: 8 }}>
-          <div style={{ color: '#888', fontSize: 12 }}>SSH config</div>
+        <div style={{ padding: 10, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
+          <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>SSH config</div>
           <code style={{ fontSize: 12 }}>{config.configPath}</code>
           {!config.configExists && (
-            <div style={{ marginTop: 6, color: '#d97706', fontSize: 12 }}>
+            <div style={{ marginTop: 6, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
               File not found. Create it and add a concrete <code>Host</code> entry, then refresh.
             </div>
           )}
@@ -437,7 +505,7 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
       )}
 
       {config?.hosts.length === 0 && config.configExists && (
-        <div style={{ color: '#888' }}>No concrete SSH Host aliases found.</div>
+        <div style={{ color: 'var(--dsw-alias-label-secondary)' }}>No concrete SSH Host aliases found.</div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -445,66 +513,33 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
           <div
             key={host.alias}
             style={{
-              display: 'flex',
-              gap: 10,
-              alignItems: 'flex-start',
               padding: 12,
-              border: '1px solid rgba(128,128,128,.25)',
+              border: '1px solid var(--dsw-alias-border-l2)',
               borderRadius: 8,
             }}
           >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 9,
-                height: 9,
-                marginTop: 5,
-                borderRadius: '50%',
-                background: '#6b7280',
-                display: 'inline-block',
-                flex: '0 0 auto',
-              }}
-            />
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{host.alias}</div>
-              <div style={{ color: '#888', fontSize: 12, overflowWrap: 'anywhere' }}>
-                {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
-              </div>
-              {(host.proxyJump || host.proxyCommand || host.identityFile) && (
-                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {host.proxyJump && <Badge>ProxyJump: {host.proxyJump}</Badge>}
-                  {host.proxyCommand && <Badge>ProxyCommand</Badge>}
-                  {host.identityFile && <Badge>Identity configured</Badge>}
-                </div>
-              )}
+            <div style={{ fontWeight: 600 }}>{host.alias}</div>
+            <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12, overflowWrap: 'anywhere' }}>
+              {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
             </div>
+            {(host.proxyJump || host.proxyCommand || host.identityFile) && (
+              <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {host.proxyJump && <Pill>ProxyJump: {host.proxyJump}</Pill>}
+                {host.proxyCommand && <Pill>ProxyCommand</Pill>}
+                {host.identityFile && <Pill>Identity configured</Pill>}
+              </div>
+            )}
           </div>
         ))}
       </div>
 
       {config && config.legacyHostCount > 0 && (
-        <div style={{ color: '#d97706', fontSize: 12 }}>
+        <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
           {config.legacyHostCount} legacy DSH host {config.legacyHostCount === 1 ? 'entry remains' : 'entries remain'} as a read-only fallback.
           Move it to <code>{config.configPath}</code> when convenient.
         </div>
       )}
-      {error && <div style={{ color: '#ef4444' }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)' }}>{error}</div>}
     </div>
-  );
-}
-
-function Badge({ children }: { children: ReactNode }) {
-  return (
-    <span
-      style={{
-        padding: '2px 6px',
-        borderRadius: 999,
-        background: 'rgba(128,128,128,.12)',
-        color: '#888',
-        fontSize: 11,
-      }}
-    >
-      {children}
-    </span>
   );
 }

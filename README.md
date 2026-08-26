@@ -24,8 +24,8 @@ sidebar — in the spirit of Codex Remote.
 - **OpenSSH-owned configuration**: the Web panel is read-only and never
   duplicates SSH credentials into DSH settings. Edit `~/.ssh/config`, then
   press Refresh.
-- **Native Add Workspace flow**: choose an SSH alias, browse its directories,
-  and open one as a normal Harness workspace.
+- **Combined Add Workspace flow**: choose the local machine or an SSH alias,
+  browse directories in-app, and open one as a normal Harness workspace.
 - **Transparent workspace routing**: `read`/`write`/`edit` and other filesystem
   calls use SFTP; `bash` and terminal processes use the system OpenSSH client.
   Local workspaces keep using the original local providers.
@@ -79,6 +79,26 @@ ssh_remote { action: "list" }
 
 `path` accepts a remote absolute path (`/home/user/exp/a.py`) or a
 workspace-relative path (`a.py`).
+
+## Local workspaces on Windows and WSL
+
+The same **Add Workspace** dialog also adds plain local directories, and its
+local half adapts to whichever directory-picker capability the DSH
+composition serves:
+
+- **browse** (the default on headless hosts such as WSL): an in-app browser
+  lists and creates directories through the Host — no OS chooser needed.
+  Quick chips jump to the Host home directory and to every Windows drive
+  automounted under `/mnt` (`Windows · C:` …), so one WSL-hosted DSH serves
+  workspaces from both sides of the machine: `/home/you/project` (WSL) and
+  `/mnt/c/Users/you/project` (Windows).
+- **native**: the operating system folder chooser is used directly.
+
+The capability is probed once per dialog open with a harmless
+home-directory listing; if a browse listing ever fails mid-flow, that
+interaction falls back to the OS chooser. Workspaces created under
+`/mnt/...` are ordinary Harness workspaces: filesystem and subprocess calls
+stay on the Host's local providers (the WSL view of those files).
 
 ## Authentication
 

@@ -16,7 +16,7 @@ DeepSeek Harness 的 **SSH 远程工作区**插件：让 agent 通过 SSH 连接
   `ssh -G` 解析最终的 HostName/User/Port/IdentityFile/ProxyJump/ProxyCommand。
 - **OpenSSH 是唯一配置源**：Web 页面只读展示，不再把 SSH 凭据重复写入 DSH 设置；修改
   `~/.ssh/config` 后点击刷新即可。
-- **原生「添加工作区」流程**：选择 SSH 别名、浏览远程目录，然后像本地目录一样加入 Harness。
+- **「添加工作区」本机 + SSH 合一**：选择本机或 SSH 别名，在应用内浏览目录，然后像普通目录一样加入 Harness。
 - **透明工作区路由**：`read`/`write`/`edit` 等文件操作走 SFTP，`bash` 与终端进程走系统
   OpenSSH；普通本地工作区仍调用原来的本地 provider。
 - **连接状态圆点**：绿=已连接、黄=连接中/重连中、红=断线/错误。
@@ -84,6 +84,21 @@ ssh_remote { action: "add", uri: "ssh://devbox/home/you/project" }
 ```
 
 旧版 `ssh-remote.hosts` 会保留为只读兼容兜底，但新配置只应写入 OpenSSH config。
+
+## 本机工作区：Windows 与 WSL
+
+同一个「添加工作区」对话框也能添加普通本地目录，本机一侧会自适应 DSH 当前组合的
+目录选择器能力：
+
+- **browse**（WSL 等 headless 宿主的默认组合）：应用内目录浏览器直接通过 Host 列目录/
+  新建文件夹，不依赖系统选择框。顶部快捷锚点一键跳转 Host 家目录，以及 `/mnt` 下自动
+  挂载的每个 Windows 盘（`Windows · C:` …），因此一个跑在 WSL 里的 DSH 可以同时服务
+  机器两侧的工作区：`/home/you/project`（WSL 侧）与 `/mnt/c/Users/you/project`（Windows 侧）。
+- **native**：直接使用操作系统文件夹选择框。
+
+每次打开对话框时用一次无害的家目录列目录调用来探测能力；若浏览过程中列目录失败，
+该次交互自动回退到系统选择框。在 `/mnt/...` 下创建的工作区就是普通 Harness 工作区：
+文件与子进程调用仍走宿主本地 provider（即 WSL 眼中的这些文件）。
 
 ## 认证
 
