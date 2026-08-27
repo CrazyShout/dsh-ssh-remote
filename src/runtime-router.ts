@@ -1,4 +1,4 @@
-import type FileSystem from '@deepseek-ai/dsh-fs';
+import FileSystem, { FsError, type FsTarget } from '@deepseek-ai/dsh-fs';
 import type {
   SubprocessRuntime,
   SubprocessSpawnSpec,
@@ -46,6 +46,35 @@ export function installRemoteFileSystemRouter(
     return isSshPath(path) ? path : resolveRemotePath(path);
   };
 
+  const checkedRemoteWriteTarget = async (
+    target: FsTarget,
+    policy?: { mode: string; workspaceRoot: string },
+  ): Promise<FsTarget> => {
+    const fallbackMode = (fs as unknown as { sandboxMode?: string }).sandboxMode;
+    const mode = policy?.mode ?? fallbackMode;
+    if (mode === 'read-only') {
+      throw new FsError(`cannot write "${target.displayPath}": remote file access denied under read-only mode`, 'FS_SANDBOX_DENIED');
+    }
+    if (mode === 'danger-full-access' || mode === undefined) return target;
+    if (mode !== 'workspace-write' || policy === undefined) {
+      throw new FsError(`cannot write "${target.displayPath}": missing remote workspace policy`, 'FS_SANDBOX_DENIED');
+    }
+    const remoteRoot = asRemotePath(policy.workspaceRoot);
+    if (remoteRoot === undefined) {
+      throw new FsError(`cannot write "${target.displayPath}": workspace root is not mapped to this SSH host`, 'FS_SANDBOX_DENIED');
+    }
+    // Re-canonicalize both identities immediately before mutation. This is the
+    // remote equivalent of dsh-fs-sandbox's checkedTarget critical edge.
+    const [fresh, root] = await Promise.all([
+      remote.resolve(String(target.targetKey)),
+      remote.resolve(remoteRoot),
+    ]);
+    if (!remote.contains(root, fresh)) {
+      throw new FsError(`cannot write "${target.displayPath}": remote file access denied outside workspace`, 'FS_SANDBOX_DENIED');
+    }
+    return fresh;
+  };
+
   const originalResolve = remember('resolve');
   (fs as any).resolve = (path: string, opts?: { cwd?: string; signal?: AbortSignal }) => {
     const remoteCwd = asRemotePath(opts?.cwd);
@@ -76,8 +105,6 @@ export function installRemoteFileSystemRouter(
     'streamText',
     'readBytes',
     'listDir',
-    'writeText',
-    'editText',
   ]) {
     const original = remember(name);
     (fs as unknown as Record<string, AnyFunction>)[name] = (...args: any[]) =>
@@ -85,6 +112,29 @@ export function installRemoteFileSystemRouter(
         ? (remote as unknown as Record<string, AnyFunction>)[name](...args)
         : original.call(fs, ...args);
   }
+
+
+  const originalWriteText = remember('writeText');
+  (fs as any).writeText = async (
+    target: FsTarget,
+    content: string,
+    expected?: unknown,
+    signal?: AbortSignal,
+    sandboxPolicy?: { mode: string; workspaceRoot: string },
+  ) => isSshTarget(target)
+    ? remote.writeText(await checkedRemoteWriteTarget(target, sandboxPolicy), content, expected as never, signal, sandboxPolicy)
+    : originalWriteText.call(fs, target, content, expected, signal, sandboxPolicy);
+
+  const originalEditText = remember('editText');
+  (fs as any).editText = async (
+    target: FsTarget,
+    edit: unknown,
+    expected?: unknown,
+    signal?: AbortSignal,
+    sandboxPolicy?: { mode: string; workspaceRoot: string },
+  ) => isSshTarget(target)
+    ? remote.editText(await checkedRemoteWriteTarget(target, sandboxPolicy), edit as never, expected as never, signal, sandboxPolicy)
+    : originalEditText.call(fs, target, edit, expected, signal, sandboxPolicy);
 
   const originalContains = remember('contains');
   (fs as any).contains = (parent: unknown, child: unknown) => {
@@ -129,7 +179,9 @@ export function buildRemoteSshInvocation(
   const args = ['ssh', terminal ? '-tt' : '-T'];
   // Port 22 stays absent so an alias-specific Port from ~/.ssh/config wins.
   if (uri.port !== 22) args.push('-p', String(uri.port));
-  args.push(destination, '--', `sh -lc ${shellQuote(script)}`);
+  // End local OpenSSH option parsing before the destination. URI validation
+  // also rejects option-like users/hosts; this is defense in depth.
+  args.push('--', destination, `sh -lc ${shellQuote(script)}`);
   return args;
 }
 

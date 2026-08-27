@@ -9,6 +9,10 @@ export interface SshConfigHost {
     identityFiles?: string[];
     proxyJump?: string;
     proxyCommand?: string;
+    hostKeyAlias?: string;
+    strictHostKeyChecking?: string;
+    userKnownHostsFiles?: string[];
+    globalKnownHostsFiles?: string[];
 }
 export interface SshGResult {
     code: number;
@@ -16,7 +20,7 @@ export interface SshGResult {
     stderr: string;
 }
 export type SshGRunner = (configPath: string, alias: string) => Promise<SshGResult>;
-/** The same local OpenSSH entrypoint Codex Remote documents and discovers. */
+/** The local OpenSSH entrypoint used by this plugin and observed in current Codex Desktop. */
 export declare function userSshConfigPath(): string;
 /**
  * Parse one SSH config document without resolving OpenSSH precedence. This is

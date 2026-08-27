@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
@@ -65,6 +65,8 @@ interface SshWorkspaceAnchor {
 type RemoteResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: { message: string } };
+
+const MUTATION_DEADLINE_MS = 30_000;
 
 interface SshRemote {
   config(): Promise<RemoteResult<SshConfig>>;
@@ -165,6 +167,26 @@ async function asResult<T>(run: () => Promise<T>): Promise<RemoteResult<T>> {
   }
 }
 
+/** Bound non-cancellable host RPCs so a wedged transport cannot lock the dialog forever. */
+function withMutationDeadline<T>(operation: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      run();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`${label} 超过 ${MUTATION_DEADLINE_MS / 1000} 秒；结果未知，请刷新后核对。`)));
+    }, MUTATION_DEADLINE_MS);
+    operation.then(
+      value => finish(() => resolve(value)),
+      reason => finish(() => reject(reason)),
+    );
+  });
+}
+
 function messageOf(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
@@ -186,15 +208,23 @@ function SshDirectoryFlow({
   const [target, setTarget] = useState<BrowseTarget | null>(null);
   const [listing, setListing] = useState<RemoteDirectoryListing | null>(null);
   const [loading, setLoading] = useState(false);
+  /** Irreversible host-side operation in flight; user cancellation is gated. */
+  const [mutating, setMutating] = useState(false);
   const [error, setError] = useState('');
   const [newFolder, setNewFolder] = useState('');
   // Tri-state browse-capability probe result: null while unknown.
   const [localCanBrowse, setLocalCanBrowse] = useState<boolean | null>(null);
   // Windows drive anchors derived from one /mnt listing; null until probed.
   const [driveAnchors, setDriveAnchors] = useState<LocalAnchor[] | null>(null);
+  /** Latest navigation request; stale remote replies may not overwrite it. */
+  const navigationEpoch = useRef(0);
+  /** Owns the mutation busy flag even if navigation/open state changes. */
+  const mutationEpoch = useRef(0);
 
   useEffect(() => {
     if (!open) return;
+    const epoch = ++navigationEpoch.current;
+    setConfig(null);
     setTarget(null);
     setListing(null);
     setError('');
@@ -203,27 +233,40 @@ function SshDirectoryFlow({
     setLocalCanBrowse(null);
     setLoading(true);
     void Promise.all([
-      ssh.config(),
-      probeLocalBrowse(() => listLocal()).catch((reason) => {
+      ssh.config().catch(error => ({
+        ok: false as const,
+        error: { message: messageOf(error) },
+      })),
+      probeLocalBrowse(() => listLocal()).then(
+        value => ({ ok: true as const, value }),
+        error => ({ ok: false as const, error }),
+      ),
+    ]).then(([configResult, browseProbe]) => {
+      if (navigationEpoch.current !== epoch) return;
+      if (browseProbe.ok) setLocalCanBrowse(browseProbe.value);
+      else {
         // Non-capability probe failures (permission, timeout, transport,
-        // internal…) surface in the dialog for retry. They are real browse
-        // errors — never the capability-unavailable signal — so there is no
-        // native-chooser fallback.
-        setError(`本机浏览探测失败：${messageOf(reason)}`);
-        return null;
-      }),
-    ]).then(([configResult, canBrowse]) => {
-      if (canBrowse !== null) setLocalCanBrowse(canBrowse);
+        // internal…) surface only after the request epoch is still current.
+        setError(`本机浏览探测失败：${messageOf(browseProbe.error)}`);
+      }
       if (configResult.ok) setConfig(configResult.value);
-      else if (canBrowse !== null) setError(configResult.error.message);
-    }).finally(() => setLoading(false));
+      else if (browseProbe.ok) setError(configResult.error.message);
+    }).finally(() => {
+      if (navigationEpoch.current === epoch) setLoading(false);
+    });
+    return () => {
+      if (navigationEpoch.current === epoch) navigationEpoch.current += 1;
+    };
   }, [open, ssh, listLocal]);
 
   useEffect(() => {
     if (!open || target?.kind !== 'local' || driveAnchors !== null) return;
+    const epoch = navigationEpoch.current;
     let cancelled = false;
     void asResult(() => listLocal('/mnt')).then((result) => {
-      if (!cancelled) setDriveAnchors(result.ok ? windowsDriveAnchors(result.value.entries) : []);
+      if (!cancelled && navigationEpoch.current === epoch) {
+        setDriveAnchors(result.ok ? windowsDriveAnchors(result.value.entries) : []);
+      }
     });
     return () => { cancelled = true; };
   }, [open, target, driveAnchors, listLocal]);
@@ -244,10 +287,21 @@ function SshDirectoryFlow({
   }
 
   async function enter(targetNext: BrowseTarget, path?: string): Promise<boolean> {
+    const epoch = ++navigationEpoch.current;
     setLoading(true);
     setError('');
     if (targetNext.kind === 'ssh') {
-      const result = await ssh.browse(targetNext.alias, path ?? '');
+      let result: RemoteResult<RemoteDirectoryListing>;
+      try {
+        result = await ssh.browse(targetNext.alias, path ?? '');
+      } catch (reason) {
+        if (navigationEpoch.current === epoch) {
+          setError(messageOf(reason));
+          setLoading(false);
+        }
+        return false;
+      }
+      if (navigationEpoch.current !== epoch) return false;
       if (result.ok) {
         setTarget(targetNext);
         setListing(result.value);
@@ -258,6 +312,7 @@ function SshDirectoryFlow({
       return result.ok;
     }
     const outcome = await browseLocalRaw(path);
+    if (navigationEpoch.current !== epoch) return false;
     if (outcome.ok) {
       setTarget(targetNext);
       setListing(outcome.value);
@@ -281,9 +336,11 @@ function SshDirectoryFlow({
     // internal, and every other failure stays in the dialog for retry, with
     // no native fallback.
     if (localCanBrowse !== false) {
+      const epoch = ++navigationEpoch.current;
       setLoading(true);
       setError('');
       const outcome = await browseLocalRaw();
+      if (navigationEpoch.current !== epoch) return;
       if (outcome.ok) {
         setLoading(false);
         setTarget({ kind: 'local' });
@@ -305,70 +362,116 @@ function SshDirectoryFlow({
 
   /** The only native-chooser path, entered solely on the explicit unavailable signal. */
   async function pickLocalFallback() {
+    const epoch = ++navigationEpoch.current;
     setLoading(true);
     setError('');
     try {
       const path = await pickLocal();
-      if (path) onPicked(path);
+      if (navigationEpoch.current === epoch && path) onPicked(path);
     } catch (reason) {
-      setError(messageOf(reason));
+      if (navigationEpoch.current === epoch) setError(messageOf(reason));
     } finally {
-      setLoading(false);
+      if (navigationEpoch.current === epoch) setLoading(false);
     }
   }
 
   async function commit() {
     if (!target || !listing) return;
+    const epoch = ++navigationEpoch.current;
+    const mutation = ++mutationEpoch.current;
+    setMutating(true);
     if (target.kind === 'local') {
+      setMutating(false);
       onPicked(listing.path);
       return;
     }
     setLoading(true);
     setError('');
-    const result = await ssh.materializeWorkspace(target.alias, listing.path);
-    if (result.ok) {
-      try {
+    try {
+      const result = await withMutationDeadline(
+        ssh.materializeWorkspace(target.alias, listing.path),
+        '远程工作区验证',
+      );
+      if (navigationEpoch.current !== epoch) return;
+      if (result.ok) {
         // The stock owner accepts only a path and initially derives the title
         // from its basename. Pre-create idempotently, apply the clean remote
         // title, then hand the same path back so the owner keeps its normal
         // close/select/error lifecycle without exposing the anchor hash.
-        const workspace = await createWorkspace({ path: result.value.anchorPath });
+        const workspace = await withMutationDeadline(
+          createWorkspace({ path: result.value.anchorPath }),
+          '工作区创建',
+        );
+        if (navigationEpoch.current !== epoch) return;
         if (workspace.title !== result.value.title) {
-          await renameWorkspace(workspace.workspaceId, result.value.title);
+          await withMutationDeadline(
+            renameWorkspace(workspace.workspaceId, result.value.title),
+            '工作区命名',
+          );
+          if (navigationEpoch.current !== epoch) return;
         }
         onPicked(result.value.anchorPath);
-      } catch (reason) {
-        onError(reason instanceof Error ? reason.message : String(reason));
+      } else {
+        onError(result.error.message);
       }
-    } else {
-      onError(result.error.message);
+    } catch (reason) {
+      if (navigationEpoch.current === epoch) onError(messageOf(reason));
+    } finally {
+      if (navigationEpoch.current === epoch) setLoading(false);
+      if (mutationEpoch.current === mutation) setMutating(false);
     }
-    setLoading(false);
   }
 
   async function createFolder() {
     if (!target || !listing || !newFolder.trim()) return;
+    const epoch = ++navigationEpoch.current;
+    const mutation = ++mutationEpoch.current;
+    const targetSnapshot = target;
+    const listingPath = listing.path;
+    const folderName = newFolder.trim();
     setLoading(true);
+    setMutating(true);
     setError('');
-    const created = target.kind === 'ssh'
-      ? await ssh.createDirectory(target.alias, listing.path, newFolder.trim())
-      : await asResult(() => createLocalDirectory(listing.path, newFolder.trim()));
-    if (created.ok) {
-      setNewFolder('');
-      await enter(target, created.value);
-    } else {
-      setError(created.error.message);
-      setLoading(false);
+    try {
+      const created = targetSnapshot.kind === 'ssh'
+        ? await withMutationDeadline(
+          ssh.createDirectory(targetSnapshot.alias, listingPath, folderName),
+          '远程文件夹创建',
+        )
+        : await asResult(() => withMutationDeadline(
+          createLocalDirectory(listingPath, folderName),
+          '本机文件夹创建',
+        ));
+      if (navigationEpoch.current !== epoch) return;
+      if (created.ok) {
+        setNewFolder('');
+        await enter(targetSnapshot, created.value);
+      } else {
+        setError(created.error.message);
+        setLoading(false);
+      }
+    } catch (reason) {
+      if (navigationEpoch.current === epoch) {
+        setError(messageOf(reason));
+        setLoading(false);
+      }
+    } finally {
+      if (mutationEpoch.current === mutation) setMutating(false);
     }
   }
 
+  function cancel(): void {
+    navigationEpoch.current += 1;
+    onCancel();
+  }
+
   // Modal renders null while closed; `disabled` only gates the open dialog.
-  const disabled = loading || busy;
+  const disabled = loading || busy || mutating;
 
   return (
     <Modal
       open={open}
-      onClose={() => { if (!busy) onCancel(); }}
+      onClose={() => { if (!busy && !mutating) cancel(); }}
       // The Modal card defaults to min(380px, 100%) (confirm-dialog size);
       // plugins ship no stylesheet, so one scoped rule widens the card for
       // the browse layout.
@@ -378,7 +481,7 @@ function SshDirectoryFlow({
       description={listing ? listing.path : '选择本机文件夹或 SSH 主机'}
       footer={
         <>
-          <Button variant="ghost" disabled={busy} onClick={onCancel}>取消</Button>
+          <Button variant="ghost" disabled={busy || mutating} onClick={cancel}>取消</Button>
           {target && listing && (
             <Button variant="primary" disabled={disabled} onClick={() => void commit()}>
               {busy ? '正在添加…' : '打开此文件夹'}
@@ -532,10 +635,15 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
   async function load() {
     setLoading(true);
     setError('');
-    const r = await ssh.config();
-    if (r.ok) setConfig(r.value);
-    else setError(r.error.message);
-    setLoading(false);
+    try {
+      const r = await ssh.config();
+      if (r.ok) setConfig(r.value);
+      else setError(r.error.message);
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {

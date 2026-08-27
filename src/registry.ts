@@ -1,11 +1,12 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
 import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings';
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import z from '@deepseek-ai/schemastery';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, join, posix, relative, resolve, sep } from 'node:path';
 import { SshConnectionManager, type SshHostConfig } from './connection.js';
 import {
   discoverSshHosts,
@@ -17,6 +18,10 @@ import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
 const SETTINGS_NS = settingsNamespace('ssh-remote');
+const DIRECTORY_PAGE_LIMIT = 1000;
+/** Hard input bound so one hostile/huge remote directory cannot exhaust RAM. */
+const DIRECTORY_INPUT_LIMIT = 5000;
+const DIRECTORY_SCAN_BATCH = 32;
 
 /**
  * Pre-Codex-style settings schema. Existing entries remain a read-only
@@ -103,15 +108,15 @@ declare module '@deepseek-ai/cordis' {
 type StatusListener = (change: { workspaceId: string; status: SshConnectionStatus; reason?: string }) => void;
 
 function persistPath(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-remote-workspaces.json');
+  return dshHomePath('ssh-remote-workspaces.json');
 }
 
 function anchorPersistPath(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-workspace-anchors.json');
+  return dshHomePath('ssh-workspace-anchors.json');
 }
 
 function anchorRootPath(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'ssh-workspace-anchors');
+  return dshHomePath('ssh-workspace-anchors');
 }
 
 /**
@@ -126,6 +131,8 @@ export class SshRemoteService extends TypertRemoteService {
   private readonly anchors = new Map<string, SshWorkspaceAnchor>();
   private readonly listeners = new Set<StatusListener>();
   private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
+  private workspaceSaveQueue: Promise<void> = Promise.resolve();
+  private anchorSaveQueue: Promise<void> = Promise.resolve();
 
   constructor(ctx: Context) {
     super(ctx, 'sshRemote');
@@ -142,7 +149,9 @@ export class SshRemoteService extends TypertRemoteService {
           this.emit({ workspaceId: ws.id, status, reason });
         }
       }
-      this.save();
+      void this.save().catch(() => {
+        /* a later transition retries with a fresh complete snapshot */
+      });
     });
   }
 
@@ -207,24 +216,38 @@ export class SshRemoteService extends TypertRemoteService {
       const target = await realpathP(sftp, path || home);
       const status = await statP(sftp, target);
       if (!status?.isDirectory()) throw new Error(`remote path is not a directory: ${target}`);
-      const rows = await readdirP(sftp, target);
-      const directories = (await Promise.all(rows.map(async (row) => {
-        const childPath = posix.join(target, row.filename);
-        const child = row.attrs.isDirectory() ? row.attrs : await statP(sftp, childPath);
-        if (!child?.isDirectory()) return undefined;
-        return {
-          name: row.filename,
-          path: childPath,
-          hidden: row.filename.startsWith('.'),
-        } satisfies RemoteDirectoryEntry;
-      }))).filter((entry): entry is RemoteDirectoryEntry => entry !== undefined)
-        .sort((left, right) => left.name.localeCompare(right.name));
-      const truncated = directories.length > 1000;
+      const page = await readdirBoundedP(sftp, target, DIRECTORY_INPUT_LIMIT);
+      const rows = page.rows.sort((left, right) => left.filename.localeCompare(right.filename));
+      const directories: RemoteDirectoryEntry[] = [];
+      let processed = 0;
+      for (; processed < rows.length && directories.length <= DIRECTORY_PAGE_LIMIT; processed += DIRECTORY_SCAN_BATCH) {
+        const batch = rows.slice(processed, processed + DIRECTORY_SCAN_BATCH);
+        const found = await Promise.all(batch.map(async (row) => {
+          const childPath = posix.join(target, row.filename);
+          // Normal files cannot become directory choices. Only symlinks need a
+          // follow-up stat; this avoids one SFTP round-trip per regular file.
+          const child = row.attrs.isDirectory()
+            ? row.attrs
+            : row.attrs.isSymbolicLink()
+              ? await statP(sftp, childPath)
+              : undefined;
+          if (!child?.isDirectory()) return undefined;
+          return {
+            name: row.filename,
+            path: childPath,
+            hidden: row.filename.startsWith('.'),
+          } satisfies RemoteDirectoryEntry;
+        }));
+        directories.push(...found.filter((entry): entry is RemoteDirectoryEntry => entry !== undefined));
+      }
+      const truncated = page.truncated
+        || directories.length > DIRECTORY_PAGE_LIMIT
+        || processed < rows.length;
       return {
         path: target,
         home,
         crumbs: remoteCrumbs(target),
-        entries: directories.slice(0, 1000),
+        entries: directories.slice(0, DIRECTORY_PAGE_LIMIT),
         truncated,
       };
     });
@@ -263,14 +286,16 @@ export class SshRemoteService extends TypertRemoteService {
     await this.ensureDirectory(uri);
     const existing = [...this.anchors.values()].find((anchor) => anchor.uri === uri);
     if (existing) {
-      mkdirSync(existing.anchorPath, { recursive: true });
+      mkdirSync(existing.anchorPath, { recursive: true, mode: 0o700 });
+      // Also repairs a prior atomic-save failure before reporting success.
+      await this.saveAnchors();
       return existing;
     }
     const title = `${basename(remotePath.replace(/\/+$/, '')) || 'root'} · ${alias}`;
     const safeTitle = title.replace(/[/:]/g, '-').replace(/\s+/g, ' ').trim();
     const digest = createHash('sha256').update(uri).digest('hex').slice(0, 8);
     const rawAnchor = join(anchorRootPath(), `${safeTitle} [${digest}]`);
-    mkdirSync(rawAnchor, { recursive: true });
+    mkdirSync(rawAnchor, { recursive: true, mode: 0o700 });
     const anchor: SshWorkspaceAnchor = {
       anchorPath: realpathSync(rawAnchor),
       uri,
@@ -280,7 +305,7 @@ export class SshRemoteService extends TypertRemoteService {
       createdAt: Date.now(),
     };
     this.anchors.set(anchor.anchorPath, anchor);
-    this.saveAnchors();
+    await this.saveAnchors();
     return anchor;
   }
 
@@ -330,7 +355,7 @@ export class SshRemoteService extends TypertRemoteService {
       createdAt: Date.now(),
     };
     this.workspaces.set(id, record);
-    this.save();
+    void this.save().catch(() => {});
     return record;
   }
 
@@ -339,7 +364,7 @@ export class SshRemoteService extends TypertRemoteService {
     if (!ws) return false;
     void this.connections.close(ws.uri);
     this.workspaces.delete(id);
-    this.save();
+    void this.save().catch(() => {});
     return true;
   }
 
@@ -402,6 +427,7 @@ export class SshRemoteService extends TypertRemoteService {
 
   async dispose(): Promise<void> {
     await this.connections.dispose();
+    await Promise.allSettled([this.workspaceSaveQueue, this.anchorSaveQueue]);
     this.workspaces.clear();
     this.anchors.clear();
   }
@@ -421,7 +447,7 @@ export class SshRemoteService extends TypertRemoteService {
 
   private remotePath(uri: string, path: string): string {
     if (path.startsWith('/')) return path;
-    return join(parseSshUri(uri).path, path).replace(/\/+$/, '') || '/';
+    return posix.join(parseSshUri(uri).path, path).replace(/\/+$/, '') || '/';
   }
 
   private emit(change: { workspaceId: string; status: SshConnectionStatus; reason?: string }): void {
@@ -444,34 +470,47 @@ export class SshRemoteService extends TypertRemoteService {
     }
   }
 
-  private save(): void {
-    try {
-      const file = persistPath();
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, JSON.stringify([...this.workspaces.values()], null, 2));
-    } catch {
-      /* best effort */
-    }
+  private save(): Promise<void> {
+    const file = persistPath();
+    const content = JSON.stringify([...this.workspaces.values()], null, 2);
+    const pending = this.workspaceSaveQueue.then(() => writeFileAtomic(file, content, {
+      mode: 0o600,
+      dirMode: 0o700,
+    }));
+    this.workspaceSaveQueue = pending.catch(() => {});
+    return pending;
   }
 
   private loadAnchors(): void {
     try {
       const list = JSON.parse(readFileSync(anchorPersistPath(), 'utf8')) as SshWorkspaceAnchor[];
+      const root = resolve(anchorRootPath());
       for (const anchor of list) {
         if (!anchor || typeof anchor.anchorPath !== 'string' || typeof anchor.uri !== 'string') continue;
         const anchorPath = resolve(anchor.anchorPath);
+        if (!anchorPath.startsWith(`${root}${sep}`)) continue;
+        try {
+          parseSshUri(anchor.uri);
+        } catch {
+          continue;
+        }
         this.anchors.set(anchorPath, { ...anchor, anchorPath });
-        mkdirSync(anchorPath, { recursive: true });
+        mkdirSync(anchorPath, { recursive: true, mode: 0o700 });
       }
     } catch {
       /* no persisted anchors */
     }
   }
 
-  private saveAnchors(): void {
+  private saveAnchors(): Promise<void> {
     const file = anchorPersistPath();
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify([...this.anchors.values()], null, 2));
+    const content = JSON.stringify([...this.anchors.values()], null, 2);
+    const pending = this.anchorSaveQueue.then(() => writeFileAtomic(file, content, {
+      mode: 0o600,
+      dirMode: 0o700,
+    }));
+    this.anchorSaveQueue = pending.catch(() => {});
+    return pending;
   }
 }
 
@@ -515,6 +554,62 @@ function readdirP(sftp: import('ssh2').SFTPWrapper, path: string) {
   return new Promise<Array<{ filename: string; attrs: import('ssh2').Stats }>>((resolve, reject) => {
     sftp.readdir(path, (err, list) => (err ? reject(err) : resolve(list)));
   });
+}
+
+/**
+ * Read a directory through an explicit SFTP handle so the server is consumed
+ * in bounded chunks. Passing a string to ssh2.readdir() silently accumulates
+ * the complete directory before invoking its callback.
+ */
+async function readdirBoundedP(
+  sftp: import('ssh2').SFTPWrapper,
+  path: string,
+  maxEntries: number,
+): Promise<{
+  rows: Array<{ filename: string; attrs: import('ssh2').Stats }>;
+  truncated: boolean;
+}> {
+  const handle = await new Promise<Buffer>((resolveHandle, reject) => {
+    sftp.opendir(path, (error, value) => (error ? reject(error) : resolveHandle(value)));
+  });
+  const rows: Array<{ filename: string; attrs: import('ssh2').Stats }> = [];
+  let truncated = false;
+  let operationError: unknown;
+  try {
+    // Read one entry beyond the public bound to distinguish an exact-size
+    // directory from a truncated one without ever retaining the full input.
+    while (rows.length <= maxEntries) {
+      let chunk: Array<{ filename: string; attrs: import('ssh2').Stats }>;
+      try {
+        chunk = await new Promise<Array<{ filename: string; attrs: import('ssh2').Stats }>>((resolveRows, reject) => {
+          sftp.readdir(handle, (error, value) => (error ? reject(error) : resolveRows(value)));
+        });
+      } catch (error) {
+        if ((error as { code?: unknown })?.code === 1) break; // SSH_FX_EOF
+        throw error;
+      }
+      // A conforming server reports EOF. Guard an empty successful page too,
+      // otherwise a broken server could make this loop spin forever.
+      if (chunk.length === 0) break;
+      const remaining = maxEntries + 1 - rows.length;
+      rows.push(...chunk.slice(0, remaining));
+      if (rows.length > maxEntries) {
+        truncated = true;
+        break;
+      }
+    }
+  } catch (error) {
+    operationError = error;
+  }
+  try {
+    await new Promise<void>((resolveClose, reject) => {
+      sftp.close(handle, (error) => (error ? reject(error) : resolveClose()));
+    });
+  } catch (closeError) {
+    if (operationError === undefined) operationError = closeError;
+  }
+  if (operationError !== undefined) throw operationError;
+  return { rows: rows.slice(0, maxEntries), truncated };
 }
 
 function readFileP(sftp: import('ssh2').SFTPWrapper, path: string) {

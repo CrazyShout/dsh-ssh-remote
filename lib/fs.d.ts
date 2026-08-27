@@ -6,6 +6,8 @@ export declare class RemoteFileSystem extends FileSystem {
     private readonly connections;
     /** Default base for relative-path resolution: the workspace's ssh:// root. */
     private readonly baseUri;
+    /** Serialize mutation critical sections per canonical remote target. */
+    private readonly mutations;
     constructor(ctx: Context, connections: SshConnectionManager, baseUri: string);
     get sandboxMode(): undefined;
     resolve(path: string, opts?: {
@@ -24,16 +26,26 @@ export declare class RemoteFileSystem extends FileSystem {
     readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>;
     listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]>;
     writeText(target: FsTarget, content: string, expected?: FsWriteIntent, signal?: AbortSignal, _sandboxPolicy?: unknown): Promise<FsWriteOutcome>;
+    private writeTextUnlocked;
     editText(target: FsTarget, edit: FsEditRequest, expected?: {
         version: FsVersion;
     }, signal?: AbortSignal, _sandboxPolicy?: unknown): Promise<FsEditOutcome>;
+    private editTextUnlocked;
     private parseTargetPath;
     private split;
+    /**
+     * Resolve symlinks for an existing target. For a path that does not exist yet,
+     * resolve the nearest existing ancestor and append only normalized path
+     * segments. This gives callers a stable target identity and ensures
+     * `contains()` never approves a lexical `..` or an existing symlink escape.
+     */
+    private canonicalizePath;
     private sftp;
     private readFile;
     private writeFile;
     private tryUnlink;
     private statOrAbsent;
+    private withMutation;
     private mapError;
 }
 /**
