@@ -36,7 +36,8 @@ sidebar — in the spirit of Codex Remote.
 
 ## Install
 
-Requires Node 22+, pnpm, DSH 0.1.0-rc.x.
+Requires Node 22+ and pnpm. Tested with DSH 0.1.0-rc.6 through
+0.1.1-rc.2; 0.1.1-rc.2 is the recommended baseline.
 
 ```sh
 # Option A: npm (once published)
