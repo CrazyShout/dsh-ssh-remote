@@ -27,9 +27,13 @@ Harness 自带的 browse 占位者（`ui-directory-picker-browse`，走
 
 ## 决定
 
-1. **本机分支按能力自适应**。每次打开对话框用一次无害的家目录
-   `listDirectory()` 探测（成功 ⇒ browse 可用；拒绝 ⇒ native 或无）。browse
-   可用时进入应用内浏览；否则回退系统选择器；浏览中途列目录失败也回退一次。
+1. **本机分支按能力自适应，且仅对显式能力不可用兜底**。打开对话框时用无害的
+   家目录 `listDirectory()` 探测：成功 ⇒ browse 能力可用；只有抛出
+   `DirectoryBrowseError` 且 `rpcError.code === 'directory-picker-unavailable'`
+   （组合未提供 browse 能力的明确信号，探测结果或探测后的竞态浏览调用都可能
+   携带该信号）才判定为不可用并回退系统选择器。权限、超时、传输、内部等其余
+   失败一律原样重抛：探测失败显示在对话框内，浏览中途（进入/导航/新建文件夹）
+   失败也保留在对话框内可重试，绝不触发原生兜底。
 2. **本地与远端共用同一浏览视图**。引入 `target = {kind:'local'} |
    {kind:'ssh', alias}`，面包屑、条目列表、新建文件夹、提交全部按 target
    分派（本地提交 = `onPicked(path)`；SSH 提交 = 原 materialize/锚点流程）。
@@ -44,7 +48,11 @@ Harness 自带的 browse 占位者（`ui-directory-picker-browse`，走
 ## 后果
 
 - headless / WSL 宿主恢复添加本机工作区的能力；桌面 native 组合的行为不变。
+- 只有显式的 `directory-picker-unavailable` 才会切换原生选择器；真实浏览错误
+  （权限、超时、传输、内部）始终留在对话框内重试，避免把「目录真的读不出来」
+  误判为「选择器不可用」而跳进无法感知宿主文件系统的原生对话框。
 - `/mnt/...` 下创建的工作区是普通 Harness 工作区，fs/subprocess 走宿主本地
   provider（即 WSL 视角），性能与换行符语义遵循 WSL 跨文件系统的既有行为。
-- 新增纯函数 `windowsDriveAnchors` / `probeLocalBrowse`（`test/local-browse.test.ts`
-  覆盖），组件逻辑保持无 IO、可测。
+- 新增纯函数 `windowsDriveAnchors` / `probeLocalBrowse` /
+  `isDirectoryPickerUnavailable`（`test/local-browse.test.ts` 覆盖），
+  组件逻辑保持无 IO、可测。

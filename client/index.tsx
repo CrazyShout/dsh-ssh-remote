@@ -11,7 +11,12 @@ import {
   Modal,
   Pill,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { probeLocalBrowse, windowsDriveAnchors, type LocalAnchor } from './local-browse.js';
+import {
+  isDirectoryPickerUnavailable,
+  probeLocalBrowse,
+  windowsDriveAnchors,
+  type LocalAnchor,
+} from './local-browse.js';
 import TYPERT_REMOTE from '../lib/typert.remote-client.js';
 
 export const name = 'dsh-ssh-remote-client';
@@ -77,7 +82,8 @@ export async function apply(ctx: ClientContext) {
       pickLocal: () => scope.workspaces.pickDirectory(),
       // The composed picker's browse capability (in-app listing/creation).
       // Served only when the host composes the `-browse` backend; chooseLocal
-      // probes for it and falls back to the native chooser otherwise.
+      // probes for it and falls back to the native chooser only on the
+      // explicit capability-unavailable signal (`directory-picker-unavailable`).
       listLocal: (path?: string) => scope.workspaces.listDirectory(path),
       createLocalDirectory: (path: string, name: string) =>
         scope.workspaces.createDirectory(path, name),
@@ -194,14 +200,22 @@ function SshDirectoryFlow({
     setError('');
     setNewFolder('');
     setDriveAnchors(null);
+    setLocalCanBrowse(null);
     setLoading(true);
     void Promise.all([
       ssh.config(),
-      probeLocalBrowse(() => listLocal()),
+      probeLocalBrowse(() => listLocal()).catch((reason) => {
+        // Non-capability probe failures (permission, timeout, transport,
+        // internal…) surface in the dialog for retry. They are real browse
+        // errors — never the capability-unavailable signal — so there is no
+        // native-chooser fallback.
+        setError(`本机浏览探测失败：${messageOf(reason)}`);
+        return null;
+      }),
     ]).then(([configResult, canBrowse]) => {
-      setLocalCanBrowse(canBrowse);
+      if (canBrowse !== null) setLocalCanBrowse(canBrowse);
       if (configResult.ok) setConfig(configResult.value);
-      else setError(configResult.error.message);
+      else if (canBrowse !== null) setError(configResult.error.message);
     }).finally(() => setLoading(false));
   }, [open, ssh, listLocal]);
 
@@ -214,20 +228,44 @@ function SshDirectoryFlow({
     return () => { cancelled = true; };
   }, [open, target, driveAnchors, listLocal]);
 
+  /**
+   * One raw local browse call that preserves any thrown error so callers can
+   * still distinguish the explicit capability-unavailable signal from real
+   * browse failures.
+   */
+  async function browseLocalRaw(path?: string): Promise<
+    { ok: true; value: RemoteDirectoryListing } | { ok: false; error: unknown }
+  > {
+    try {
+      return { ok: true, value: await listLocal(path) };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  }
+
   async function enter(targetNext: BrowseTarget, path?: string): Promise<boolean> {
     setLoading(true);
     setError('');
-    const result = targetNext.kind === 'ssh'
-      ? await ssh.browse(targetNext.alias, path ?? '')
-      : await asResult(() => listLocal(path));
-    if (result.ok) {
+    if (targetNext.kind === 'ssh') {
+      const result = await ssh.browse(targetNext.alias, path ?? '');
+      if (result.ok) {
+        setTarget(targetNext);
+        setListing(result.value);
+      } else {
+        setError(result.error.message);
+      }
+      setLoading(false);
+      return result.ok;
+    }
+    const outcome = await browseLocalRaw(path);
+    if (outcome.ok) {
       setTarget(targetNext);
-      setListing(result.value);
+      setListing(outcome.value);
     } else {
-      setError(result.error.message);
+      setError(messageOf(outcome.error));
     }
     setLoading(false);
-    return result.ok;
+    return outcome.ok;
   }
 
   function navigate(path?: string): void {
@@ -236,11 +274,37 @@ function SshDirectoryFlow({
 
   async function chooseLocal() {
     // Prefer the composed browse capability — it works headless and covers
-    // the WSL host filesystem together with its /mnt Windows drives — and
-    // fall back once to the OS chooser when the composition serves native
-    // instead (or the probe raced a capability change).
-    if (localCanBrowse !== false && (await enter({ kind: 'local' }))) return;
-    if (localCanBrowse !== false) setLocalCanBrowse(false);
+    // the WSL host filesystem together with its /mnt Windows drives. Only
+    // the explicit capability-unavailable signal may switch to the OS
+    // chooser: the probe reported `false`, or a raced browse call now
+    // reports `directory-picker-unavailable`. Permission, timeout, transport,
+    // internal, and every other failure stays in the dialog for retry, with
+    // no native fallback.
+    if (localCanBrowse !== false) {
+      setLoading(true);
+      setError('');
+      const outcome = await browseLocalRaw();
+      if (outcome.ok) {
+        setLoading(false);
+        setTarget({ kind: 'local' });
+        setListing(outcome.value);
+        return;
+      }
+      if (!isDirectoryPickerUnavailable(outcome.error)) {
+        setError(messageOf(outcome.error));
+        setLoading(false);
+        return;
+      }
+      // Capability raced: the composition now serves native (or no picker) —
+      // the one condition that may reach the OS chooser.
+      setLocalCanBrowse(false);
+      setLoading(false);
+    }
+    await pickLocalFallback();
+  }
+
+  /** The only native-chooser path, entered solely on the explicit unavailable signal. */
+  async function pickLocalFallback() {
     setLoading(true);
     setError('');
     try {

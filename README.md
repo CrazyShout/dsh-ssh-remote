@@ -94,11 +94,16 @@ composition serves:
   `/mnt/c/Users/you/project` (Windows).
 - **native**: the operating system folder chooser is used directly.
 
-The capability is probed once per dialog open with a harmless
-home-directory listing; if a browse listing ever fails mid-flow, that
-interaction falls back to the OS chooser. Workspaces created under
-`/mnt/...` are ordinary Harness workspaces: filesystem and subprocess calls
-stay on the Host's local providers (the WSL view of those files).
+The capability is probed on dialog open with a harmless
+home-directory listing (success ⇒ browse, the explicit
+`directory-picker-unavailable` result ⇒ native). The OS chooser is used
+solely for that explicit capability-unavailable signal; permission,
+timeout, transport, or internal browse failures — at probe time or
+mid-flow (entering, navigating, creating folders) — stay in the dialog
+as a retryable error and never trigger a native fallback.
+Workspaces created under `/mnt/...` are ordinary Harness workspaces:
+filesystem and subprocess calls stay on the Host's local providers (the
+WSL view of those files).
 
 ## Authentication
 

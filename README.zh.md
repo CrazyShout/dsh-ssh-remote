@@ -96,8 +96,11 @@ ssh_remote { action: "add", uri: "ssh://devbox/home/you/project" }
   机器两侧的工作区：`/home/you/project`（WSL 侧）与 `/mnt/c/Users/you/project`（Windows 侧）。
 - **native**：直接使用操作系统文件夹选择框。
 
-每次打开对话框时用一次无害的家目录列目录调用来探测能力；若浏览过程中列目录失败，
-该次交互自动回退到系统选择框。在 `/mnt/...` 下创建的工作区就是普通 Harness 工作区：
+打开对话框时用无害的家目录列目录调用来探测能力（成功 ⇒ browse，
+返回明确的 `directory-picker-unavailable` ⇒ native）。只有该显式的能力不可用
+信号才会回退到系统选择框；探测或浏览中途（进入、导航、
+新建文件夹）遇到的权限、超时、传输、内部等失败都会保留在对话框内作为可重试的
+错误提示，绝不触发原生兜底。在 `/mnt/...` 下创建的工作区就是普通 Harness 工作区：
 文件与子进程调用仍走宿主本地 provider（即 WSL 眼中的这些文件）。
 
 ## 认证

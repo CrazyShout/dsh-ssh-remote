@@ -29,16 +29,34 @@ export function windowsDriveAnchors(entries: ReadonlyArray<{ name: string }>): L
 }
 
 /**
+ * Whether a thrown browse failure is the explicit capability-unavailable
+ * signal. The runtime's `DirectoryBrowseError` carries the RPC error body as
+ * `rpcError`; only `rpcError.code === 'directory-picker-unavailable'` means
+ * the composed picker serves no `browse` capability. Permission, timeout,
+ * transport, internal, and every other code is a real browse failure and must
+ * never trigger a native-picker fallback. Kept structural (no wire import) so
+ * the module stays free of runtime/DOM dependencies for unit tests.
+ */
+export function isDirectoryPickerUnavailable(reason: unknown): boolean {
+  if (!(reason instanceof Error)) return false;
+  return (reason as { rpcError?: { code?: unknown } }).rpcError?.code === 'directory-picker-unavailable';
+}
+
+/**
  * Whether the composed directory picker serves the `browse` capability: one
- * harmless home-directory listing either succeeds (`browse`) or fails
- * (`native` or no picker at all). Unlike driving the native chooser, the
+ * harmless home-directory listing either succeeds (`browse`) or fails with
+ * the explicit `directory-picker-unavailable` signal (`native` or no picker
+ * at all). Any other failure — permission, timeout, transport, internal — is
+ * rethrown unchanged: the caller must surface it in the dialog for retry, not
+ * treat it as a capability absence. Unlike driving the native chooser, the
  * probe never opens an OS dialog, so it is safe to run on every flow open.
  */
 export async function probeLocalBrowse(listHome: () => Promise<unknown>): Promise<boolean> {
   try {
     await listHome();
     return true;
-  } catch {
-    return false;
+  } catch (reason) {
+    if (isDirectoryPickerUnavailable(reason)) return false;
+    throw reason;
   }
 }
