@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { apply } from '../client/index.js';
 
+// The real primitives package ships browser-only CSS imports; at runtime the
+// DSH loader resolves it through its module table instead of Node. This test
+// never renders, so a stub keeps the module graph loadable.
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  Button: () => null,
+  IconFolderClose16: () => null,
+  IconPlusOutline16: () => null,
+  Input: () => null,
+  Modal: () => null,
+  Pill: () => null,
+}));
+
 describe('client lifecycle', () => {
   it('mounts the Remote contribution before injecting and consuming its namespace', async () => {
     const events: string[] = [];
@@ -12,6 +24,8 @@ describe('client lifecycle', () => {
       remote: { sshRemote: {} },
       workspaces: {
         pickDirectory: vi.fn(),
+        listDirectory: vi.fn(),
+        createDirectory: vi.fn(),
         create: vi.fn(),
         rename: vi.fn(),
       },
