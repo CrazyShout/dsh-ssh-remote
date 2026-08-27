@@ -71,6 +71,8 @@ export declare class SshRemoteService extends TypertRemoteService {
     private readonly anchors;
     private readonly listeners;
     private readonly hostResolver?;
+    private workspaceSaveQueue;
+    private anchorSaveQueue;
     constructor(ctx: Context);
     private createHostResolver;
     private readKey;

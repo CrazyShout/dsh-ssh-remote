@@ -14,6 +14,10 @@ export interface SshConfigHost {
   identityFiles?: string[];
   proxyJump?: string;
   proxyCommand?: string;
+  hostKeyAlias?: string;
+  strictHostKeyChecking?: string;
+  userKnownHostsFiles?: string[];
+  globalKnownHostsFiles?: string[];
 }
 
 export interface SshGResult {
@@ -31,8 +35,9 @@ interface SshDirective {
 
 const PATTERN_HOST = /[!*?[\]{}()]/u;
 const GLOB_PATTERN = /[*?[\]{}()]/u;
+const SSH_CONFIG_RESOLVE_CONCURRENCY = 8;
 
-/** The same local OpenSSH entrypoint Codex Remote documents and discovers. */
+/** The local OpenSSH entrypoint used by this plugin and observed in current Codex Desktop. */
 export function userSshConfigPath(): string {
   return join(homedir(), '.ssh', 'config');
 }
@@ -138,8 +143,10 @@ export async function discoverSshHosts(
   runner: SshGRunner = runSshG,
 ): Promise<SshConfigHost[]> {
   const aliases = collectSshAliases(configPath);
-  const resolved = await Promise.all(
-    aliases.map((alias) => resolveOpenSshHost(alias, configPath, runner)),
+  const resolved = await mapWithConcurrency(
+    aliases,
+    SSH_CONFIG_RESOLVE_CONCURRENCY,
+    (alias) => resolveOpenSshHost(alias, configPath, runner),
   );
   return resolved.filter((host): host is SshConfigHost => host !== undefined);
 }
@@ -151,6 +158,10 @@ export function parseOpenSshResolvedConfig(alias: string, text: string): SshConf
   let port: number | undefined;
   let proxyJump: string | undefined;
   let proxyCommand: string | undefined;
+  let hostKeyAlias: string | undefined;
+  let strictHostKeyChecking: string | undefined;
+  let userKnownHostsFiles: string[] | undefined;
+  let globalKnownHostsFiles: string[] | undefined;
   const identityFiles: string[] = [];
 
   for (const directive of parseDirectives(text)) {
@@ -164,6 +175,14 @@ export function parseOpenSshResolvedConfig(alias: string, text: string): SshConf
       proxyJump = value;
     } else if (directive.keyword === 'proxycommand' && value.toLowerCase() !== 'none' && proxyCommand === undefined) {
       proxyCommand = value;
+    } else if (directive.keyword === 'hostkeyalias' && value.toLowerCase() !== 'none' && hostKeyAlias === undefined) {
+      hostKeyAlias = value;
+    } else if (directive.keyword === 'stricthostkeychecking' && strictHostKeyChecking === undefined) {
+      strictHostKeyChecking = value;
+    } else if (directive.keyword === 'userknownhostsfile' && userKnownHostsFiles === undefined) {
+      userKnownHostsFiles = directive.values.map(expandSshPath).filter((path) => path.toLowerCase() !== 'none');
+    } else if (directive.keyword === 'globalknownhostsfile' && globalKnownHostsFiles === undefined) {
+      globalKnownHostsFiles = directive.values.map(expandSshPath).filter((path) => path.toLowerCase() !== 'none');
     }
   }
 
@@ -177,6 +196,10 @@ export function parseOpenSshResolvedConfig(alias: string, text: string): SshConf
     identityFiles,
     proxyJump,
     proxyCommand,
+    hostKeyAlias,
+    strictHostKeyChecking,
+    userKnownHostsFiles,
+    globalKnownHostsFiles,
   };
 }
 
@@ -278,7 +301,7 @@ function splitSshWords(value: string): string[] {
 }
 
 function isConcreteAlias(alias: string): boolean {
-  return alias.length > 0 && !PATTERN_HOST.test(alias);
+  return alias.length > 0 && !alias.startsWith('-') && !PATTERN_HOST.test(alias);
 }
 
 function expandInclude(value: string, configRoot: string): string[] {
@@ -309,4 +332,23 @@ function isFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  run: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const output = new Array<R>(values.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= values.length) return;
+      output[index] = await run(values[index]);
+    }
+  });
+  await Promise.all(workers);
+  return output;
 }

@@ -1,4 +1,4 @@
-import type FileSystem from '@deepseek-ai/dsh-fs';
+import FileSystem from '@deepseek-ai/dsh-fs';
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService } from '@deepseek-ai/dsh-terminal';
 import type { SshConnectionManager } from './connection.js';

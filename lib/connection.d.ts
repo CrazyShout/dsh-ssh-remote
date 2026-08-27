@@ -1,4 +1,4 @@
-import { type SFTPWrapper, type ConnectConfig, type ClientChannel } from 'ssh2';
+import { Client, type SFTPWrapper, type ConnectConfig, type ClientChannel } from 'ssh2';
 import { formatSshUri, type SshConnectionStatus, type SshUri } from './types.js';
 /** A resolved host target, possibly reached through a ProxyJump. */
 export interface SshHostConfig {
@@ -29,6 +29,10 @@ export interface SshTransport {
     close(): void;
 }
 type StatusListener = (key: string, status: SshConnectionStatus, reason?: string) => void;
+export interface SshConnectionManagerOptions {
+    resolveConnectConfig?: typeof toConnectConfig;
+    createClient?: () => Client;
+}
 interface ProxySpec {
     kind: 'jump' | 'command';
     value: string;
@@ -45,16 +49,18 @@ export declare function buildOpenSshJumpArgs(proxyJump: string, targetHost: stri
 /**
  * Owns the SSH transport pool. Connections are keyed by `host:port:user`, and
  * each connection auto-reconnects with exponential backoff while still wanted.
- * ProxyJump and ProxyCommand byte streams are delegated to system OpenSSH, so
- * Include files, wildcard defaults, Match rules, and multi-hop jumps keep the
- * same semantics as `ssh <alias>`.
+ * Effective host settings are refreshed through `ssh -G`. ProxyJump streams
+ * use system OpenSSH; ProxyCommand is launched from the effective configured
+ * command with the subset of tokens expanded by {@link expandProxyCommand}.
  */
 export declare class SshConnectionManager {
     private readonly connections;
     private readonly listeners;
     /** Read-only fallback for legacy DSH settings that have not been migrated. */
     private readonly hostResolver?;
-    constructor(hostResolver?: (host: string) => SshHostConfig | undefined);
+    private readonly resolveConnectConfig;
+    private readonly createClient;
+    constructor(hostResolver?: (host: string) => SshHostConfig | undefined, options?: SshConnectionManagerOptions);
     onStatus(listener: StatusListener): () => void;
     private emit;
     private keyOf;
@@ -63,6 +69,7 @@ export declare class SshConnectionManager {
     dispose(): Promise<void>;
     private allocate;
     private connect;
+    private open;
     private finishConnect;
     private fail;
     private scheduleReconnect;
@@ -70,6 +77,7 @@ export declare class SshConnectionManager {
     private setStatus;
     private waitConnected;
     private wrap;
+    private isCurrent;
 }
 export { formatSshUri };
 //# sourceMappingURL=connection.d.ts.map

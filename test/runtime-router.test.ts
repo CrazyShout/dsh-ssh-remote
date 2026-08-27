@@ -23,6 +23,26 @@ function fakeFileSystem() {
   };
 }
 
+function fakeConnections() {
+  const sftp = {
+    realpath(path: string, callback: (error: Error | undefined, resolved: string) => void) {
+      callback(undefined, path);
+    },
+    lstat(_path: string, callback: (error: Error | undefined) => void) {
+      callback(Object.assign(new Error('no such file'), { code: 2 }));
+    },
+  };
+  return {
+    async transport() {
+      return {
+        async sftp<T>(operation: (value: typeof sftp) => Promise<T>): Promise<T> {
+          return operation(sftp);
+        },
+      };
+    },
+  };
+}
+
 describe('remote Workspace routing', () => {
   it('maps only an exact anchor boundary and its descendants', () => {
     const service = Object.create(SshRemoteService.prototype) as SshRemoteService & {
@@ -42,7 +62,7 @@ describe('remote Workspace routing', () => {
     const fs = fakeFileSystem();
     const restore = installRemoteFileSystemRouter(
       fs as never,
-      {} as never,
+      fakeConnections() as never,
       (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
     );
 
@@ -55,6 +75,31 @@ describe('remote Workspace routing', () => {
     restore();
     const restored = await fs.resolve('after');
     expect(restored.targetKey).toBe('local:after');
+  });
+
+  it('fails closed for remote writes under read-only or outside-workspace policy', async () => {
+    const fs = fakeFileSystem();
+    Object.defineProperty(fs, 'sandboxMode', { value: 'workspace-write' });
+    const restore = installRemoteFileSystemRouter(
+      fs as never,
+      fakeConnections() as never,
+      (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      const inside = await fs.resolve('notes.txt', { cwd: '/anchors/project' } as never);
+      await expect((fs.writeText as any)(inside, 'x', undefined, undefined, {
+        mode: 'read-only',
+        workspaceRoot: '/anchors/project',
+      })).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' });
+
+      const outside = await fs.resolve('ssh://gpu/home/atlas/other/notes.txt');
+      await expect((fs.writeText as any)(outside, 'x', undefined, undefined, {
+        mode: 'workspace-write',
+        workspaceRoot: '/anchors/project',
+      })).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' });
+    } finally {
+      restore();
+    }
   });
 
   it('delegates mapped process cwd to system OpenSSH and leaves local cwd alone', () => {
@@ -91,7 +136,7 @@ describe('OpenSSH process invocation', () => {
       { DEMO: "a'b" },
       false,
     );
-    expect(invocation.slice(0, 6)).toEqual(['ssh', '-T', '-p', '2202', 'atlas@gpu', '--']);
+    expect(invocation.slice(0, 6)).toEqual(['ssh', '-T', '-p', '2202', '--', 'atlas@gpu']);
     expect(invocation.at(-1)).toContain("cd '");
     expect(invocation.at(-1)).toContain('DEMO=');
     expect(invocation.at(-1)).toContain('My Project');

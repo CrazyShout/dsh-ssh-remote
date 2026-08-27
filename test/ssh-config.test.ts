@@ -35,6 +35,20 @@ describe('parseSshUri', () => {
     const uri = 'ssh://bob@host:2222/a/b';
     expect(formatSshUri(parseSshUri(uri))).toBe(uri);
   });
+
+  it('parses bracketed IPv6 and round-trips it safely', () => {
+    const parsed = parseSshUri('ssh://atlas@[2001:db8::1]:2202/home/atlas');
+    expect(parsed).toEqual({ host: '2001:db8::1', port: 2202, user: 'atlas', path: '/home/atlas' });
+    expect(formatSshUri(parsed)).toBe('ssh://atlas@[2001:db8::1]:2202/home/atlas');
+  });
+
+  it('rejects malformed ports, unbracketed IPv6, and option-like authorities', () => {
+    expect(() => parseSshUri('ssh://host:not-a-port/path')).toThrow(/port/u);
+    expect(() => parseSshUri('ssh://host:70000/path')).toThrow(/port/u);
+    expect(() => parseSshUri('ssh://2001:db8::1/path')).toThrow(/brackets/u);
+    expect(() => parseSshUri('ssh://-oProxyCommand=bad/path')).toThrow(/host/u);
+    expect(() => parseSshUri('ssh://-Fbad@host/path')).toThrow(/user/u);
+  });
 });
 
 describe('parseSshConfig', () => {
@@ -96,6 +110,9 @@ port 2202
 identityfile ~/.ssh/missing
 identityfile ~/.ssh/id_ed25519
 proxyjump jump-a,jump-b
+stricthostkeychecking ask
+userknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts_work
+globalknownhostsfile /etc/ssh/ssh_known_hosts
 `)).toEqual({
       host: 'devbox',
       hostName: 'dev.example.com',
@@ -108,6 +125,13 @@ proxyjump jump-a,jump-b
       ],
       proxyJump: 'jump-a,jump-b',
       proxyCommand: undefined,
+      hostKeyAlias: undefined,
+      strictHostKeyChecking: 'ask',
+      userKnownHostsFiles: [
+        expect.stringContaining('/.ssh/known_hosts'),
+        expect.stringContaining('/.ssh/known_hosts_work'),
+      ],
+      globalKnownHostsFiles: ['/etc/ssh/ssh_known_hosts'],
     });
   });
 
@@ -127,6 +151,27 @@ proxyjump jump-a,jump-b
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('bounds concurrent ssh -G discovery for large configs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-ssh-discovery-limit-'));
+    try {
+      const configPath = join(root, 'config');
+      writeFileSync(configPath, Array.from({ length: 24 }, (_, index) => `Host host-${index}`).join('\n'));
+      let active = 0;
+      let maximum = 0;
+      const hosts = await discoverSshHosts(configPath, async (_receivedPath, alias) => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 2));
+        active -= 1;
+        return { code: 0, stdout: `hostname ${alias}.example.com\nuser you\nport 22\n`, stderr: '' };
+      });
+      expect(hosts).toHaveLength(24);
+      expect(maximum).toBeLessThanOrEqual(8);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ProxyJump delegation', () => {
@@ -137,7 +182,26 @@ describe('ProxyJump delegation', () => {
       'jump-a',
       '-W',
       'target.internal:2222',
+      '--',
       'jump-b',
     ]);
+  });
+
+  it('translates an explicit final jump port into OpenSSH -p syntax', () => {
+    expect(buildOpenSshJumpArgs('jump-a,alice@jump-b:2200', 'target.internal', 22)).toEqual([
+      '-T',
+      '-J',
+      'jump-a',
+      '-p',
+      '2200',
+      '-W',
+      'target.internal:22',
+      '--',
+      'alice@jump-b',
+    ]);
+  });
+
+  it('rejects an option-like ProxyJump username', () => {
+    expect(() => buildOpenSshJumpArgs('-Fbad@jump', 'target.internal', 22)).toThrow(/user/u);
   });
 });

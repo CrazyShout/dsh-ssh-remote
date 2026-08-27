@@ -30,15 +30,33 @@ export function parseSshUri(uri: string): SshUri {
     user = authority.slice(0, at);
     hostport = authority.slice(at + 1);
   }
-  const colon = hostport.lastIndexOf(':');
   let host = hostport;
   let port = 22;
-  if (colon !== -1) {
-    host = hostport.slice(0, colon);
-    port = Number.parseInt(hostport.slice(colon + 1), 10);
-    if (Number.isNaN(port)) port = 22;
+  if (hostport.startsWith('[')) {
+    const bracket = hostport.indexOf(']');
+    if (bracket === -1) throw new Error(`invalid ssh uri (unterminated IPv6 host): ${uri}`);
+    host = hostport.slice(1, bracket);
+    const suffix = hostport.slice(bracket + 1);
+    if (suffix) {
+      if (!suffix.startsWith(':')) throw new Error(`invalid ssh uri authority: ${uri}`);
+      port = parseSshPort(suffix.slice(1), uri);
+    }
+  } else {
+    const firstColon = hostport.indexOf(':');
+    const lastColon = hostport.lastIndexOf(':');
+    if (firstColon !== -1 && firstColon !== lastColon) {
+      throw new Error(`invalid ssh uri (IPv6 hosts must use brackets): ${uri}`);
+    }
+    if (lastColon !== -1) {
+      host = hostport.slice(0, lastColon);
+      port = parseSshPort(hostport.slice(lastColon + 1), uri);
+    }
   }
   if (!host) throw new Error(`invalid ssh uri (missing host): ${uri}`);
+  if (host.startsWith('-') || /[\s\0]/u.test(host)) throw new Error(`invalid ssh uri host: ${uri}`);
+  if (user.startsWith('-') || /[\s\0]/u.test(user)) {
+    throw new Error(`invalid ssh uri user: ${uri}`);
+  }
   return { host, port, user, path };
 }
 
@@ -46,7 +64,18 @@ export function parseSshUri(uri: string): SshUri {
 export function formatSshUri(u: SshUri): string {
   const userpart = u.user ? `${u.user}@` : '';
   const portpart = u.port === 22 ? '' : `:${u.port}`;
-  return `ssh://${userpart}${u.host}${portpart}${u.path}`;
+  const host = u.host.includes(':') ? `[${u.host}]` : u.host;
+  const path = u.path.startsWith('/') ? u.path : `/${u.path}`;
+  return `ssh://${userpart}${host}${portpart}${path}`;
+}
+
+function parseSshPort(value: string, uri: string): number {
+  if (!/^\d+$/u.test(value)) throw new Error(`invalid ssh uri port: ${uri}`);
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`invalid ssh uri port: ${uri}`);
+  }
+  return port;
 }
 
 /** A registered remote workspace, persisted and served to the client. */
