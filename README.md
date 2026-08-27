@@ -1,111 +1,89 @@
 # dsh-ssh-remote
 
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-SSH-backed remote workspaces for DeepSeek Harness. Add a folder from a host in
-your local OpenSSH configuration, then work in it through the normal DSH
-filesystem, bash/subprocess, and terminal surfaces.
+DeepSeek Harness 的 SSH 远程工作区插件：从本机 OpenSSH 配置选择一台主机和远端文件夹，
+加入工作区后继续使用 DSH 标准的文件系统、bash/子进程和终端界面。
 
-> **Architecture status:** this release is a lightweight workspace-routing
-> plugin. DSH, session history, configuration, and plugin execution remain on
-> the local Harness host. It does **not** run a remote DSH control plane or claim
-> full Codex Remote parity. See [ADR-0003](docs/adr/0003-codex-remote-parity.md).
+> **架构状态：**当前版本是轻量级工作区路由插件。DSH 控制面、会话历史、配置和插件执行
+> 仍在本机 Harness Host；它不会在远端启动完整 DSH，也不声称已经达到 Codex Remote
+> 的完整架构。详见 [ADR-0003](docs/adr/0003-codex-remote-parity.md)。
 
-## Implemented today
+## 当前已实现
 
-- **OpenSSH discovery:** concrete `Host` aliases are collected from
-  `~/.ssh/config` and its `Include` files. Effective HostName, User, Port,
-  IdentityFile, ProxyJump, ProxyCommand, HostKeyAlias, StrictHostKeyChecking,
-  and known-hosts paths are resolved with `ssh -G`.
-- **One Add Workspace flow:** choose the local machine or an SSH alias, browse
-  directories in-app, and add the selected folder as a Harness workspace.
-- **Standard DSH workflow:** no plugin-specific model tool is required. In a
-  remote workspace, normal filesystem calls are routed through SFTP and normal
-  bash/subprocess calls are launched through the system `ssh` executable.
-  When the active DSH composition includes its terminal service, normal DSH
-  terminal sessions route to the plugin's `ssh2` PTY channel. That channel is
-  not a system-OpenSSH terminal and does not claim Codex-style session recovery.
-- **Fail-closed host verification:** the SFTP channel verifies server keys
-  against the effective OpenSSH `known_hosts` files. With the normal `ask`,
-  `yes`, or `accept-new` policies, unknown, changed, and revoked keys are
-  rejected before file access begins.
-- **Canonical path checks:** remote paths are normalized and resolved with
-  SFTP `realpath`; symlinks already present at check time cannot masquerade as
-  workspace children, and dangling symlinks fail closed.
-- **Atomic remote publication:** replacements upload to a same-directory
-  temporary file, preserve the existing mode, recheck the guarded content, and
-  publish with OpenSSH `posix-rename`. `createIfAbsent` publishes a completed
-  temporary inode with OpenSSH `hardlink`; servers missing either atomic
-  extension fail closed instead of exposing partial files.
-- **Connection management:** host-scoped `ssh2`/SFTP connections use keepalive,
-  bounded connection waits, exponential-backoff reconnects, and stale-attempt
-  fencing.
-- **Persisted mappings:** remote workspace records and local anchor mappings
-  use atomic replacement with private `0600` files and survive a DSH restart.
+- **OpenSSH 主机发现**：从 `~/.ssh/config` 及其 `Include` 文件发现具体 `Host` 别名，
+  再用 `ssh -G` 解析最终 HostName、User、Port、IdentityFile、ProxyJump、
+  ProxyCommand、HostKeyAlias、StrictHostKeyChecking 和 known-hosts 路径。
+- **本机 + SSH 合一的「添加工作区」**：选择本机或 SSH 别名，在应用内浏览目录，然后
+  像普通 Harness 工作区一样加入。
+- **标准 DSH 使用方式**：不再要求模型调用插件私有工具。在远程工作区内，标准文件
+  调用透明路由到 SFTP，标准 bash/子进程调用通过系统 `ssh` 启动。若当前 DSH 组合
+  提供 terminal service，标准 DSH 终端会路由到插件的 `ssh2` PTY 通道；它不是系统
+  OpenSSH terminal，也不声称具备 Codex 式会话恢复。
+- **host key 失败即关闭（fail closed）**：SFTP 通道按有效 OpenSSH `known_hosts`
+  校验服务端密钥；在常规 `ask`、`yes` 或 `accept-new` 策略下，未知、变更或已吊销
+  密钥在文件访问前即被拒绝。
+- **规范路径检查**：远端路径先做规范化，再用 SFTP `realpath` 解析；检查时已经存在的
+  符号链接不能伪装成工作区子项，悬空符号链接直接拒绝。
+- **远端文件原子发布**：覆盖写先上传同目录临时文件、保留原权限并复核受保护内容，再用
+  OpenSSH `posix-rename` 发布；`createIfAbsent` 用 OpenSSH `hardlink` 发布已经写完整的
+  临时 inode。远端不支持所需原子扩展时失败即关闭，不暴露空文件或半文件。
+- **连接管理**：以 host 为粒度复用 `ssh2`/SFTP 连接，提供 keepalive、有界连接等待、
+  指数退避重连和过期连接尝试隔离。
+- **映射持久化**：远程工作区记录和本地锚点映射使用原子替换及私有 `0600` 文件，
+  会跨 DSH 重启保留。
 
-Not currently implemented: live connection-status controls in the sidebar,
-Codex-equivalent terminal/session recovery, remote DSH history/config/plugin
-execution, or general-purpose SSH port-forward management.
+当前尚未实现：侧边栏实时连接状态与控制、与 Codex 等价的终端/会话恢复、远端 DSH
+历史/配置/插件执行，以及通用 SSH 端口转发管理。
 
-The `ssh2` PTY also cannot report a verified remote foreground PGID, so the
-explicit DSH `terminal_signal` operation fails honestly instead of returning a
-fabricated process group. Send cancellation still requests channel-level
-`SIGINT`; verified PGID signalling and resize require the Phase 2 helper plus a
-future DSH resize seam.
+`ssh2` PTY 也无法返回经过验证的远端前台 PGID，因此显式 DSH `terminal_signal` 会诚实
+报错，而不是伪造进程组编号。send 取消仍会请求 channel 级 `SIGINT`；可验证 PGID signal
+和 resize 需要 Phase 2 helper 以及未来的 DSH resize seam。
 
-SFTP v3 also has no compare-and-swap primitive. The plugin detects metadata and
-content changes immediately before an atomic rename, but an unrelated remote
-writer can still race in the final check-to-rename interval. Closing that last
-external-writer window is a Phase 2 remote-helper capability, not something the
-current lightweight transport claims to solve.
+SFTP v3 本身也没有 compare-and-swap 原语。插件会在原子 rename 前复核 metadata 与内容，
+但无关的远端写者仍可能卡进“最后检查到 rename”之间的极短窗口。彻底关闭这个外部写者
+窗口属于 Phase 2 远端 helper 的能力，当前轻量 transport 不声称已经解决。
 
-SFTP v3 exposes only second-resolution modification times and no inode/ctime
-identity. A same-size external rewrite within the same second can therefore
-reuse an older metadata version token if it happened before the guarded write
-started. DSH's `stat` seam is metadata-only, so a strong read-with-version token
-also belongs in the helper/upstream phase rather than being faked with hidden
-content reads.
+SFTP v3 还只提供秒级 mtime，没有 inode/ctime 身份；若外部程序在 guarded write 开始前、
+同一秒内完成等长改写，旧 metadata version token 仍可能被复用。DSH 的 `stat` seam 明确
+只能读取 metadata，因此强 read-with-version token 也应由 helper/上游能力解决，不能靠
+隐藏读取内容来伪造。
 
-## Install
+## 安装
 
-Requires Node 22+ and npm. Tested with DSH 0.1.0-rc.6 through
-0.1.1-rc.2; 0.1.1-rc.2 is the recommended baseline.
+要求 Node 22+、npm。已验证 DSH 0.1.0-rc.6 至 0.1.1-rc.2；
+推荐以 0.1.1-rc.2 作为当前基线。
 
 ```sh
-# Option A: npm (once published)
+# 方式一：npm（若已发布）
 dsh plugin --profile web add dsh-ssh-remote
 
-# Option B: GitHub (no publish needed)
+# 方式二：GitHub（无需发布）
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
 
-Restart `dsh web` afterwards.
+安装后重启 `dsh web`。
 
-## Usage
+## 使用
 
-1. Add a concrete alias to `~/.ssh/config`.
-2. Run `ssh devbox` once in a terminal. Verify the displayed fingerprint before
-   accepting a new key; this establishes trust in OpenSSH `known_hosts`.
-3. In DSH, click **Add Workspace**, choose `devbox`, browse to the remote
-   directory, and click **Open this folder**.
-4. Start a session in that workspace. Use **Full access** when DSH must launch
-   the local SSH client or reach the remote host.
-5. Ask the agent to read/edit files, run tests, or use the terminal normally.
-   There is no plugin-specific command language to learn.
+1. 在 `~/.ssh/config` 中加入具体别名。
+2. 先在终端执行一次 `ssh devbox`。出现新密钥时，核对指纹后再确认；这一步由 OpenSSH
+   把信任写入 `known_hosts`。
+3. 在 DSH 点击「添加工作区」，选择 `devbox`，浏览远端目录并点击「打开此文件夹」。
+4. 在该工作区开始会话。若 DSH 需要启动本机 SSH 客户端或访问网络，请选择
+   **Full access**。
+5. 直接让 agent 读写文件、运行测试或使用标准终端即可；不需要学习插件私有命令格式。
 
-Harness currently requires a local workspace path. The plugin creates a small
-anchor under `$DSH_HOME/ssh-workspace-anchors/` and persists its exact mapping
-in `$DSH_HOME/ssh-workspace-anchors.json`. Only that anchor and its descendants
-route to the corresponding `ssh://alias/path`; unrelated local paths keep using
-the original local providers.
+Harness 当前仍要求工作区是本地路径，因此插件会在
+`$DSH_HOME/ssh-workspace-anchors/` 创建一个很小的本地锚点，并把精确映射持久化到
+`$DSH_HOME/ssh-workspace-anchors.json`。只有该锚点及其子路径会路由到对应的
+`ssh://alias/path`；其他本地路径仍使用原有本地 provider。
 
-The anchor contains no remote source files. Adding a remote workspace does not
-copy or mount the remote directory locally.
+锚点不包含远端源码。添加远程工作区不会把远端目录复制或挂载到本机。
 
-## SSH configuration
+## SSH 配置
 
-Use a concrete alias, verify it with OpenSSH, then refresh the SSH Connections
-panel:
+使用具体别名，先用 OpenSSH 验证连接，再刷新 SSH Connections 页面：
 
 ```sshconfig
 Host devbox
@@ -115,113 +93,92 @@ Host devbox
   ProxyJump bastion
 ```
 
-`~/.ssh/config` remains the connection source of truth. The Web panel is
-read-only and does not duplicate SSH keys or passwords into DSH settings.
-Legacy `ssh-remote.hosts` entries remain a read-only compatibility fallback.
+`~/.ssh/config` 始终是连接配置的事实来源。Web 页面只读展示，不会把 SSH 密钥或密码
+重复写入 DSH 设置。旧版 `ssh-remote.hosts` 仅保留为只读兼容兜底。
 
-### Authentication limits
+### 认证限制
 
-- The SFTP and PTY channels prefer `SSH_AUTH_SOCK` and load at most the first
-  readable effective `IdentityFile`. Because those channels are implemented
-  with `ssh2`, they do not inherit every authentication mechanism supported by
-  the system OpenSSH client. Agent-backed keys are the most compatible choice.
-- An encrypted private key that is not available through the agent may let
-  `ssh devbox` succeed while SFTP/PTY authentication still fails. Keychain,
-  PKCS#11/FIDO, certificates, and interactive password flows are not claimed as
-  fully supported by the SFTP channel.
-- ProxyJump byte streams are opened by system OpenSSH. An effective
-  ProxyCommand is launched through the local shell with `%h`, `%p`, `%r`, and
-  `%%` expansion; uncommon OpenSSH tokens are not claimed. Final SFTP
-  authentication remains subject to the limitation above.
-- The remote host must enable the `sftp` subsystem. A jump host must allow the
-  forwarding required by the configured ProxyJump/ProxyCommand.
+- SFTP 与 PTY 通道优先使用 `SSH_AUTH_SOCK`，并且至多加载第一个可读取的有效
+  `IdentityFile`。由于这些通道仍基于 `ssh2`，它们不会自动继承系统 OpenSSH 支持的全部认证方式；
+  由 agent 托管密钥的兼容性最好。
+- 若加密私钥未加载到 agent，可能出现 `ssh devbox` 成功、SFTP/PTY 认证仍失败的情况。
+  当前不声称文件通道完整支持 Keychain、PKCS#11/FIDO、证书和交互式密码流程。
+- ProxyJump 字节流由系统 OpenSSH 建立。有效 ProxyCommand 由本机 shell 启动，只展开
+  `%h`、`%p`、`%r` 与 `%%`；不声称支持其他少见 OpenSSH token。最终 SFTP 认证仍受
+  上述限制。
+- 目标机必须启用 `sftp` 子系统；跳板机必须允许当前 ProxyJump/ProxyCommand 所需的
+  转发。
 
-## Host-key verification
+## Host key 校验
 
-The Web request deliberately has no invisible trust-on-first-use prompt. The
-plugin reads the effective `HostKeyAlias`, `StrictHostKeyChecking`,
-`UserKnownHostsFile`, and `GlobalKnownHostsFile` values, and delegates pattern
-and hashed-host lookup to `ssh-keygen -F`.
+Web 请求不会静默执行首次信任。插件读取有效 HostKeyAlias、StrictHostKeyChecking、
+UserKnownHostsFile 和 GlobalKnownHostsFile，并把普通模式与哈希 host 的查找交给
+`ssh-keygen -F`。
 
-- A matching ordinary key is accepted.
-- A mismatched or `@revoked` key is rejected.
-- An unknown key fails closed with an instruction to run `ssh <alias>` and
-  verify the fingerprint first.
-- `StrictHostKeyChecking accept-new` also fails closed in the Web flow: the
-  plugin never writes `known_hosts` itself.
-- Only an explicit `StrictHostKeyChecking no` permits an otherwise unknown or
-  changed key; a key marked `@revoked` is still rejected.
-- Hosts trusted only through an `@cert-authority` entry are not yet supported
-  by the `ssh2` SFTP/PTY channel.
+- 匹配的普通密钥允许连接。
+- 密钥不匹配或命中 `@revoked` 时拒绝连接。
+- 未知密钥失败即关闭，并提示先运行 `ssh <alias>`、人工核对指纹。
+- Web 流程对 `StrictHostKeyChecking accept-new` 同样失败即关闭；插件不会自行写入
+  `known_hosts`。
+- 只有显式配置 `StrictHostKeyChecking no` 才允许原本未知或变更的密钥；命中
+  `@revoked` 的密钥仍会被拒绝。
+- 目前 `ssh2` SFTP/PTY 通道尚不支持仅由 `@cert-authority` 条目信任的主机证书。
 
-## Routing and security boundary
+## 路由与安全边界
 
-- Remote path components are normalized before they reach SFTP.
-- Existing targets and symlinks are canonicalized with remote `realpath`.
-- For a missing write target, the nearest existing ancestor is canonicalized
-  and only normalized missing components are appended.
-- A dangling symlink is rejected rather than treated as a harmless missing
-  file.
-- Containment compares canonical path identities on the same host, port, and
-  user. A workspace `/srv/project` contains itself and
-  `/srv/project/src/a.ts`, but not `/srv/project-copy`, `../etc/passwd`, or a
-  symlink resolving outside the workspace.
-- Standard filesystem mutations re-check the canonical target immediately
-  before writing: `read-only` denies them, while `workspace-write` admits only
-  targets that resolve below the mapped remote root at check time. The former
-  raw `ssh_remote` write/exec bypass is no longer exposed to the model.
+- 路径分量在发送给 SFTP 前规范化。
+- 已存在目标和符号链接使用远端 `realpath` 取得规范身份。
+- 写入尚不存在的目标时，先规范化最近的已存在祖先，再追加已规范化的缺失分量。
+- 悬空符号链接会被拒绝，不会被当作普通的「文件不存在」。
+- 包含关系比较同一 host、port、user 下的规范路径。工作区 `/srv/project` 包含自身和
+  `/srv/project/src/a.ts`，但不包含 `/srv/project-copy`、`../etc/passwd`，也不包含
+  最终解析到工作区外的符号链接。
+- 标准文件写入会在落盘前重新检查规范目标：`read-only` 直接拒绝，`workspace-write` 只
+  接受检查时解析到远程工作区根以内的目标；原先可绕过标准权限路径的 `ssh_remote`
+  写入/执行工具不再暴露给模型。
 
-These are useful guardrails, not a remote sandbox or chroot. SFTP has no
-directory-handle-relative `openat`, so a concurrent remote actor can replace an
-intermediate directory after `realpath` and before the path-based write.
-Moreover, remote bash/subprocess and PTY sessions are not confined to the
-workspace by this plugin: after SSH is allowed, commands have the full authority
-of the remote Unix account. A DSH **Full access** approval controls whether the
-local SSH client may launch; it does not create a remote filesystem sandbox.
-Strong path confinement and process sandboxing require the Phase 2 helper.
+这些是有用的 guardrail，不是远端 sandbox 或 chroot。SFTP 没有相对目录句柄的 `openat`，
+并发远端进程仍可在 `realpath` 后、按路径写入前替换中间目录。远程 bash/子进程与 PTY 也
+不会被本插件限制在工作区内：SSH 一旦获准，命令就拥有远端 Unix 账号的完整权限。DSH 的
+**Full access** 许可决定本机 SSH 客户端能否启动，并不会创建远端文件系统 sandbox。强路径
+隔离与进程 sandbox 需要 Phase 2 helper。
 
-## Local workspaces on Windows and WSL
+## 本机工作区：Windows 与 WSL
 
-The same **Add Workspace** dialog also adds plain local directories. Its local
-branch adapts to the directory-picker capability served by the current DSH
-composition:
+同一个「添加工作区」对话框也能添加普通本地目录，本机分支会适配当前 DSH 组合提供的
+目录选择器能力：
 
-- **browse** (typical on headless/WSL hosts): an in-app browser lists and
-  creates directories through the Host. Quick links include the Host home and
-  Windows drives mounted below `/mnt`.
-- **native**: use the operating-system folder chooser.
+- **browse**（常见于 headless/WSL Host）：应用内目录浏览器通过 Host 列目录和创建
+  文件夹，快捷入口包括 Host 家目录及 `/mnt` 下的 Windows 磁盘。
+- **native**：使用操作系统文件夹选择框。
 
-Only the explicit `directory-picker-unavailable` result switches to the native
-chooser. Permission, timeout, transport, and internal browse failures stay in
-the dialog as retryable errors. Workspaces under `/mnt/...` are ordinary local
-Harness workspaces from WSL's point of view; they are not SSH workspaces.
+只有明确的 `directory-picker-unavailable` 才切换 native 选择器。权限、超时、传输或
+内部浏览失败会留在对话框内供重试。在 `/mnt/...` 下加入的是 WSL 视角的普通本地
+Harness 工作区，并不是 SSH 工作区。
 
-## Codex comparison and roadmap
+## 与 Codex 的区别和路线图
 
-Current Codex source exposes an experimental remote execution/filesystem environment and a
-Unix-socket `app-server proxy`. The current Codex Desktop build goes further by
-starting a complete app-server on the SSH host. These are useful design
-references, not a documented stable API for third-party clients:
+当前 Codex 源码公开了实验性的远程执行/文件系统 environment，以及基于 Unix socket 的
+`app-server proxy`；当前 Codex Desktop 构建还会在 SSH 主机上启动完整 app-server。
+这些实现只作为设计参考，不应被描述为面向第三方客户端的公开稳定 API：
 
-- [Codex app-server transports and proxy](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L20-L44)
-- [Codex remote process and PTY RPCs](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L180-L224)
-- [Codex remote filesystem RPCs](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L375-L396)
-- [Codex environment status APIs](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L250-L253)
+- [Codex app-server transport 与 proxy](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L20-L44)
+- [Codex 远端进程与 PTY RPC](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L180-L224)
+- [Codex 远端文件系统 RPC](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L375-L396)
+- [Codex environment 状态 API](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L250-L253)
 
-Our phased direction is:
+我们的分阶段方向是：
 
-1. harden the current anchor/SFTP/OpenSSH router;
-2. add honest connection status and diagnostics;
-3. introduce an optional system-OpenSSH remote helper with one versioned RPC
-   channel for files, processes, and PTYs;
-4. work with DSH upstream on first-class `{hostId, remotePath}` workspaces and a
-   host-aware runtime, so anchors and service monkey-patching can eventually be
-   removed.
+1. 先加固现有 anchor/SFTP/OpenSSH 路由；
+2. 增加诚实、可操作的连接状态和诊断；
+3. 引入可选的 system OpenSSH 远端 helper，用一条带版本协议的 RPC 通道统一文件、
+   进程和 PTY；
+4. 推动 DSH 上游支持一等 `{hostId, remotePath}` 工作区和 host-aware runtime，最终移除
+   本地 anchor 与服务 monkey-patch。
 
-The full rationale is recorded in
-[ADR-0003](docs/adr/0003-codex-remote-parity.md).
+完整理由记录在 [ADR-0003](docs/adr/0003-codex-remote-parity.md)。
 
-## Development
+## 开发
 
 ```sh
 npm ci
@@ -229,7 +186,7 @@ npm run build
 npm test
 ```
 
-`lib/` is committed so a Git installation does not ship without build output.
+`lib/` 已提交进 git，避免 Git 安装时缺少构建产物。
 
 ## License
 
