@@ -24,7 +24,8 @@ DeepSeek Harness 的 **SSH 远程工作区**插件：让 agent 通过 SSH 连接
 
 ## 安装
 
-要求：Node 22+、pnpm、DSH 0.1.0-rc.x。
+要求：Node 22+、pnpm。已验证 DSH 0.1.0-rc.6 至 0.1.1-rc.2；
+推荐以 0.1.1-rc.2 作为当前基线。
 
 ```sh
 # 方式一：npm（若已发布）
