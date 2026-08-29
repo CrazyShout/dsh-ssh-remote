@@ -5,16 +5,22 @@ import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import z from '@deepseek-ai/schemastery';
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, join, posix, relative, resolve, sep } from 'node:path';
 import { SshConnectionManager, type SshHostConfig } from './connection.js';
 import {
+  RemoteHelperManager,
+  type RemoteHelperDiagnostics,
+  type RemoteHelperStatus,
+} from './helper/manager.js';
+import type { RemoteHelperClient } from './helper/rpc-client.js';
+import {
+  collectSshAliases,
   discoverSshHosts,
   expandHome,
   hasConcreteSshAlias,
   userSshConfigPath,
 } from './ssh-config.js';
-import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
 const SETTINGS_NS = settingsNamespace('ssh-remote');
@@ -64,6 +70,27 @@ export interface DiscoveredSshHost {
   identityFile: string;
   proxyJump: string;
   proxyCommand: string;
+  helper: HelperHostStatus;
+}
+
+export interface HelperHostStatus {
+  status: RemoteHelperStatus['state'];
+  version: string;
+  sessionId: string;
+  capabilities: Record<string, unknown>;
+  error: string;
+}
+
+export type HelperHostStatuses = Record<string, HelperHostStatus>;
+
+export interface HelperHostDiagnostics extends HelperHostStatus {
+  alias: string;
+  helperSha256: string;
+  lastConnectedAt: number;
+  lastHealthAt: number;
+  nextRetryAt: number;
+  stderr: string;
+  assetPath: string;
 }
 
 /** `config` result consumed by the Codex-style settings panel. */
@@ -98,17 +125,25 @@ export interface SshWorkspaceAnchor {
   createdAt: number;
 }
 
+interface HelperWorkspaceOpen {
+  workspaceId: string;
+  path: string;
+  access: 'read-only' | 'workspace-write' | 'danger-full-access';
+}
+
+interface HelperDirectoryList {
+  entries: Array<{
+    name: string;
+    metadata: { type: 'file' | 'directory' | 'symlink' | 'other' };
+  }>;
+  truncated?: boolean;
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** SSH remote workspaces service (this plugin). */
     sshRemote: SshRemoteService;
   }
-}
-
-type StatusListener = (change: { workspaceId: string; status: SshConnectionStatus; reason?: string }) => void;
-
-function persistPath(): string {
-  return dshHomePath('ssh-remote-workspaces.json');
 }
 
 function anchorPersistPath(): string {
@@ -120,39 +155,26 @@ function anchorRootPath(): string {
 }
 
 /**
- * The `ctx.sshRemote` service: registers remote workspaces, owns their SSH
- * connections and status, and exposes workspace + host-config operations to
- * both the model tool and (through `@Remote` methods) the Web client.
+ * Host-facing Web facade and durable anchor registry. Helper lifecycle is
+ * delegated to RemoteHelperManager; ssh2 remains only for legacy hosts.
  */
 export class SshRemoteService extends TypertRemoteService {
   readonly connections: SshConnectionManager;
+  readonly helpers: RemoteHelperManager;
   private readonly settings: SettingsScope<LegacySshConfig>;
-  private readonly workspaces = new Map<string, RemoteWorkspace>();
   private readonly anchors = new Map<string, SshWorkspaceAnchor>();
-  private readonly listeners = new Set<StatusListener>();
   private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
-  private workspaceSaveQueue: Promise<void> = Promise.resolve();
   private anchorSaveQueue: Promise<void> = Promise.resolve();
+  private readonly ownsHelpers: boolean;
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, helpers?: RemoteHelperManager) {
     super(ctx, 'sshRemote');
     this.settings = ctx.settings.register(SETTINGS_NS, LegacySshRemoteSettingsSchema);
     this.hostResolver = this.createHostResolver();
     this.connections = new SshConnectionManager(this.hostResolver);
-    this.load();
+    this.helpers = helpers ?? new RemoteHelperManager();
+    this.ownsHelpers = helpers === undefined;
     this.loadAnchors();
-    this.connections.onStatus((key, status, reason) => {
-      for (const ws of this.workspaces.values()) {
-        if (this.keyOf(ws.uri) === key) {
-          ws.status = status;
-          if (reason) ws.lastError = reason;
-          this.emit({ workspaceId: ws.id, status, reason });
-        }
-      }
-      void this.save().catch(() => {
-        /* a later transition retries with a fresh complete snapshot */
-      });
-    });
   }
 
   private createHostResolver(): (host: string) => SshHostConfig | undefined {
@@ -189,22 +211,84 @@ export class SshRemoteService extends TypertRemoteService {
     return {
       configPath,
       configExists: existsSync(configPath),
-      hosts: hosts.map((host) => ({
-        alias: host.host,
-        host: host.hostName ?? host.host,
-        port: host.port ?? 22,
-        user: host.user ?? '',
-        identityFile: host.identityFile ?? '',
-        proxyJump: host.proxyJump ?? '',
-        proxyCommand: host.proxyCommand ?? '',
-      })),
+      hosts: hosts.map((host) => {
+        const status = this.helpers.status(host.host);
+        return {
+          alias: host.host,
+          host: host.hostName ?? host.host,
+          port: host.port ?? 22,
+          user: host.user ?? '',
+          identityFile: host.identityFile ?? '',
+          proxyJump: host.proxyJump ?? '',
+          proxyCommand: host.proxyCommand ?? '',
+          helper: helperStatusView(status),
+        };
+      }),
       legacyHostCount: this.settings.get().hosts.length,
     };
+  }
+
+  /** Cheap live status snapshot; unlike config(), this does not run ssh -G. */
+  @Remote('statuses')
+  async statuses(): Promise<HelperHostStatuses> {
+    return Object.fromEntries(
+      collectSshAliases().map(alias => [alias, helperStatusView(this.helpers.status(alias))]),
+    );
   }
 
   /** Browse one remote directory level for the Add Workspace flow. */
   @Remote('browse')
   async browse(alias: string, path: string): Promise<RemoteDirectoryListing> {
+    if (hasConcreteSshAlias(alias)) return this.browseWithHelper(alias, path);
+    return this.browseWithLegacySftp(alias, path);
+  }
+
+  private async browseWithHelper(alias: string, path: string): Promise<RemoteDirectoryListing> {
+    const client = await this.helpers.client(alias);
+    const home = await helperHome(client);
+    const requested = normalizeRemotePath(path || home);
+    const workspaceId = randomUUID();
+    const workspace = await client.call<HelperWorkspaceOpen>('workspace/open', {
+      path: requested,
+      access: 'read-only',
+      workspaceId,
+      operationId: workspaceId,
+    }, { timeoutMs: 20_000, mutation: true });
+    try {
+      const result = await client.call<HelperDirectoryList>('fs/list', {
+        workspaceId: workspace.workspaceId,
+        path: '',
+        limit: DIRECTORY_PAGE_LIMIT,
+        allowTruncated: true,
+        types: ['directory'],
+      }, { timeoutMs: 30_000 });
+      const directories = result.entries
+        .filter((entry) => entry.metadata.type === 'directory')
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const truncated = result.truncated === true || directories.length > DIRECTORY_PAGE_LIMIT;
+      return {
+        path: normalizeRemotePath(workspace.path),
+        home,
+        crumbs: remoteCrumbs(workspace.path),
+        entries: directories.slice(0, DIRECTORY_PAGE_LIMIT).map((entry) => ({
+          name: entry.name,
+          path: posix.join(workspace.path, entry.name),
+          hidden: entry.name.startsWith('.'),
+        })),
+        truncated,
+      };
+    } finally {
+      await client.call('workspace/close', {
+        workspaceId: workspace.workspaceId,
+        operationId: `close:${workspace.workspaceId}`,
+      }, {
+        timeoutMs: 5_000,
+        mutation: true,
+      }).catch(() => {});
+    }
+  }
+
+  private async browseWithLegacySftp(alias: string, path: string): Promise<RemoteDirectoryListing> {
     const transport = await this.connections.transport(formatSshUri({
       host: alias,
       port: 22,
@@ -259,6 +343,34 @@ export class SshRemoteService extends TypertRemoteService {
     const clean = name.trim();
     if (!clean || clean === '.' || clean === '..' || clean.includes('/')) {
       throw new Error('folder name must be one non-empty path segment');
+    }
+    if (hasConcreteSshAlias(alias)) {
+      const client = await this.helpers.client(alias);
+      const workspaceId = randomUUID();
+      const workspace = await client.call<HelperWorkspaceOpen>('workspace/open', {
+        path: normalizeRemotePath(parent),
+        access: 'workspace-write',
+        workspaceId,
+        operationId: workspaceId,
+      }, { timeoutMs: 20_000, mutation: true });
+      try {
+        await client.call('fs/mkdir', {
+          workspaceId: workspace.workspaceId,
+          path: clean,
+          recursive: false,
+          mode: 0o755,
+          operationId: randomUUID(),
+        }, { timeoutMs: 30_000, mutation: true });
+        return posix.join(workspace.path, clean);
+      } finally {
+        await client.call('workspace/close', {
+          workspaceId: workspace.workspaceId,
+          operationId: `close:${workspace.workspaceId}`,
+        }, {
+          timeoutMs: 5_000,
+          mutation: true,
+        }).catch(() => {});
+      }
     }
     const transport = await this.connections.transport(formatSshUri({
       host: alias,
@@ -326,159 +438,71 @@ export class SshRemoteService extends TypertRemoteService {
 
   async ensureDirectory(uri: string): Promise<void> {
     const parsed = parseSshUri(uri);
+    if (hasConcreteSshAlias(parsed.host)) {
+      const client = await this.helpers.client(uri);
+      const workspaceId = randomUUID();
+      const workspace = await client.call<HelperWorkspaceOpen>('workspace/open', {
+        path: normalizeRemotePath(parsed.path),
+        access: 'read-only',
+        workspaceId,
+        operationId: workspaceId,
+      }, { timeoutMs: 20_000, mutation: true });
+      await client.call('workspace/close', {
+        workspaceId: workspace.workspaceId,
+        operationId: `close:${workspace.workspaceId}`,
+      }, {
+        timeoutMs: 5_000,
+        mutation: true,
+      }).catch(() => {});
+      return;
+    }
     const transport = await this.connections.transport(uri);
     const status = await transport.sftp((sftp) => statP(sftp, parsed.path));
     if (!status?.isDirectory()) throw new Error(`remote path is not a directory: ${parsed.path}`);
   }
 
-  onStatus(listener: StatusListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+  @Remote('connectHost')
+  async connectHost(alias: string): Promise<HelperHostStatus> {
+    this.assertHelperAlias(alias);
+    await this.helpers.client(alias);
+    return helperStatusView(this.helpers.status(alias));
   }
 
-  list(): RemoteWorkspace[] {
-    return [...this.workspaces.values()];
+  @Remote('disconnectHost')
+  async disconnectHost(alias: string): Promise<HelperHostStatus> {
+    this.assertHelperAlias(alias);
+    await this.helpers.close(alias);
+    return helperStatusView(this.helpers.status(alias));
   }
 
-  get(id: string): RemoteWorkspace | undefined {
-    return this.workspaces.get(id);
+  @Remote('retryHost')
+  async retryHost(alias: string): Promise<HelperHostStatus> {
+    this.assertHelperAlias(alias);
+    await this.helpers.retry(alias);
+    return helperStatusView(this.helpers.status(alias));
   }
 
-  add(uri: string, title?: string): RemoteWorkspace {
-    const parsed = parseSshUri(uri);
-    const id = `${parsed.host}-${Date.now().toString(36)}`;
-    const record: RemoteWorkspace = {
-      id,
-      uri: formatSshUri(parsed),
-      title: title ?? `${parsed.user ? parsed.user + '@' : ''}${parsed.host}`,
-      status: 'disconnected',
-      createdAt: Date.now(),
-    };
-    this.workspaces.set(id, record);
-    void this.save().catch(() => {});
-    return record;
-  }
-
-  remove(id: string): boolean {
-    const ws = this.workspaces.get(id);
-    if (!ws) return false;
-    void this.connections.close(ws.uri);
-    this.workspaces.delete(id);
-    void this.save().catch(() => {});
-    return true;
-  }
-
-  async connect(id: string): Promise<void> {
-    const ws = this.workspaces.get(id);
-    if (!ws) throw new Error(`no such workspace: ${id}`);
-    await this.connections.transport(ws.uri);
-  }
-
-  async disconnect(id: string): Promise<void> {
-    const ws = this.workspaces.get(id);
-    if (!ws) throw new Error(`no such workspace: ${id}`);
-    await this.connections.close(ws.uri);
-  }
-
-  async exec(id: string, command: string): Promise<{ code: number; stdout: string; stderr: string }> {
-    const ws = this.require(id);
-    const transport = await this.connections.transport(ws.uri);
-    return transport.exec(command);
-  }
-
-  async stat(id: string, path: string): Promise<{ type: string; size: number } | undefined> {
-    const ws = this.require(id);
-    const transport = await this.connections.transport(ws.uri);
-    return transport.sftp(async (sftp) => {
-      const st = await statP(sftp, this.remotePath(ws.uri, path));
-      return st ? { type: st.isDirectory() ? 'directory' : st.isFile() ? 'file' : 'other', size: st.size } : undefined;
-    });
-  }
-
-  async listDir(id: string, path: string): Promise<Array<{ name: string; type: string; size: number }>> {
-    const ws = this.require(id);
-    const transport = await this.connections.transport(ws.uri);
-    return transport.sftp(async (sftp) => {
-      const entries = await readdirP(sftp, this.remotePath(ws.uri, path));
-      return entries.map((e) => ({
-        name: e.filename,
-        type: e.attrs.isDirectory() ? 'directory' : e.attrs.isFile() ? 'file' : 'other',
-        size: e.attrs.size,
-      }));
-    });
-  }
-
-  async readText(id: string, path: string): Promise<string> {
-    const ws = this.require(id);
-    const transport = await this.connections.transport(ws.uri);
-    return transport.sftp(async (sftp) => {
-      const buf = await readFileP(sftp, this.remotePath(ws.uri, path));
-      return buf.toString('utf8');
-    });
-  }
-
-  async writeText(id: string, path: string, content: string): Promise<void> {
-    const ws = this.require(id);
-    const transport = await this.connections.transport(ws.uri);
-    await transport.sftp(async (sftp) => {
-      await writeFileP(sftp, this.remotePath(ws.uri, path), Buffer.from(content, 'utf8'));
-    });
+  @Remote('diagnostics')
+  async diagnostics(alias: string): Promise<HelperHostDiagnostics> {
+    this.assertHelperAlias(alias);
+    return helperDiagnosticsView(this.helpers.diagnostics(alias));
   }
 
   async dispose(): Promise<void> {
     await this.connections.dispose();
-    await Promise.allSettled([this.workspaceSaveQueue, this.anchorSaveQueue]);
-    this.workspaces.clear();
+    if (this.ownsHelpers) await this.helpers.dispose();
+    await Promise.allSettled([this.anchorSaveQueue]);
     this.anchors.clear();
   }
 
   // ── internals ──────────────────────────────────────────────────────────
 
-  private require(id: string): RemoteWorkspace {
-    const ws = this.workspaces.get(id);
-    if (!ws) throw new Error(`no such workspace: ${id}`);
-    return ws;
-  }
-
-  private keyOf(uri: string): string {
-    const u = parseSshUri(uri);
-    return `${u.host}:${u.port}:${u.user}`;
-  }
-
-  private remotePath(uri: string, path: string): string {
-    if (path.startsWith('/')) return path;
-    return posix.join(parseSshUri(uri).path, path).replace(/\/+$/, '') || '/';
-  }
-
-  private emit(change: { workspaceId: string; status: SshConnectionStatus; reason?: string }): void {
-    for (const l of this.listeners) l(change);
-  }
-
-  private load(): void {
-    try {
-      const raw = readFileSync(persistPath(), 'utf8');
-      const list = JSON.parse(raw) as RemoteWorkspace[];
-      for (const ws of list) {
-        if (ws && typeof ws.id === 'string' && typeof ws.uri === 'string') {
-          ws.status = 'disconnected';
-          ws.lastError = undefined;
-          this.workspaces.set(ws.id, ws);
-        }
-      }
-    } catch {
-      /* no persisted workspaces */
+  private assertHelperAlias(alias: string): void {
+    if (!hasConcreteSshAlias(alias)) {
+      throw new Error(
+        `SSH helper requires a concrete Host alias in ${userSshConfigPath()}; legacy settings remain fallback-only`,
+      );
     }
-  }
-
-  private save(): Promise<void> {
-    const file = persistPath();
-    const content = JSON.stringify([...this.workspaces.values()], null, 2);
-    const pending = this.workspaceSaveQueue.then(() => writeFileAtomic(file, content, {
-      mode: 0o600,
-      dirMode: 0o700,
-    }));
-    this.workspaceSaveQueue = pending.catch(() => {});
-    return pending;
   }
 
   private loadAnchors(): void {
@@ -550,12 +574,6 @@ function remoteCrumbs(path: string): RemoteDirectoryEntry[] {
   return crumbs;
 }
 
-function readdirP(sftp: import('ssh2').SFTPWrapper, path: string) {
-  return new Promise<Array<{ filename: string; attrs: import('ssh2').Stats }>>((resolve, reject) => {
-    sftp.readdir(path, (err, list) => (err ? reject(err) : resolve(list)));
-  });
-}
-
 /**
  * Read a directory through an explicit SFTP handle so the server is consumed
  * in bounded chunks. Passing a string to ssh2.readdir() silently accumulates
@@ -612,14 +630,37 @@ async function readdirBoundedP(
   return { rows: rows.slice(0, maxEntries), truncated };
 }
 
-function readFileP(sftp: import('ssh2').SFTPWrapper, path: string) {
-  return new Promise<Buffer>((resolve, reject) => {
-    sftp.readFile(path, (err, buf) => (err ? reject(err) : resolve(buf)));
-  });
+async function helperHome(client: RemoteHelperClient): Promise<string> {
+  const fromHello = (client.hello.platform as unknown as { home?: unknown }).home;
+  if (typeof fromHello === 'string' && fromHello.startsWith('/')) {
+    return normalizeRemotePath(fromHello);
+  }
+  const health = await client.call<{ home?: unknown }>('health/status', {}, { timeoutMs: 5_000 });
+  if (typeof health.home !== 'string' || !health.home.startsWith('/')) {
+    throw new Error('remote helper did not report an absolute home directory');
+  }
+  return normalizeRemotePath(health.home);
 }
 
-function writeFileP(sftp: import('ssh2').SFTPWrapper, path: string, data: Buffer) {
-  return new Promise<void>((resolve, reject) => {
-    sftp.writeFile(path, data, (err) => (err ? reject(err) : resolve()));
-  });
+function helperStatusView(status: RemoteHelperStatus): HelperHostStatus {
+  return {
+    status: status.state,
+    version: status.helperVersion ?? '',
+    sessionId: status.sessionId ?? '',
+    capabilities: status.capabilities === undefined ? {} : { ...status.capabilities },
+    error: status.lastError ?? '',
+  };
+}
+
+function helperDiagnosticsView(diagnostics: RemoteHelperDiagnostics): HelperHostDiagnostics {
+  return {
+    alias: diagnostics.alias,
+    ...helperStatusView(diagnostics),
+    helperSha256: diagnostics.helperSha256 ?? '',
+    lastConnectedAt: diagnostics.lastConnectedAt ?? 0,
+    lastHealthAt: diagnostics.lastHealthAt ?? 0,
+    nextRetryAt: diagnostics.nextRetryAt ?? 0,
+    stderr: diagnostics.stderr,
+    assetPath: diagnostics.assetPath,
+  };
 }

@@ -77,6 +77,24 @@ describe('remote Workspace routing', () => {
     expect(restored.targetKey).toBe('local:after');
   });
 
+  it('adapts the optional DSH 0.1.2 host-path seam without breaking rc.2', () => {
+    const fs = {
+      ...fakeFileSystem(),
+      processPathFromHostPath: vi.fn((path: string) => path === '/tmp/local' ? '/tmp/local' : undefined),
+    };
+    const restore = installRemoteFileSystemRouter(
+      fs as never,
+      fakeConnections() as never,
+      path => path.startsWith('/anchors/project')
+        ? `ssh://gpu/home/atlas/project${path.slice('/anchors/project'.length)}`
+        : undefined,
+    );
+    expect(fs.processPathFromHostPath('/anchors/project/src')).toBe('/home/atlas/project/src');
+    expect(fs.processPathFromHostPath('/tmp/local')).toBe('/tmp/local');
+    restore();
+    expect(fs.processPathFromHostPath('/anchors/project/src')).toBeUndefined();
+  });
+
   it('fails closed for remote writes under read-only or outside-workspace policy', async () => {
     const fs = fakeFileSystem();
     Object.defineProperty(fs, 'sandboxMode', { value: 'workspace-write' });

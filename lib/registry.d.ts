@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { SshConnectionManager } from './connection.js';
-import type { RemoteWorkspace, SshConnectionStatus } from './types.js';
+import { RemoteHelperManager, type RemoteHelperStatus } from './helper/manager.js';
 export interface SshHostEntry {
     name: string;
     host: string;
@@ -19,6 +19,24 @@ export interface DiscoveredSshHost {
     identityFile: string;
     proxyJump: string;
     proxyCommand: string;
+    helper: HelperHostStatus;
+}
+export interface HelperHostStatus {
+    status: RemoteHelperStatus['state'];
+    version: string;
+    sessionId: string;
+    capabilities: Record<string, unknown>;
+    error: string;
+}
+export type HelperHostStatuses = Record<string, HelperHostStatus>;
+export interface HelperHostDiagnostics extends HelperHostStatus {
+    alias: string;
+    helperSha256: string;
+    lastConnectedAt: number;
+    lastHealthAt: number;
+    nextRetryAt: number;
+    stderr: string;
+    assetPath: string;
 }
 /** `config` result consumed by the Codex-style settings panel. */
 export interface SshConfig {
@@ -54,32 +72,29 @@ declare module '@deepseek-ai/cordis' {
         sshRemote: SshRemoteService;
     }
 }
-type StatusListener = (change: {
-    workspaceId: string;
-    status: SshConnectionStatus;
-    reason?: string;
-}) => void;
 /**
- * The `ctx.sshRemote` service: registers remote workspaces, owns their SSH
- * connections and status, and exposes workspace + host-config operations to
- * both the model tool and (through `@Remote` methods) the Web client.
+ * Host-facing Web facade and durable anchor registry. Helper lifecycle is
+ * delegated to RemoteHelperManager; ssh2 remains only for legacy hosts.
  */
 export declare class SshRemoteService extends TypertRemoteService {
     readonly connections: SshConnectionManager;
+    readonly helpers: RemoteHelperManager;
     private readonly settings;
-    private readonly workspaces;
     private readonly anchors;
-    private readonly listeners;
     private readonly hostResolver?;
-    private workspaceSaveQueue;
     private anchorSaveQueue;
-    constructor(ctx: Context);
+    private readonly ownsHelpers;
+    constructor(ctx: Context, helpers?: RemoteHelperManager);
     private createHostResolver;
     private readKey;
     /** Discover and resolve the user's local OpenSSH aliases (Web Remote). */
     config(): Promise<SshConfig>;
+    /** Cheap live status snapshot; unlike config(), this does not run ssh -G. */
+    statuses(): Promise<HelperHostStatuses>;
     /** Browse one remote directory level for the Add Workspace flow. */
     browse(alias: string, path: string): Promise<RemoteDirectoryListing>;
+    private browseWithHelper;
+    private browseWithLegacySftp;
     /** Create one remote child directory from the remote directory picker. */
     createDirectory(alias: string, parent: string, name: string): Promise<string>;
     /**
@@ -90,38 +105,13 @@ export declare class SshRemoteService extends TypertRemoteService {
     /** Exact anchor/descendant resolver consumed by fs and subprocess routers. */
     resolveRemotePath(localPath: string): string | undefined;
     ensureDirectory(uri: string): Promise<void>;
-    onStatus(listener: StatusListener): () => void;
-    list(): RemoteWorkspace[];
-    get(id: string): RemoteWorkspace | undefined;
-    add(uri: string, title?: string): RemoteWorkspace;
-    remove(id: string): boolean;
-    connect(id: string): Promise<void>;
-    disconnect(id: string): Promise<void>;
-    exec(id: string, command: string): Promise<{
-        code: number;
-        stdout: string;
-        stderr: string;
-    }>;
-    stat(id: string, path: string): Promise<{
-        type: string;
-        size: number;
-    } | undefined>;
-    listDir(id: string, path: string): Promise<Array<{
-        name: string;
-        type: string;
-        size: number;
-    }>>;
-    readText(id: string, path: string): Promise<string>;
-    writeText(id: string, path: string, content: string): Promise<void>;
+    connectHost(alias: string): Promise<HelperHostStatus>;
+    disconnectHost(alias: string): Promise<HelperHostStatus>;
+    retryHost(alias: string): Promise<HelperHostStatus>;
+    diagnostics(alias: string): Promise<HelperHostDiagnostics>;
     dispose(): Promise<void>;
-    private require;
-    private keyOf;
-    private remotePath;
-    private emit;
-    private load;
-    private save;
+    private assertHelperAlias;
     private loadAnchors;
     private saveAnchors;
 }
-export {};
 //# sourceMappingURL=registry.d.ts.map

@@ -1,4 +1,5 @@
 import FileSystem, { FsError, type FsTarget } from '@deepseek-ai/dsh-fs';
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type {
   SubprocessRuntime,
   SubprocessSpawnSpec,
@@ -6,6 +7,7 @@ import type {
 } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { createRemoteFileSystemAdapter } from './fs.js';
+import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
 import type { SshConnectionManager } from './connection.js';
 import { parseSshUri } from './types.js';
 
@@ -32,8 +34,11 @@ export function installRemoteFileSystemRouter(
   fs: FileSystem,
   connections: SshConnectionManager,
   resolveRemotePath: RemotePathResolver,
+  helpers?: RemoteHelperProvider,
 ): () => void {
-  const remote = createRemoteFileSystemAdapter(connections);
+  const remote = helpers === undefined
+    ? createRemoteFileSystemAdapter(connections)
+    : new HelperRemoteFileSystem(helpers, resolveRemotePath);
   const originals = new Map<string, AnyFunction>();
   const remember = (name: string) => {
     const original = (fs as unknown as Record<string, AnyFunction>)[name];
@@ -48,7 +53,7 @@ export function installRemoteFileSystemRouter(
 
   const checkedRemoteWriteTarget = async (
     target: FsTarget,
-    policy?: { mode: string; workspaceRoot: string },
+    policy?: SandboxExecutionPolicy,
   ): Promise<FsTarget> => {
     const fallbackMode = (fs as unknown as { sandboxMode?: string }).sandboxMode;
     const mode = policy?.mode ?? fallbackMode;
@@ -97,6 +102,20 @@ export function installRemoteFileSystemRouter(
     return originalLstat.call(fs, path, opts, signal);
   };
 
+  // DSH 0.1.2 adds this optional host→execution-world visibility seam. Keep
+  // rc.2 compatibility while mapping persisted anchors when the newer method
+  // exists, so an upgrade does not reinterpret an anchor as a local path.
+  const processPathFromHostPath = (fs as unknown as Record<string, AnyFunction>).processPathFromHostPath;
+  if (typeof processPathFromHostPath === 'function') {
+    originals.set('processPathFromHostPath', processPathFromHostPath);
+    (fs as unknown as Record<string, AnyFunction>).processPathFromHostPath = (hostPath: string) => {
+      const remotePath = resolveRemotePath(hostPath);
+      return remotePath === undefined
+        ? processPathFromHostPath.call(fs, hostPath)
+        : parseSshUri(remotePath).path;
+    };
+  }
+
   for (const name of [
     'processPath',
     'fileUrl',
@@ -120,7 +139,7 @@ export function installRemoteFileSystemRouter(
     content: string,
     expected?: unknown,
     signal?: AbortSignal,
-    sandboxPolicy?: { mode: string; workspaceRoot: string },
+    sandboxPolicy?: SandboxExecutionPolicy,
   ) => isSshTarget(target)
     ? remote.writeText(await checkedRemoteWriteTarget(target, sandboxPolicy), content, expected as never, signal, sandboxPolicy)
     : originalWriteText.call(fs, target, content, expected, signal, sandboxPolicy);
@@ -131,7 +150,7 @@ export function installRemoteFileSystemRouter(
     edit: unknown,
     expected?: unknown,
     signal?: AbortSignal,
-    sandboxPolicy?: { mode: string; workspaceRoot: string },
+    sandboxPolicy?: SandboxExecutionPolicy,
   ) => isSshTarget(target)
     ? remote.editText(await checkedRemoteWriteTarget(target, sandboxPolicy), edit as never, expected as never, signal, sandboxPolicy)
     : originalEditText.call(fs, target, edit, expected, signal, sandboxPolicy);

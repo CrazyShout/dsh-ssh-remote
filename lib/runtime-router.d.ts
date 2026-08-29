@@ -1,6 +1,7 @@
 import FileSystem from '@deepseek-ai/dsh-fs';
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService } from '@deepseek-ai/dsh-terminal';
+import { type RemoteHelperProvider } from './helper-fs.js';
 import type { SshConnectionManager } from './connection.js';
 /** Resolve a registered local anchor or descendant to an SSH URI. */
 export type RemotePathResolver = (path: string) => string | undefined;
@@ -9,7 +10,7 @@ export type RemotePathResolver = (path: string) => string | undefined;
  * call the original provider; only direct SSH URIs and paths beneath a
  * persisted remote Workspace anchor use SFTP.
  */
-export declare function installRemoteFileSystemRouter(fs: FileSystem, connections: SshConnectionManager, resolveRemotePath: RemotePathResolver): () => void;
+export declare function installRemoteFileSystemRouter(fs: FileSystem, connections: SshConnectionManager, resolveRemotePath: RemotePathResolver, helpers?: RemoteHelperProvider): () => void;
 /** Build the local OpenSSH argv used for a remote process or terminal. */
 export declare function buildRemoteSshInvocation(cwd: string, argv: readonly string[], env: NodeJS.ProcessEnv | undefined, terminal: boolean): readonly string[];
 /**

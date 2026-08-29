@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClientChannel } from 'ssh2';
 import type { TerminalBackendSession } from '@deepseek-ai/dsh-terminal';
-import { RemoteTerminalBackend } from '../src/terminal.js';
+import { LegacySsh2RemoteTerminalBackend } from '../src/terminal.js';
 
 class FakeChannel extends EventEmitter {
   readonly writes: string[] = [];
@@ -62,7 +62,7 @@ async function createSession(
 ): Promise<{ session: TerminalBackendSession; transport: ReturnType<typeof vi.fn>; shell: ReturnType<typeof vi.fn> }> {
   const shell = vi.fn(async () => channel as unknown as ClientChannel);
   const transport = vi.fn(async () => ({ shell }));
-  const backend = new RemoteTerminalBackend({ transport } as never, () => undefined);
+  const backend = new LegacySsh2RemoteTerminalBackend({ transport } as never, () => undefined);
   const session = await backend.spawn({ cwd } as never);
   return { session, transport, shell };
 }
@@ -91,7 +91,7 @@ describe('RemoteTerminalBackend setup', () => {
     const reason = new Error('cancel setup');
     controller.abort(reason);
     const transport = vi.fn();
-    const backend = new RemoteTerminalBackend({ transport } as never, () => undefined);
+    const backend = new LegacySsh2RemoteTerminalBackend({ transport } as never, () => undefined);
 
     await expect(backend.spawn({ cwd: 'ssh://gpu/work', signal: controller.signal } as never))
       .rejects.toBe(reason);
@@ -103,7 +103,7 @@ describe('RemoteTerminalBackend setup', () => {
     const allocated = deferred<ClientChannel>();
     const shell = vi.fn(() => allocated.promise);
     const transport = vi.fn(async () => ({ shell }));
-    const backend = new RemoteTerminalBackend({ transport } as never, () => undefined);
+    const backend = new LegacySsh2RemoteTerminalBackend({ transport } as never, () => undefined);
     const controller = new AbortController();
     const reason = new Error('cancel pending shell');
 
@@ -123,7 +123,7 @@ describe('RemoteTerminalBackend setup', () => {
     const allocated = deferred<ClientChannel>();
     const shell = vi.fn(() => allocated.promise);
     const transport = vi.fn(async () => ({ shell }));
-    const backend = new RemoteTerminalBackend({ transport } as never, () => undefined);
+    const backend = new LegacySsh2RemoteTerminalBackend({ transport } as never, () => undefined);
     const controller = new AbortController();
 
     const spawning = backend.spawn({ cwd: 'ssh://gpu/work', signal: controller.signal } as never);

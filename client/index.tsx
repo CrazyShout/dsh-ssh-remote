@@ -17,7 +17,7 @@ import {
   windowsDriveAnchors,
   type LocalAnchor,
 } from './local-browse.js';
-import TYPERT_REMOTE from '../lib/typert.remote-client.js';
+import TYPERT_REMOTE from './typert.remote-client.js';
 
 export const name = 'dsh-ssh-remote-client';
 export const inject = ['remote'];
@@ -30,6 +30,25 @@ interface DiscoveredHost {
   identityFile: string;
   proxyJump: string;
   proxyCommand: string;
+  helper: HelperHostStatus;
+}
+
+interface HelperHostStatus {
+  status: 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
+  version: string;
+  sessionId: string;
+  capabilities: Record<string, unknown>;
+  error: string;
+}
+
+interface HelperHostDiagnostics extends HelperHostStatus {
+  alias: string;
+  helperSha256: string;
+  lastConnectedAt: number;
+  lastHealthAt: number;
+  nextRetryAt: number;
+  stderr: string;
+  assetPath: string;
 }
 
 interface SshConfig {
@@ -70,9 +89,14 @@ const MUTATION_DEADLINE_MS = 30_000;
 
 interface SshRemote {
   config(): Promise<RemoteResult<SshConfig>>;
+  statuses(): Promise<RemoteResult<Record<string, HelperHostStatus>>>;
   browse(alias: string, path: string): Promise<RemoteResult<RemoteDirectoryListing>>;
   createDirectory(alias: string, parent: string, name: string): Promise<RemoteResult<string>>;
   materializeWorkspace(alias: string, path: string): Promise<RemoteResult<SshWorkspaceAnchor>>;
+  connectHost(alias: string): Promise<RemoteResult<HelperHostStatus>>;
+  disconnectHost(alias: string): Promise<RemoteResult<HelperHostStatus>>;
+  retryHost(alias: string): Promise<RemoteResult<HelperHostStatus>>;
+  diagnostics(alias: string): Promise<RemoteResult<HelperHostDiagnostics>>;
 }
 
 export async function apply(ctx: ClientContext) {
@@ -519,6 +543,11 @@ function SshDirectoryFlow({
                 <span style={subtleText}>
                   {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
                 </span>
+                <span style={dimmedText}>
+                  Helper · {helperStateLabel(host.helper.status)}
+                  {host.helper.version ? ` · ${host.helper.version}` : ''}
+                </span>
+                {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
               </Button>
             ))}
             {!loading && config?.hosts.length === 0 && (
@@ -627,28 +656,98 @@ const entryRowStyle: CSSProperties = { justifyContent: 'flex-start', flexShrink:
 const subtleText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 };
 const dimmedText: CSSProperties = { color: 'var(--dsw-alias-label-dimmed)', fontSize: 11 };
 
+function helperStateLabel(state: HelperHostStatus['status']): string {
+  return ({
+    disconnected: '未连接',
+    installing: '正在安装',
+    connecting: '正在连接',
+    connected: '已连接',
+    degraded: '已连接（能力受限）',
+    reconnecting: '正在重连',
+    error: '错误',
+  } as const)[state];
+}
+
+function helperCapabilitySummary(capabilities: Record<string, unknown>): string {
+  const names = Object.entries(capabilities)
+    .filter(([, value]) => value !== false && value !== null)
+    .map(([name]) => name);
+  return names.length === 0 ? '等待握手' : names.join(' · ');
+}
+
 function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
   const [config, setConfig] = useState<SshConfig | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [busyAlias, setBusyAlias] = useState('');
+  const [details, setDetails] = useState<HelperHostDiagnostics | null>(null);
+  const epoch = useRef(0);
 
-  async function load() {
-    setLoading(true);
-    setError('');
+  async function load(showLoading = true) {
+    const request = ++epoch.current;
+    if (showLoading) setLoading(true);
     try {
-      const r = await ssh.config();
-      if (r.ok) setConfig(r.value);
-      else setError(r.error.message);
+      const result = await ssh.config();
+      if (epoch.current !== request) return;
+      if (result.ok) {
+        setConfig(result.value);
+        setError('');
+      } else setError(result.error.message);
     } catch (reason) {
-      setError(messageOf(reason));
+      if (epoch.current === request) setError(messageOf(reason));
     } finally {
-      setLoading(false);
+      if (showLoading && epoch.current === request) setLoading(false);
+    }
+  }
+
+  async function loadStatuses() {
+    try {
+      const result = await ssh.statuses();
+      if (!result.ok) return;
+      setConfig(current => current === null ? current : {
+        ...current,
+        hosts: current.hosts.map(host => ({
+          ...host,
+          helper: result.value[host.alias] ?? host.helper,
+        })),
+      });
+    } catch {
+      // The full refresh button remains the explicit diagnostic surface.
     }
   }
 
   useEffect(() => {
     void load();
-  }, []);
+    const timer = setInterval(() => { void loadStatuses(); }, 5_000);
+    return () => {
+      clearInterval(timer);
+      epoch.current += 1;
+    };
+  }, [ssh]);
+
+  async function runHostAction(
+    alias: string,
+    action: 'connect' | 'disconnect' | 'retry' | 'diagnostics',
+  ): Promise<void> {
+    setBusyAlias(alias);
+    setError('');
+    try {
+      const result = action === 'connect'
+        ? await ssh.connectHost(alias)
+        : action === 'disconnect'
+          ? await ssh.disconnectHost(alias)
+          : action === 'retry'
+            ? await ssh.retryHost(alias)
+            : await ssh.diagnostics(alias);
+      if (!result.ok) setError(result.error.message);
+      else if (action === 'diagnostics') setDetails(result.value as HelperHostDiagnostics);
+      await load(false);
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusyAlias('');
+    }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 12, maxWidth: 760 }}>
@@ -656,59 +755,83 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
         <div>
           <h3 style={{ margin: 0 }}>SSH Connections</h3>
           <div style={{ marginTop: 4, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
-            Concrete Host aliases are discovered from your local OpenSSH config.
+            连接由本机 OpenSSH 建立；版本化 helper 统一远端文件、进程和 PTY。显式断开会停止该 helper session 管理的远端进程。
           </div>
         </div>
-        <Button variant="outline" size="sm" disabled={loading} onClick={() => void load()}>
-          {loading ? 'Refreshing…' : 'Refresh'}
+        <Button variant="outline" size="sm" disabled={loading || Boolean(busyAlias)} onClick={() => void load()}>
+          {loading ? '刷新中…' : '刷新'}
         </Button>
       </div>
 
       {config && (
         <div style={{ padding: 10, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
-          <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>SSH config</div>
+          <div style={subtleText}>SSH config</div>
           <code style={{ fontSize: 12 }}>{config.configPath}</code>
-          {!config.configExists && (
-            <div style={{ marginTop: 6, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
-              File not found. Create it and add a concrete <code>Host</code> entry, then refresh.
-            </div>
-          )}
+          {!config.configExists && <div style={{ marginTop: 6, ...subtleText }}>请创建该文件并添加具体 Host 后刷新。</div>}
         </div>
       )}
 
-      {config?.hosts.length === 0 && config.configExists && (
-        <div style={{ color: 'var(--dsw-alias-label-secondary)' }}>No concrete SSH Host aliases found.</div>
-      )}
+      {config?.hosts.length === 0 && config.configExists && <div style={subtleText}>没有发现具体 SSH Host alias。</div>}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {config?.hosts.map((host) => (
-          <div
-            key={host.alias}
-            style={{
-              padding: 12,
-              border: '1px solid var(--dsw-alias-border-l2)',
-              borderRadius: 8,
-            }}
-          >
-            <div style={{ fontWeight: 600 }}>{host.alias}</div>
-            <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12, overflowWrap: 'anywhere' }}>
-              {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
-            </div>
-            {(host.proxyJump || host.proxyCommand || host.identityFile) && (
-              <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {host.proxyJump && <Pill>ProxyJump: {host.proxyJump}</Pill>}
-                {host.proxyCommand && <Pill>ProxyCommand</Pill>}
-                {host.identityFile && <Pill>Identity configured</Pill>}
+        {config?.hosts.map((host) => {
+          const busy = busyAlias === host.alias;
+          const connected = host.helper.status === 'connected' || host.helper.status === 'degraded';
+          return (
+            <div key={host.alias} style={{ padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ fontWeight: 600 }}>{host.alias}</div>
+                <span style={{ ...dimmedText, color: host.helper.status === 'error' ? 'var(--dsw-alias-label-error)' : undefined }}>
+                  {helperStateLabel(host.helper.status)}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              <div style={{ ...subtleText, overflowWrap: 'anywhere' }}>
+                {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
+              </div>
+              <div style={{ marginTop: 6, ...dimmedText }}>
+                Helper {host.helper.version || '尚未握手'} · {helperCapabilitySummary(host.helper.capabilities)}
+              </div>
+              {host.helper.error && <div style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{host.helper.error}</div>}
+              {(host.proxyJump || host.proxyCommand || host.identityFile) && (
+                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {host.proxyJump && <Pill>ProxyJump: {host.proxyJump}</Pill>}
+                  {host.proxyCommand && <Pill>ProxyCommand</Pill>}
+                  {host.identityFile && <Pill>Identity configured</Pill>}
+                </div>
+              )}
+              <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {connected ? (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'disconnect')}>
+                    {busy ? '处理中…' : '断开'}
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="primary" disabled={busy} onClick={() => void runHostAction(host.alias, 'connect')}>
+                    {busy ? '处理中…' : '连接'}
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'retry')}>重试</Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runHostAction(host.alias, 'diagnostics')}>诊断</Button>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
+      {details && (
+        <div style={{ padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <strong>{details.alias} · 诊断</strong>
+            <Button size="sm" variant="ghost" onClick={() => setDetails(null)}>关闭</Button>
+          </div>
+          <pre style={{ margin: '8px 0 0', maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 11 }}>
+            {JSON.stringify(details, null, 2)}
+          </pre>
+        </div>
+      )}
+
       {config && config.legacyHostCount > 0 && (
-        <div style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
-          {config.legacyHostCount} legacy DSH host {config.legacyHostCount === 1 ? 'entry remains' : 'entries remain'} as a read-only fallback.
-          Move it to <code>{config.configPath}</code> when convenient.
+        <div style={subtleText}>
+          仍有 {config.legacyHostCount} 个旧 DSH host 仅作为 SFTP 兼容兜底；请迁移到 <code>{config.configPath}</code>。
         </div>
       )}
       {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)' }}>{error}</div>}

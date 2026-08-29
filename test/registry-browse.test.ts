@@ -72,12 +72,58 @@ describe('remote workspace directory browsing', () => {
     const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
     Object.defineProperty(service, 'connections', { value: connections });
 
-    const listing = await service.browse('gpu', '/data');
+    const listing = await (service as any).browseWithLegacySftp('gpu', '/data');
 
     expect(listing.entries).toHaveLength(1000);
     expect(listing.truncated).toBe(true);
     expect(pathReaddirCalls).toBe(0);
     expect(readCalls).toBeLessThan(Math.ceil(totalEntries / chunkSize));
     expect(closeCalls).toBe(1);
+  });
+
+  it('uses helper workspace handles and returns only bounded directory choices', async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client = {
+      hello: { platform: { home: '/home/test' } },
+      async call(method: string, params: Record<string, unknown>) {
+        calls.push({ method, params });
+        if (method === 'workspace/open') {
+          return { workspaceId: 'workspace-1', path: '/data', access: 'read-only' };
+        }
+        if (method === 'fs/list') {
+          return {
+            entries: [
+              { name: 'src', metadata: { type: 'directory' } },
+              { name: '.cache', metadata: { type: 'directory' } },
+              { name: 'README.md', metadata: { type: 'file' } },
+              { name: 'link', metadata: { type: 'symlink' } },
+            ],
+            truncated: false,
+          };
+        }
+        if (method === 'workspace/close') return { closed: true };
+        throw new Error(`unexpected method ${method}`);
+      },
+    };
+    const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
+    Object.defineProperty(service, 'helpers', {
+      value: { async client() { return client; } },
+    });
+
+    const listing = await (service as any).browseWithHelper('gpu', '/data');
+
+    expect(listing).toMatchObject({ path: '/data', home: '/home/test', truncated: false });
+    expect(listing.entries).toEqual([
+      { name: '.cache', path: '/data/.cache', hidden: true },
+      { name: 'src', path: '/data/src', hidden: false },
+    ]);
+    expect(calls.map((call) => call.method)).toEqual(['workspace/open', 'fs/list', 'workspace/close']);
+    expect(calls[1].params).toEqual({
+      workspaceId: 'workspace-1',
+      path: '',
+      limit: 1000,
+      allowTruncated: true,
+      types: ['directory'],
+    });
   });
 });
