@@ -28,3 +28,22 @@ jobs:
         run: |
           git diff --exit-code
           test -z "$(git status --porcelain)"
+
+  helper-python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: npm ci
+      - run: npm run test:helper
+      - run: npx vitest run test/helper-python.integration.test.ts

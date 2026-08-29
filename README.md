@@ -2,191 +2,151 @@
 
 [English](README.en.md) | 中文
 
-DeepSeek Harness 的 SSH 远程工作区插件：从本机 OpenSSH 配置选择一台主机和远端文件夹，
-加入工作区后继续使用 DSH 标准的文件系统、bash/子进程和终端界面。
+面向 DeepSeek Harness 的 Codex 风格 SSH 远程工作区插件。它从本机 OpenSSH 配置发现
+具体 Host，通过标准「添加工作区」选择远端目录，并把 DSH 原生文件、Shell 和终端操作
+路由到远端的版本化 helper。
 
-> **架构状态：**当前版本是轻量级工作区路由插件。DSH 控制面、会话历史、配置和插件执行
-> 仍在本机 Harness Host；它不会在远端启动完整 DSH，也不声称已经达到 Codex Remote
-> 的完整架构。详见 [ADR-0003](docs/adr/0003-codex-remote-parity.md)。
+## 0.3.0 的架构
 
-## 当前已实现
+默认数据平面已经改为：
 
-- **OpenSSH 主机发现**：从 `~/.ssh/config` 及其 `Include` 文件发现具体 `Host` 别名，
-  再用 `ssh -G` 解析最终 HostName、User、Port、IdentityFile、ProxyJump、
-  ProxyCommand、HostKeyAlias、StrictHostKeyChecking 和 known-hosts 路径。
-- **本机 + SSH 合一的「添加工作区」**：选择本机或 SSH 别名，在应用内浏览目录，然后
-  像普通 Harness 工作区一样加入。
-- **标准 DSH 使用方式**：不再要求模型调用插件私有工具。在远程工作区内，标准文件
-  调用透明路由到 SFTP，标准 bash/子进程调用通过系统 `ssh` 启动。若当前 DSH 组合
-  提供 terminal service，标准 DSH 终端会路由到插件的 `ssh2` PTY 通道；它不是系统
-  OpenSSH terminal，也不声称具备 Codex 式会话恢复。
-- **host key 失败即关闭（fail closed）**：SFTP 通道按有效 OpenSSH `known_hosts`
-  校验服务端密钥；在常规 `ask`、`yes` 或 `accept-new` 策略下，未知、变更或已吊销
-  密钥在文件访问前即被拒绝。
-- **规范路径检查**：远端路径先做规范化，再用 SFTP `realpath` 解析；检查时已经存在的
-  符号链接不能伪装成工作区子项，悬空符号链接直接拒绝。
-- **远端文件原子发布**：覆盖写先上传同目录临时文件、保留原权限并复核受保护内容，再用
-  OpenSSH `posix-rename` 发布；`createIfAbsent` 用 OpenSSH `hardlink` 发布已经写完整的
-  临时 inode。远端不支持所需原子扩展时失败即关闭，不暴露空文件或半文件。
-- **连接管理**：以 host 为粒度复用 `ssh2`/SFTP 连接，提供 keepalive、有界连接等待、
-  指数退避重连和过期连接尝试隔离。
-- **映射持久化**：远程工作区记录和本地锚点映射使用原子替换及私有 `0600` 文件，
-  会跨 DSH 重启保留。
-
-当前尚未实现：侧边栏实时连接状态与控制、与 Codex 等价的终端/会话恢复、远端 DSH
-历史/配置/插件执行，以及通用 SSH 端口转发管理。
-
-`ssh2` PTY 也无法返回经过验证的远端前台 PGID，因此显式 DSH `terminal_signal` 会诚实
-报错，而不是伪造进程组编号。send 取消仍会请求 channel 级 `SIGINT`；可验证 PGID signal
-和 resize 需要 Phase 2 helper 以及未来的 DSH resize seam。
-
-SFTP v3 本身也没有 compare-and-swap 原语。插件会在原子 rename 前复核 metadata 与内容，
-但无关的远端写者仍可能卡进“最后检查到 rename”之间的极短窗口。彻底关闭这个外部写者
-窗口属于 Phase 2 远端 helper 的能力，当前轻量 transport 不声称已经解决。
-
-SFTP v3 还只提供秒级 mtime，没有 inode/ctime 身份；若外部程序在 guarded write 开始前、
-同一秒内完成等长改写，旧 metadata version token 仍可能被复用。DSH 的 `stat` seam 明确
-只能读取 metadata，因此强 read-with-version token 也应由 helper/上游能力解决，不能靠
-隐藏读取内容来伪造。
-
-## 安装
-
-要求 Node 22+、npm。已验证 DSH 0.1.0-rc.6 至 0.1.1-rc.2；
-推荐以 0.1.1-rc.2 作为当前基线。
-
-```sh
-# 方式一：npm（若已发布）
-dsh plugin --profile web add dsh-ssh-remote
-
-# 方式二：GitHub（无需发布）
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
+```text
+本机 DSH Web
+  └─ dsh-ssh-remote
+      └─ system OpenSSH（保留原始 Host alias）
+          └─ 按内容寻址的 Python helper
+              └─ 用户私有 Unix-socket daemon
+                  ├─ dirfd 隔离文件系统
+                  ├─ 进程 / PTY supervisor
+                  └─ 可恢复 client session
 ```
 
-安装后重启 `dsh web`。
+这个设计借鉴 Codex App Server 中很有价值的原则：版本化多路复用控制通道、健康检查、
+能力协商、有界输出、稳定资源 ID 和断线恢复，但不会把两者描述成兼容协议。参考
+[Codex App Server 官方文档](https://developers.openai.com/codex/app-server)和
+[ADR-0004](docs/adr/0004-remote-helper-v1.md)。
 
-## 使用
+当前已经实现：
 
-1. 在 `~/.ssh/config` 中加入具体别名。
-2. 先在终端执行一次 `ssh devbox`。出现新密钥时，核对指纹后再确认；这一步由 OpenSSH
-   把信任写入 `known_hosts`。
-3. 在 DSH 点击「添加工作区」，选择 `devbox`，浏览远端目录并点击「打开此文件夹」。
-4. 在该工作区开始会话。若 DSH 需要启动本机 SSH 客户端或访问网络，请选择
-   **Full access**。
-5. 直接让 agent 读写文件、运行测试或使用标准终端即可；不需要学习插件私有命令格式。
+- **OpenSSH 是唯一连接事实来源**：`Host`、`Include`、`Match`、ssh-agent、Keychain、
+  证书、FIDO/PKCS#11、ProxyJump、ProxyCommand、known_hosts 和 host-key 策略都交给
+  本机 `ssh`，插件不再复制一套残缺配置。
+- **自动安装 helper**：插件包携带 helper，按 SHA-256 存入用户私有版本目录，经 SSH
+  stdin 上传并校验后发布；不用 sudo、`curl | sh`、postinstall 或远端包管理器。
+- **统一添加工作区**：本地目录与 SSH alias 共用原生选择器；远程浏览、新建目录和路径
+  校验默认都走 helper。
+- **版本化远端文件**：读取返回稳定 stat token 或 SHA-256+文件身份强 token；写入使用
+  同目录临时 inode、fsync、版本复核、原子发布、no-replace 创建和 operationId 去重。
+- **远端 Shell**：模型使用的 `ctx.shell` 在本地 sandbox argv 生成前完成远程路由，避免
+  把 macOS 的 sandbox 命令错误拿到 Linux 执行；前台和后台进程都有有界输出并可跨
+  connector 重连继续读取。
+- **真实远端 PTY**：helper 使用远端账号的登录 shell，并管理 PTY、前台 PGID、signal、
+  输出 cursor、内部 resize、TERM→KILL 退出和资源回收。
+- **远端 sandbox**：Linux 上的 `read-only` / `workspace-write` 进程与 PTY 使用
+  bubblewrap。缺少可验证 runner 时失败即关闭，绝不静默升级为远端账号完整权限。
+- **恢复和诊断**：私有 daemon 会在恢复窗口内保留 workspace、文件读取 cursor、进程和
+  PTY。设置页展示安装中、连接中、已连接、能力受限、重连中、错误，以及版本、能力、
+  Retry、Disconnect 和已脱敏诊断。
+- **显式兼容路径**：旧 DSH host 设置仍可使用加固后的 ssh2/SFTP 实现；helper 失败后
+  不会静默切换过去。
 
-Harness 当前仍要求工作区是本地路径，因此插件会在
-`$DSH_HOME/ssh-workspace-anchors/` 创建一个很小的本地锚点，并把精确映射持久化到
-`$DSH_HOME/ssh-workspace-anchors.json`。只有该锚点及其子路径会路由到对应的
-`ssh://alias/path`；其他本地路径仍使用原有本地 provider。
+## 当前 DSH 上游边界
 
-锚点不包含远端源码。添加远程工作区不会把远端目录复制或挂载到本机。
+npm 当前可安装的 DSH 基线仍是 `0.1.1-rc.2`，其公开接口带来四个用户可见限制：
 
-## SSH 配置
+1. Harness Workspace 必须是真实本地目录，因此插件仍会创建一个很小的本地 anchor，
+   只把这个 anchor 及其后代映射到 `ssh://alias/remote/path`。远端源码不会复制进去。
+2. 底层 `SubprocessRuntime.spawn()` 是同步接口，必须立即返回本机 PID。直接使用该底层
+   seam 的调用仍保留「每进程 system SSH」兼容路由；正常模型 Shell 与终端走 helper。
+3. 当前 terminal tool 没有 resize verb。helper 与 backend 已实现 resize，但 DSH 暂时
+   无法让模型发出请求。
+4. DSH 历史、配置、插件和 agent loop 仍运行在本机。本插件提供远端执行/文件平面，
+   不会虚构第二套 Harness 控制面。
+5. DSH `listDir()` 暂无分页契约；标准 FS 遇到超过 1000 项的目录会诚实失败，工作区
+   选择器则使用有界的「只扫描目录」模式，因此大源码目录仍可导航。
 
-使用具体别名，先用 OpenSSH 验证连接，再刷新 SSH Connections 页面：
+要删除 anchor 和最后一层路由 hook，仍需 DSH 上游提供一等
+`{ hostId, remotePath, runtime }` 工作区契约。
+
+## 环境要求
+
+- 本机 Node.js 22 或更高版本。
+- 要求 DSH `0.1.1-rc.2` 或兼容的更新 `0.1.x` 版本。
+- `~/.ssh/config` 中存在具体 Host alias，且 `ssh <alias>` 的 batch 连接可用。
+- 远端是 POSIX 系统并提供 Python 3.9 或更高版本。
+- `read-only` / `workspace-write` 进程和 PTY 隔离需要 Linux bubblewrap (`bwrap`)；
+  文件操作本身始终独立使用 dirfd 限制。
+
+请把 User、Port、代理和认证信息写在 OpenSSH 配置里，不要编码为
+`ssh://user@host:port`：
 
 ```sshconfig
 Host devbox
   HostName devbox.example.com
   User you
+  Port 22
   IdentityFile ~/.ssh/id_ed25519
   ProxyJump bastion
 ```
 
-`~/.ssh/config` 始终是连接配置的事实来源。Web 页面只读展示，不会把 SSH 密钥或密码
-重复写入 DSH 设置。旧版 `ssh-remote.hosts` 仅保留为只读兼容兜底。
+若以后删除该具体 alias，已持久化工作区会在新建 SSH 连接前失败即关闭，不会把 alias
+退化成普通 DNS 主机名继续连接。
 
-### 认证限制
+在 Web 使用前先运行一次 `ssh devbox`，按你的 OpenSSH 策略核对新主机指纹。
 
-- SFTP 与 PTY 通道优先使用 `SSH_AUTH_SOCK`，并且至多加载第一个可读取的有效
-  `IdentityFile`。由于这些通道仍基于 `ssh2`，它们不会自动继承系统 OpenSSH 支持的全部认证方式；
-  由 agent 托管密钥的兼容性最好。
-- 若加密私钥未加载到 agent，可能出现 `ssh devbox` 成功、SFTP/PTY 认证仍失败的情况。
-  当前不声称文件通道完整支持 Keychain、PKCS#11/FIDO、证书和交互式密码流程。
-- ProxyJump 字节流由系统 OpenSSH 建立。有效 ProxyCommand 由本机 shell 启动，只展开
-  `%h`、`%p`、`%r` 与 `%%`；不声称支持其他少见 OpenSSH token。最终 SFTP 认证仍受
-  上述限制。
-- 目标机必须启用 `sftp` 子系统；跳板机必须允许当前 ProxyJump/ProxyCommand 所需的
-  转发。
+helper 连接固定使用 `BatchMode=yes`。已由 agent/Keychain 托管的密钥、证书和预授权
+硬件密钥继续由 OpenSSH 处理，但 Web 后台连接无法回答交互式密码、PIN、passphrase 或
+MFA 提示；请先准备好 agent/登录会话。
 
-## Host key 校验
+## 安装与使用
 
-Web 请求不会静默执行首次信任。插件读取有效 HostKeyAlias、StrictHostKeyChecking、
-UserKnownHostsFile 和 GlobalKnownHostsFile，并把普通模式与哈希 host 的查找交给
-`ssh-keygen -F`。
+```sh
+# npm 发布后
+dsh plugin --profile web add dsh-ssh-remote
 
-- 匹配的普通密钥允许连接。
-- 密钥不匹配或命中 `@revoked` 时拒绝连接。
-- 未知密钥失败即关闭，并提示先运行 `ssh <alias>`、人工核对指纹。
-- Web 流程对 `StrictHostKeyChecking accept-new` 同样失败即关闭；插件不会自行写入
-  `known_hosts`。
-- 只有显式配置 `StrictHostKeyChecking no` 才允许原本未知或变更的密钥；命中
-  `@revoked` 的密钥仍会被拒绝。
-- 目前 `ssh2` SFTP/PTY 通道尚不支持仅由 `@cert-authority` 条目信任的主机证书。
+# 直接从 GitHub 安装
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
+```
 
-## 路由与安全边界
+重启 `dsh web`，打开「设置 → SSH Remote」，可以先连接，也可以直接在「添加工作区」
+中选择主机。首次连接会自动安装匹配版本的 helper。
 
-- 路径分量在发送给 SFTP 前规范化。
-- 已存在目标和符号链接使用远端 `realpath` 取得规范身份。
-- 写入尚不存在的目标时，先规范化最近的已存在祖先，再追加已规范化的缺失分量。
-- 悬空符号链接会被拒绝，不会被当作普通的「文件不存在」。
-- 包含关系比较同一 host、port、user 下的规范路径。工作区 `/srv/project` 包含自身和
-  `/srv/project/src/a.ts`，但不包含 `/srv/project-copy`、`../etc/passwd`，也不包含
-  最终解析到工作区外的符号链接。
-- 标准文件写入会在落盘前重新检查规范目标：`read-only` 直接拒绝，`workspace-write` 只
-  接受检查时解析到远程工作区根以内的目标；原先可绕过标准权限路径的 `ssh_remote`
-  写入/执行工具不再暴露给模型。
+Harness 会把精确映射保存在 `$DSH_HOME/ssh-workspace-anchors.json`，anchor 目录位于
+`$DSH_HOME/ssh-workspace-anchors/`。其他本地路径继续使用原来的本机 provider。
 
-这些是有用的 guardrail，不是远端 sandbox 或 chroot。SFTP 没有相对目录句柄的 `openat`，
-并发远端进程仍可在 `realpath` 后、按路径写入前替换中间目录。远程 bash/子进程与 PTY 也
-不会被本插件限制在工作区内：SSH 一旦获准，命令就拥有远端 Unix 账号的完整权限。DSH 的
-**Full access** 许可决定本机 SSH 客户端能否启动，并不会创建远端文件系统 sandbox。强路径
-隔离与进程 sandbox 需要 Phase 2 helper。
+## 安全模型
 
-## 本机工作区：Windows 与 WSL
+- JSONL 单帧上限 1 MiB；stdout 只承载协议，stderr 只保留有界、凭据脱敏的诊断尾部。
+- helper runtime 目录权限为 `0700`，Unix socket 为 `0600`；恢复必须同时通过稳定
+  clientId 与恒定时间比较的随机 token。
+- `workspace/open` 是唯一接受绝对路径的文件请求；后续请求只能使用 root fd 下的相对
+  路径，拒绝 `..`、NUL 和符号链接穿越。
+- 文件与进程 mutation 都携带稳定 `operationId`。只有密码学恢复到同一 server session
+  后，断线 mutation 才允许最多重放一次。
+- 输出、资源、并发请求、operation journal 和 retention 全部有硬上限；完成记录只会在
+  超过恢复安全窗口后过期。
+- 插件不会修改 `~/.ssh/config`、私钥或 known_hosts。
 
-同一个「添加工作区」对话框也能添加普通本地目录，本机分支会适配当前 DSH 组合提供的
-目录选择器能力：
-
-- **browse**（常见于 headless/WSL Host）：应用内目录浏览器通过 Host 列目录和创建
-  文件夹，快捷入口包括 Host 家目录及 `/mnt` 下的 Windows 磁盘。
-- **native**：使用操作系统文件夹选择框。
-
-只有明确的 `directory-picker-unavailable` 才切换 native 选择器。权限、超时、传输或
-内部浏览失败会留在对话框内供重试。在 `/mnt/...` 下加入的是 WSL 视角的普通本地
-Harness 工作区，并不是 SSH 工作区。
-
-## 与 Codex 的区别和路线图
-
-当前 Codex 源码公开了实验性的远程执行/文件系统 environment，以及基于 Unix socket 的
-`app-server proxy`；当前 Codex Desktop 构建还会在 SSH 主机上启动完整 app-server。
-这些实现只作为设计参考，不应被描述为面向第三方客户端的公开稳定 API：
-
-- [Codex app-server transport 与 proxy](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L20-L44)
-- [Codex 远端进程与 PTY RPC](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L180-L224)
-- [Codex 远端文件系统 RPC](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/exec-server/README.md#L375-L396)
-- [Codex environment 状态 API](https://github.com/openai/codex/blob/694edc23b22b4696400dc47663ecacd437623870/codex-rs/app-server/README.md#L250-L253)
-
-我们的分阶段方向是：
-
-1. 先加固现有 anchor/SFTP/OpenSSH 路由；
-2. 增加诚实、可操作的连接状态和诊断；
-3. 引入可选的 system OpenSSH 远端 helper，用一条带版本协议的 RPC 通道统一文件、
-   进程和 PTY；
-4. 推动 DSH 上游支持一等 `{hostId, remotePath}` 工作区和 host-aware runtime，最终移除
-   本地 anchor 与服务 monkey-patch。
-
-完整理由记录在 [ADR-0003](docs/adr/0003-codex-remote-parity.md)。
+POSIX 没有通用的「仅当路径仍指向 inode X 时 rename」原语。helper 会串行化自身写入、
+在发布前复核身份和内容并原子发布，但任意不合作的外部 writer 仍可能卡入最后一次检查到
+rename 的极短窗口。能力会诚实报告 `externalWriterRaceFree: false`。
 
 ## 开发
 
 ```sh
 npm ci
-npm run build
+npm run test:helper
 npm test
+npm run build
 ```
 
-`lib/` 已提交进 git，避免 Git 安装时缺少构建产物。
+CI 覆盖 Node 22/24 与 Python 3.9/3.10/3.12。仓库提交 `lib/`，因为 DSH 可以直接从
+Git 安装，不应依赖安装时执行构建脚本。
+
+设计记录：
+
+- [ADR-0003：Codex remote parity 边界](docs/adr/0003-codex-remote-parity.md)
+- [ADR-0004：远端 helper v1](docs/adr/0004-remote-helper-v1.md)
 
 ## License
 

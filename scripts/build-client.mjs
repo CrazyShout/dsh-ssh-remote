@@ -12,6 +12,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const ID = 'dsh-ssh-remote';
 const ENTRY = 'client/index.tsx';
 const OUT_FILE = 'lib/client.js';
+const REMOTE_ENTRY = 'client/typert.remote-client.ts';
+const REMOTE_OUT_FILE = 'lib/typert.remote-client.js';
 
 /** Loader module table (platform seed entries + runtime/client exemption). */
 const CLIENT_EXTERNALS = [
@@ -94,4 +96,23 @@ for (const match of text.matchAll(/require\(\s*["'](@deepseek-ai\/[^"']+)["']\s*
 
 // Flat type re-export the loader-facing exports["./client"].types points at.
 writeFileSync('lib/client.d.ts', `export * from './client/index.js';\n`);
-console.log(`built ${OUT_FILE} (closure-factory, id=${ID}, ${text.length} bytes) + lib/client.d.ts`);
+
+// The client imports this descriptor from source. Emit the package ./remote
+// face from the same source so a clean build cannot retain stale hand-written
+// descriptors in lib/.
+await build({
+  entryPoints: [REMOTE_ENTRY],
+  outfile: REMOTE_OUT_FILE,
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2020',
+});
+writeFileSync(
+  'lib/typert.remote-client.d.ts',
+  `export { default, TYPERT_REMOTE } from './client/typert.remote-client.js';\n`,
+);
+
+console.log(
+  `built ${OUT_FILE} (closure-factory, id=${ID}, ${text.length} bytes), ${REMOTE_OUT_FILE}, and loader declarations`,
+);

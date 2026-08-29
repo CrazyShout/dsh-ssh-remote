@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { apply } from '../client/index.js';
+import { TYPERT_REMOTE } from '../client/typert.remote-client.js';
+import { TYPERT } from '../src/typert.host.js';
 
 // The real primitives package ships browser-only CSS imports; at runtime the
 // DSH loader resolves it through its module table instead of Node. This test
@@ -14,6 +16,15 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 }));
 
 describe('client lifecycle', () => {
+  it('ships helper lifecycle methods from the source-owned Remote descriptor', () => {
+    const methods = (TYPERT_REMOTE as any).descriptors.map((entry: { method: string }) => entry.method);
+    expect(methods).toEqual([
+      'config', 'statuses', 'browse', 'createDirectory', 'materializeWorkspace',
+      'connectHost', 'disconnectHost', 'retryHost', 'diagnostics',
+    ]);
+    expect(TYPERT.invocations.map((entry) => entry.method)).toEqual(methods);
+  });
+
   it('mounts the Remote contribution before injecting and consuming its namespace', async () => {
     const events: string[] = [];
     const disposeMount = vi.fn(async () => {
