@@ -191,6 +191,15 @@ function runUploadProcess(
     const terminate = (): void => {
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
     };
+    // SSH may exit while the helper body is still being uploaded. The resulting
+    // asynchronous EPIPE is emitted by stdin, not thrown by end(). Consume it at
+    // the process boundary so a failed remote connection cannot terminate DSH.
+    child.stdin?.on('error', (error) => {
+      terminate();
+      finish(() => reject(new RemoteHelperInstallError('failed to upload remote helper', {
+        stderr: boundedDiagnostic(stderr),
+      }, { cause: error })));
+    });
     const onAbort = (): void => {
       terminate();
       finish(() => reject(signal?.reason ?? new Error('remote helper installation aborted')));
