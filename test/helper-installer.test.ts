@@ -85,6 +85,21 @@ describe('RemoteHelperInstaller', () => {
     expect(spawnProcess).not.toHaveBeenCalled();
   });
 
+  it('contains an asynchronous EPIPE when SSH exits during upload', async () => {
+    const path = await asset(Buffer.alloc(1024 * 1024, 1).toString());
+    const child = new FakeChild();
+    child.stdin.removeAllListeners('finish');
+    child.stdin.once('finish', () => {
+      const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+      queueMicrotask(() => child.stdin.emit('error', error));
+    });
+    const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
+    const installer = new RemoteHelperInstaller({ assetPath: path, spawnProcess: spawnProcess as never });
+
+    await expect(installer.install('offline-host')).rejects.toThrow('failed to upload remote helper');
+    expect(child.killed).toBe(true);
+  });
+
   it('redacts credentials and home-directory identities from stderr', () => {
     expect(redactHelperDiagnostic('password=hunter2 token:abc /Users/atlas/.ssh/id SSH_AUTH_SOCK=/tmp/s'))
       .toBe('password=[REDACTED] token=[REDACTED] ~/.ssh/id SSH_AUTH_SOCK=[REDACTED]');
