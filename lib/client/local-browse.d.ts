@@ -22,7 +22,8 @@ export declare function windowsDriveAnchors(entries: ReadonlyArray<{
 /**
  * Whether a thrown browse failure is the explicit capability-unavailable
  * signal. The runtime's `DirectoryBrowseError` carries the RPC error body as
- * `rpcError`; only `rpcError.code === 'directory-picker-unavailable'` means
+ * `rpcError`; the legacy `directory-picker-unavailable` and DSH 0.1.5's
+ * `directory-picker/unavailable` codes mean
  * the composed picker serves no `browse` capability. Permission, timeout,
  * transport, internal, and every other code is a real browse failure and must
  * never trigger a native-picker fallback. Kept structural (no wire import) so

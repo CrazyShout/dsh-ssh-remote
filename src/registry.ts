@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
-import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings';
+import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import z from '@deepseek-ai/schemastery';
@@ -23,7 +23,10 @@ import {
 } from './ssh-config.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
-const SETTINGS_NS = settingsNamespace('ssh-remote');
+// Newer DSH validates namespace literals in register(); the old runtime
+// settingsNamespace() export was removed. This fixed identifier is valid on
+// both APIs; retain the brand only for the rc.2 registration signature.
+const SETTINGS_NS = 'ssh-remote' as SettingsNamespace;
 const DIRECTORY_PAGE_LIMIT = 1000;
 /** Hard input bound so one hostile/huge remote directory cannot exhaust RAM. */
 const DIRECTORY_INPUT_LIMIT = 5000;

@@ -52,7 +52,10 @@
 
 ## 当前 DSH 上游边界
 
-npm 当前可安装的 DSH 基线仍是 `0.1.1-rc.2`，其公开接口带来四个用户可见限制：
+0.3.1 已验证 DSH `0.1.1-rc.2` 和 npm `latest` 的 `0.1.5-rc.2`（其依赖可解析到
+`0.1.5-rc.3`）。兼容新版 Settings namespace、拆分后的 `uiWorkspace` 目录服务和
+`directory-picker/unavailable` 错误码；SSH 上传中断只会令本次连接失败。
+当前公开接口仍带来以下用户可见限制：
 
 1. Harness Workspace 必须是真实本地目录，因此插件仍会创建一个很小的本地 anchor，
    只把这个 anchor 及其后代映射到 `ssh://alias/remote/path`。远端源码不会复制进去。

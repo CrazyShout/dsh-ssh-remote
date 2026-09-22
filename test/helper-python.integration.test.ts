@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const helper = fileURLToPath(new URL('../helper/dsh_remote_helper.py', import.meta.url));
+// These end-to-end cases create 1,200 files and transfer PTY data. macOS
+// filesystem/process tracing can exceed 15 s without a protocol failure.
+const integrationTimeout = process.platform === 'darwin' ? 60_000 : 15_000;
 
 class RpcClient {
   readonly child: ChildProcessWithoutNullStreams;
@@ -101,7 +104,7 @@ describe('Python remote helper v1', () => {
     expect(observed.connections.slice(0, -1).every((value: boolean) => value)).toBe(true);
     expect(observed.connections.at(-1)).toBe(false);
     expect(observed).toMatchObject({ sessions: 16, error: 'E_RESOURCE_LIMIT' });
-  });
+  }, integrationTimeout);
 
   it('serves bounded JSONL and performs confined, version-guarded file operations', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-helper-root-'));
@@ -275,7 +278,7 @@ describe('Python remote helper v1', () => {
       entries: [{ name: 'directory-after-files', metadata: { type: 'directory' } }],
     });
     await expect(rpc.request('health/status')).resolves.toMatchObject({ pathLocks: 0, writeHandles: 0 });
-  }, 15_000);
+  }, integrationTimeout);
 
   it('runs bounded non-PTY and PTY processes and fails restricted execution closed without bwrap', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-helper-process-'));
@@ -470,7 +473,7 @@ describe('Python remote helper v1', () => {
         processId: 'restricted-policy', operationId: 'release-restricted-policy',
       });
     }
-  }, 15_000);
+  }, integrationTimeout);
 
   it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('keeps a process in the per-user daemon and resumes it by clientId and token', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-helper-resume-root-'));
@@ -514,5 +517,5 @@ describe('Python remote helper v1', () => {
     }
     expect(output).toContain('resumed-output');
     await second.request('admin/shutdown');
-  }, 15_000);
+  }, integrationTimeout);
 });

@@ -99,59 +99,78 @@ interface SshRemote {
   diagnostics(alias: string): Promise<RemoteResult<HelperHostDiagnostics>>;
 }
 
+interface DirectoryService {
+  pickDirectory(): Promise<string | null>;
+  listDirectory(path?: string): Promise<RemoteDirectoryListing>;
+  createDirectory(path: string, name: string): Promise<string>;
+}
+
 export async function apply(ctx: ClientContext) {
   const disposeMount = await ctx.remote.$mount(TYPERT_REMOTE);
   const ui = ctx.inject(['remote.sshRemote', 'slots', 'workspaces'], (scope) => {
-    const ssh = scope.remote.sshRemote;
-    const flowInject = () => ({
-      ssh,
-      pickLocal: () => scope.workspaces.pickDirectory(),
-      // The composed picker's browse capability (in-app listing/creation).
-      // Served only when the host composes the `-browse` backend; chooseLocal
-      // probes for it and falls back to the native chooser only on the
-      // explicit capability-unavailable signal (`directory-picker-unavailable`).
-      listLocal: (path?: string) => scope.workspaces.listDirectory(path),
-      createLocalDirectory: (path: string, name: string) =>
-        scope.workspaces.createDirectory(path, name),
-      createWorkspace: (input: { path: string }) => scope.workspaces.create(input),
-      renameWorkspace: (workspaceId: WorkspaceId, title: string) =>
-        scope.workspaces.rename(workspaceId, title),
-    });
+    const mountUi = (scope: ClientContext, directories: DirectoryService) => {
+      const ssh = scope.remote.sshRemote;
+      const flowInject = () => ({
+        ssh,
+        pickLocal: () => directories.pickDirectory(),
+        // The composed picker's browse capability (in-app listing/creation).
+        // Served only when the host composes the `-browse` backend; chooseLocal
+        // probes for it and falls back to the native chooser only on the
+        // explicit capability-unavailable signal (`directory-picker-unavailable`).
+        listLocal: (path?: string) => directories.listDirectory(path),
+        createLocalDirectory: (path: string, name: string) =>
+          directories.createDirectory(path, name),
+        createWorkspace: (input: { path: string }) => scope.workspaces.create(input),
+        renameWorkspace: (workspaceId: WorkspaceId, title: string) =>
+          scope.workspaces.rename(workspaceId, title),
+      });
 
-    return scope.slots.inject('settings.plugins.tab', () =>
-      scope.slots.inject('conversation.hero.workspace.directoryFlow', () =>
-        scope.slots.inject('sidebar.workspaces.directoryFlow', function* () {
-          yield scope.slots.register(
-            {
-              name: 'settings.plugins.tab',
-              id: 'ssh-remote',
-              order: 20,
-              label: () => 'SSH Remote',
-              inject: () => ({ ssh }),
-            },
-            SshRemotePanel,
-          );
-          // The slot is `single`; a lower priority shadows the stock local-only
-          // occupant while this combined local/SSH flow is mounted.
-          yield scope.slots.register(
-            {
-              name: 'conversation.hero.workspace.directoryFlow',
-              priority: -100,
-              inject: flowInject,
-            },
-            SshDirectoryFlow,
-          );
-          yield scope.slots.register(
-            {
-              name: 'sidebar.workspaces.directoryFlow',
-              priority: -100,
-              inject: flowInject,
-            },
-            SshDirectoryFlow,
-          );
-        }),
-      ),
-    );
+      return scope.slots.inject('settings.plugins.tab', () =>
+        scope.slots.inject('conversation.hero.workspace.directoryFlow', () =>
+          scope.slots.inject('sidebar.workspaces.directoryFlow', function* () {
+            yield scope.slots.register(
+              {
+                name: 'settings.plugins.tab',
+                id: 'ssh-remote',
+                order: 20,
+                label: () => 'SSH Remote',
+                inject: () => ({ ssh }),
+              },
+              SshRemotePanel,
+            );
+            // The slot is `single`; a lower priority shadows the stock local-only
+            // occupant while this combined local/SSH flow is mounted.
+            yield scope.slots.register(
+              {
+                name: 'conversation.hero.workspace.directoryFlow',
+                priority: -100,
+                inject: flowInject,
+              },
+              SshDirectoryFlow,
+            );
+            yield scope.slots.register(
+              {
+                name: 'sidebar.workspaces.directoryFlow',
+                priority: -100,
+                inject: flowInject,
+              },
+              SshDirectoryFlow,
+            );
+          }),
+        ),
+      );
+    };
+    // DSH 0.1.5 split directory UI operations from the Workspace controller.
+    // Read the new service only inside its own injection scope; rc.2 still
+    // supplies these operations on workspaces and needs no extra dependency.
+    if (typeof scope.workspaces.pickDirectory === 'function') {
+      return mountUi(scope, scope.workspaces);
+    }
+    const directories = scope.inject(['uiWorkspace'], next => mountUi(
+      next,
+      (next as ClientContext & { uiWorkspace: DirectoryService }).uiWorkspace,
+    ));
+    return () => directories.dispose();
   });
 
   try {

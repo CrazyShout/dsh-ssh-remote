@@ -25,18 +25,21 @@ describe('client lifecycle', () => {
     expect(TYPERT.invocations.map((entry) => entry.method)).toEqual(methods);
   });
 
-  it('mounts the Remote contribution before injecting and consuming its namespace', async () => {
+  it.each(['legacy', 'split'] as const)('mounts and disposes Remote and directory services (%s)', async (mode) => {
     const events: string[] = [];
     const disposeMount = vi.fn(async () => {
       events.push('remote:dispose');
     });
 
+    const directoryService = {
+      pickDirectory: vi.fn(async () => '/local'),
+      listDirectory: vi.fn(async () => ({ path: '/local', entries: [] })),
+      createDirectory: vi.fn(async () => '/local/new'),
+    };
     const childScope = {
       remote: { sshRemote: {} },
       workspaces: {
-        pickDirectory: vi.fn(),
-        listDirectory: vi.fn(),
-        createDirectory: vi.fn(),
+        ...(mode === 'legacy' ? directoryService : {}),
         create: vi.fn(),
         rename: vi.fn(),
       },
@@ -57,6 +60,18 @@ describe('client lifecycle', () => {
       },
     };
 
+    const inject = vi.fn((deps: string[], callback: (scope: any) => unknown) => {
+      events.push(`inject:${deps.join(',')}`);
+      const dispose = callback({
+        ...childScope, inject,
+        ...(deps.includes('uiWorkspace') ? { uiWorkspace: directoryService } : {}),
+      }) as () => void;
+      // Cordis effects must return a disposer, not the child Fiber itself.
+      expect(typeof dispose).toBe('function');
+      const fiber = Promise.resolve() as Promise<void> & { dispose: () => Promise<void> };
+      fiber.dispose = async () => { await dispose(); };
+      return fiber;
+    });
     const ctx = {
       remote: {
         $mount: vi.fn(async () => {
@@ -64,15 +79,7 @@ describe('client lifecycle', () => {
           return disposeMount;
         }),
       },
-      inject: vi.fn((deps: string[], callback: (scope: typeof childScope) => unknown) => {
-        events.push(`inject:${deps.join(',')}`);
-        const dispose = callback(childScope) as () => void;
-        const fiber = Promise.resolve() as Promise<void> & { dispose: () => Promise<void> };
-        fiber.dispose = async () => {
-          dispose();
-        };
-        return fiber;
-      }),
+      inject,
     };
 
     const dispose = await apply(ctx as never);
@@ -80,16 +87,25 @@ describe('client lifecycle', () => {
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
+      ...(mode === 'split' ? ['inject:uiWorkspace'] : []),
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
     ]);
 
+    const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
+    await expect(flow.pickLocal()).resolves.toBe('/local');
+    await flow.listLocal('/local');
+    await flow.createLocalDirectory('/local', 'new');
+    expect(directoryService.pickDirectory).toHaveBeenCalledOnce();
+    expect(directoryService.listDirectory).toHaveBeenCalledWith('/local');
+    expect(directoryService.createDirectory).toHaveBeenCalledWith('/local', 'new');
     await dispose?.();
 
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
+      ...(mode === 'split' ? ['inject:uiWorkspace'] : []),
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',

@@ -47,10 +47,11 @@ describe('probeLocalBrowse', () => {
     await expect(probeLocalBrowse(async () => ({ path: '/home/ais' }))).resolves.toBe(true);
   });
 
-  it('resolves false only for the explicit directory-picker-unavailable signal', async () => {
+  it.each(['directory-picker-unavailable', 'directory-picker/unavailable'])(
+    'resolves false for the explicit %s signal', async (code) => {
     await expect(
       probeLocalBrowse(async () => {
-        throw browseError('directory-picker-unavailable', 'composition serves native');
+        throw browseError(code, 'composition serves native');
       }),
     ).resolves.toBe(false);
   });
@@ -90,6 +91,7 @@ describe('isDirectoryPickerUnavailable', () => {
     ).toBe(true);
     // Non-capability browse failures can never trigger a native fallback.
     expect(isDirectoryPickerUnavailable(browseError('directory-unreadable', 'permission denied'))).toBe(false);
+    expect(isDirectoryPickerUnavailable(browseError('directory-picker/unreadable', 'permission denied'))).toBe(false);
     expect(isDirectoryPickerUnavailable(browseError('directory-create-failed', 'read-only fs'))).toBe(false);
     expect(isDirectoryPickerUnavailable(new Error('connection lost'))).toBe(false);
     expect(isDirectoryPickerUnavailable(null)).toBe(false);
