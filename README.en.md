@@ -62,8 +62,11 @@ Implemented:
 
 ## Honest upstream boundaries
 
-The npm-installable DSH baseline is currently `0.1.1-rc.2`. Its public seams
-still impose four visible limits:
+Version 0.3.1 is validated with DSH `0.1.1-rc.2` and npm `latest` CLI
+`0.1.5-rc.2` (whose dependencies may resolve to `0.1.5-rc.3`). It supports the
+new Settings namespace API, split `uiWorkspace` directory service, and
+`directory-picker/unavailable` error code. Interrupted SSH uploads fail only
+the connection. The public seams still impose these visible limits:
 
 1. A Harness Workspace must be a real local directory. The plugin therefore
    creates a small local anchor and maps only that anchor and its descendants to

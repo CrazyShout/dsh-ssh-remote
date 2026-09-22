@@ -31,7 +31,8 @@ export function windowsDriveAnchors(entries: ReadonlyArray<{ name: string }>): L
 /**
  * Whether a thrown browse failure is the explicit capability-unavailable
  * signal. The runtime's `DirectoryBrowseError` carries the RPC error body as
- * `rpcError`; only `rpcError.code === 'directory-picker-unavailable'` means
+ * `rpcError`; the legacy `directory-picker-unavailable` and DSH 0.1.5's
+ * `directory-picker/unavailable` codes mean
  * the composed picker serves no `browse` capability. Permission, timeout,
  * transport, internal, and every other code is a real browse failure and must
  * never trigger a native-picker fallback. Kept structural (no wire import) so
@@ -39,7 +40,8 @@ export function windowsDriveAnchors(entries: ReadonlyArray<{ name: string }>): L
  */
 export function isDirectoryPickerUnavailable(reason: unknown): boolean {
   if (!(reason instanceof Error)) return false;
-  return (reason as { rpcError?: { code?: unknown } }).rpcError?.code === 'directory-picker-unavailable';
+  const code = (reason as { rpcError?: { code?: unknown } }).rpcError?.code;
+  return code === 'directory-picker-unavailable' || code === 'directory-picker/unavailable';
 }
 
 /**
