@@ -550,28 +550,30 @@ function SshDirectoryFlow({
                   : '在应用内浏览 Host 文件系统（含 /mnt 下的 Windows 盘）'}
               </span>
             </Button>
-            {config?.hosts.map((host) => (
-              <Button
-                key={host.alias}
-                variant="outline"
-                disabled={disabled}
-                onClick={() => void enter({ kind: 'ssh', alias: host.alias })}
-                style={sourceRowStyle}
-              >
-                <strong>{host.alias}</strong>
-                <span style={subtleText}>
-                  {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
-                </span>
-                <span style={dimmedText}>
-                  Helper · {helperStateLabel(host.helper.status)}
-                  {host.helper.version ? ` · ${host.helper.version}` : ''}
-                </span>
-                {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
-              </Button>
-            ))}
-            {!loading && config?.hosts.length === 0 && (
-              <div style={subtleText}>~/.ssh/config 中没有可用的具体 Host。</div>
-            )}
+            <div style={hostListStyle}>
+              {config?.hosts.map((host) => (
+                <Button
+                  key={host.alias}
+                  variant="outline"
+                  disabled={disabled}
+                  onClick={() => void enter({ kind: 'ssh', alias: host.alias })}
+                  style={sourceRowStyle}
+                >
+                  <strong>{host.alias}</strong>
+                  <span style={subtleText}>
+                    {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
+                  </span>
+                  <span style={dimmedText}>
+                    Helper · {helperStateLabel(host.helper.status)}
+                    {host.helper.version ? ` · ${host.helper.version}` : ''}
+                  </span>
+                  {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
+                </Button>
+              ))}
+              {!loading && config?.hosts.length === 0 && (
+                <div style={subtleText}>~/.ssh/config 中没有可用的具体 Host。</div>
+              )}
+            </div>
           </div>
         ) : (
           <>
@@ -668,6 +670,19 @@ const entryListStyle: CSSProperties = {
   alignItems: 'stretch',
   gap: 2,
   padding: 6,
+};
+
+// The host/source picker list mirrors the directory list: bounded height so a
+// large ~/.ssh/config cannot push the footer actions off-screen. "本机" stays
+// pinned above it; only the SSH hosts scroll.
+const hostListStyle: CSSProperties = {
+  maxHeight: 'min(50vh, 420px)',
+  overflowY: 'auto',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  // Keep clickable buttons clear of the scrollbar gutter.
+  paddingRight: 4,
 };
 
 const entryRowStyle: CSSProperties = { justifyContent: 'flex-start', flexShrink: 0 };
