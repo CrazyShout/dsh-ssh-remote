@@ -6,8 +6,10 @@ import {
   assertSshAlias,
   buildHelperConnectCommand,
   buildSystemSshArgs,
+  detectSshCapabilities,
   redactHelperDiagnostic,
   type RemoteHelperInstallerOptions,
+  type SshCapabilities,
 } from './installer.js';
 import {
   RemoteHelperCallInterruptedError,
@@ -104,6 +106,7 @@ export class RemoteHelperManager {
   private readonly listeners = new Set<RemoteHelperStatusListener>();
   private readonly spawnProcess: typeof spawn;
   private readonly sshBinary: string;
+  private readonly capabilities?: SshCapabilities;
   private readonly reconnectBaseMs: number;
   private readonly reconnectMaxMs: number;
   private readonly healthIntervalMs: number;
@@ -121,6 +124,7 @@ export class RemoteHelperManager {
     this.installer = new RemoteHelperInstaller(options);
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.sshBinary = options.sshBinary ?? 'ssh';
+    this.capabilities = options.capabilities;
     this.reconnectBaseMs = options.reconnectBaseMs ?? 1_000;
     this.reconnectMaxMs = options.reconnectMaxMs ?? 30_000;
     this.healthIntervalMs = options.healthIntervalMs ?? 20_000;
@@ -269,9 +273,12 @@ export class RemoteHelperManager {
       this.assertCurrent(entry, generation);
       this.setState(entry, 'connecting');
 
+      const capabilities = this.capabilities ?? await detectSshCapabilities(this.sshBinary);
+      this.assertCurrent(entry, generation);
       const args = buildSystemSshArgs(
         entry.alias,
         buildHelperConnectCommand(this.installer.asset.sha256),
+        capabilities,
       );
       child = this.spawnProcess(this.sshBinary, args, {
         stdio: ['pipe', 'pipe', 'pipe'],

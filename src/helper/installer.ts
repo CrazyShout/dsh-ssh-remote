@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,12 @@ export interface RemoteHelperInstallerOptions {
   sshBinary?: string;
   spawnProcess?: typeof spawn;
   timeoutMs?: number;
+  /**
+   * Pre-resolved local OpenSSH capabilities. When omitted, the installer probes
+   * `ssh -G` once (cached) without loading user config. Inject in tests for
+   * hermetic runs.
+   */
+  capabilities?: SshCapabilities;
 }
 
 export interface RemoteHelperInstallResult {
@@ -79,20 +85,78 @@ export function buildHelperConnectCommand(sha256: string): string {
   return `exec python3 \"${helperRemotePath(sha256)}\" connect --stdio`;
 }
 
-export function buildSystemSshArgs(alias: string, remoteCommand: string): string[] {
+/**
+ * Local OpenSSH transport options. RemoteCommand is present in 8.2;
+ * SessionType and StdinNull appear in 8.7. Probe the actual binary since
+ * vendors may backport features independently of the version banner.
+ */
+export interface SshCapabilities {
+  readonly sessionTypeSupported: boolean;
+}
+
+/** Conservative default: assume a modern client (the original hard-coded behaviour). */
+export const MODERN_SSH_CAPABILITIES: SshCapabilities = { sessionTypeSupported: true };
+
+const capabilityCache = new Map<string, Promise<SshCapabilities>>();
+
+/** Probe supported transport options without connecting to a host. */
+export async function detectSshCapabilities(
+  sshBinary = 'ssh',
+  probeOptions: (binary: string) => Promise<boolean> = probeSystemSshOptions,
+): Promise<SshCapabilities> {
+  let probe = capabilityCache.get(sshBinary);
+  if (!probe) {
+    probe = (async () => {
+      try {
+        return { sessionTypeSupported: await probeOptions(sshBinary) };
+      } catch {
+        return { sessionTypeSupported: false };
+      }
+    })();
+    capabilityCache.set(sshBinary, probe);
+  }
+  return probe;
+}
+
+/** Test-only: clear the cached capability probe between isolated runs. */
+export function resetSshCapabilityCache(): void {
+  capabilityCache.clear();
+}
+
+/** `-G` expands isolated options and never opens a network connection. */
+function probeSystemSshOptions(sshBinary: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(sshBinary, [
+      '-F', '/dev/null', '-G',
+      '-o', 'SessionType=default', '-o', 'StdinNull=no',
+      'probe.invalid',
+    ], { encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 }, (error) => {
+      resolve(error === null);
+    });
+  });
+}
+
+export function buildSystemSshArgs(
+  alias: string,
+  remoteCommand: string,
+  capabilities: SshCapabilities = MODERN_SSH_CAPABILITIES,
+): string[] {
   assertSshAlias(alias);
-  return [
-    '-T',
-    '-o', 'BatchMode=yes',
-    '-o', 'RemoteCommand=none',
-    '-o', 'SessionType=default',
-    '-o', 'StdinNull=no',
+  const args = ['-T', '-o', 'BatchMode=yes'];
+  // RemoteCommand is supported by OpenSSH 8.2 and must always override a
+  // Host-level remote command when the helper sends its own command.
+  args.push('-o', 'RemoteCommand=none');
+  if (capabilities.sessionTypeSupported) {
+    args.push('-o', 'SessionType=default', '-o', 'StdinNull=no');
+  }
+  args.push(
     '-o', 'ConnectTimeout=15',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=3',
     '--', alias,
     remoteCommand,
-  ];
+  );
+  return args;
 }
 
 /**
@@ -113,19 +177,23 @@ export class RemoteHelperInstaller {
   private readonly sshBinary: string;
   private readonly spawnProcess: typeof spawn;
   private readonly timeoutMs: number;
+  private readonly capabilities?: SshCapabilities;
 
   constructor(options: RemoteHelperInstallerOptions = {}) {
     this.asset = loadHelperAsset(options.assetPath);
     this.sshBinary = options.sshBinary ?? 'ssh';
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.capabilities = options.capabilities;
   }
 
   async install(alias: string, signal?: AbortSignal): Promise<RemoteHelperInstallResult> {
     assertSshAlias(alias);
     signal?.throwIfAborted();
+    const capabilities = this.capabilities ?? await detectSshCapabilities(this.sshBinary);
+    signal?.throwIfAborted();
     const script = installScript(this.asset.sha256);
-    const args = buildSystemSshArgs(alias, `sh -c ${shellQuote(script)}`);
+    const args = buildSystemSshArgs(alias, `sh -c ${shellQuote(script)}`, capabilities);
     const child = this.spawnProcess(this.sshBinary, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

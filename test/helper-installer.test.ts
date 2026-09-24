@@ -8,8 +8,11 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import {
   RemoteHelperInstaller,
   buildHelperConnectCommand,
+  buildSystemSshArgs,
+  detectSshCapabilities,
   helperRemotePath,
   redactHelperDiagnostic,
+  resetSshCapabilityCache,
 } from '../src/helper/installer.js';
 
 class FakeChild extends EventEmitter {
@@ -42,6 +45,7 @@ class FakeChild extends EventEmitter {
 let temporary: string | undefined;
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetSshCapabilityCache();
   if (temporary) await rm(temporary, { recursive: true, force: true });
   temporary = undefined;
 });
@@ -58,7 +62,11 @@ describe('RemoteHelperInstaller', () => {
     const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
     const child = new FakeChild();
     const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
-    const installer = new RemoteHelperInstaller({ assetPath: path, spawnProcess: spawnProcess as never });
+    const installer = new RemoteHelperInstaller({
+      assetPath: path,
+      spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true },
+    });
 
     const result = await installer.install('gpu-dev');
 
@@ -75,6 +83,27 @@ describe('RemoteHelperInstaller', () => {
     expect(args.at(-1)).toContain('chmod 600');
     expect(result.remotePath).toBe(helperRemotePath(result.sha256));
     expect(buildHelperConnectCommand(result.sha256)).toContain('connect --stdio');
+  });
+
+  it('omits unsupported transport options on older clients so install does not abort', async () => {
+    const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
+    const child = new FakeChild();
+    const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
+    const installer = new RemoteHelperInstaller({
+      assetPath: path,
+      spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: false },
+    });
+
+    await installer.install('openkylin-atom');
+
+    const args = spawnProcess.mock.calls[0][1] as string[];
+    expect(args).toContain('BatchMode=yes');
+    // RemoteCommand works on OpenSSH 8.2 and must still override a Host entry.
+    expect(args).toContain('RemoteCommand=none');
+    expect(args).not.toContain('SessionType=default');
+    expect(args).not.toContain('StdinNull=no');
+    expect(args).toContain('openkylin-atom');
   });
 
   it('rejects option-like aliases before spawning SSH', async () => {
@@ -103,5 +132,54 @@ describe('RemoteHelperInstaller', () => {
   it('redacts credentials and home-directory identities from stderr', () => {
     expect(redactHelperDiagnostic('password=hunter2 token:abc /Users/atlas/.ssh/id SSH_AUTH_SOCK=/tmp/s'))
       .toBe('password=[REDACTED] token=[REDACTED] ~/.ssh/id SSH_AUTH_SOCK=[REDACTED]');
+  });
+});
+
+describe('buildSystemSshArgs capability gating', () => {
+  it('emits supported transport options for a modern client', () => {
+    const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: true });
+    expect(args).toContain('SessionType=default');
+    expect(args).toContain('RemoteCommand=none');
+    expect(args).toContain('StdinNull=no');
+    expect(args).toContain('BatchMode=yes');
+  });
+
+  it('withholds unsupported options but keeps RemoteCommand on an 8.2 client', () => {
+    const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: false });
+    expect(args).not.toContain('SessionType=default');
+    expect(args).toContain('RemoteCommand=none');
+    expect(args).not.toContain('StdinNull=no');
+    expect(args).toContain('BatchMode=yes');
+    expect(args).toContain('-T');
+  });
+});
+
+describe('detectSshCapabilities', () => {
+  it('caches the result of an option probe for an older client', async () => {
+    resetSshCapabilityCache();
+    const probe = vi.fn(async () => false);
+    await expect(detectSshCapabilities('ssh', probe)).resolves.toEqual({ sessionTypeSupported: false });
+    expect(probe).toHaveBeenCalledTimes(1);
+    // Cached: a second connection does not re-run ssh -G.
+    await detectSshCapabilities('ssh', probe);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables options accepted by the actual binary, including OpenSSH 8.7', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => true))
+      .resolves.toEqual({ sessionTypeSupported: true });
+  });
+
+  it('fails closed when the option probe throws', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => { throw new Error('not found'); }))
+      .resolves.toEqual({ sessionTypeSupported: false });
+  });
+
+  it('probes the installed SSH client without contacting a host', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('/usr/bin/ssh'))
+      .resolves.toEqual({ sessionTypeSupported: true });
   });
 });

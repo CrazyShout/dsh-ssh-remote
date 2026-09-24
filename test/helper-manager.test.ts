@@ -131,6 +131,7 @@ describe('RemoteHelperManager', () => {
     const manager = new RemoteHelperManager({
       assetPath: path,
       spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true },
       healthIntervalMs: 0,
       reconnectBaseMs: 100,
       reconnectMaxMs: 100,
@@ -240,6 +241,7 @@ describe('RemoteHelperManager', () => {
     const manager = new RemoteHelperManager({
       assetPath: path,
       spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true },
       healthIntervalMs: 0,
       reconnectBaseMs: 1_000,
       reconnectMaxMs: 1_000,
@@ -292,6 +294,7 @@ describe('RemoteHelperManager', () => {
     const manager = new RemoteHelperManager({
       assetPath: path,
       spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true },
       healthIntervalMs: 0,
     });
 
