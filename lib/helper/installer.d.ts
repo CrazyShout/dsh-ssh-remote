@@ -12,6 +12,12 @@ export interface RemoteHelperInstallerOptions {
     sshBinary?: string;
     spawnProcess?: typeof spawn;
     timeoutMs?: number;
+    /**
+     * Pre-resolved local OpenSSH capabilities. When omitted, the installer probes
+     * `ssh -G` once (cached) without loading user config. Inject in tests for
+     * hermetic runs.
+     */
+    capabilities?: SshCapabilities;
 }
 export interface RemoteHelperInstallResult {
     alias: string;
@@ -33,7 +39,21 @@ export declare function resolveHelperAssetPath(assetPath?: string): string;
 export declare function loadHelperAsset(assetPath?: string): HelperAsset;
 export declare function helperRemotePath(sha256: string): string;
 export declare function buildHelperConnectCommand(sha256: string): string;
-export declare function buildSystemSshArgs(alias: string, remoteCommand: string): string[];
+/**
+ * Local OpenSSH transport options. RemoteCommand is present in 8.2;
+ * SessionType and StdinNull appear in 8.7. Probe the actual binary since
+ * vendors may backport features independently of the version banner.
+ */
+export interface SshCapabilities {
+    readonly sessionTypeSupported: boolean;
+}
+/** Conservative default: assume a modern client (the original hard-coded behaviour). */
+export declare const MODERN_SSH_CAPABILITIES: SshCapabilities;
+/** Probe supported transport options without connecting to a host. */
+export declare function detectSshCapabilities(sshBinary?: string, probeOptions?: (binary: string) => Promise<boolean>): Promise<SshCapabilities>;
+/** Test-only: clear the cached capability probe between isolated runs. */
+export declare function resetSshCapabilityCache(): void;
+export declare function buildSystemSshArgs(alias: string, remoteCommand: string, capabilities?: SshCapabilities): string[];
 /**
  * Redact credential-shaped diagnostics before retaining or publishing them.
  * This is deliberately conservative: diagnostics are for classification, not
@@ -45,6 +65,7 @@ export declare class RemoteHelperInstaller {
     private readonly sshBinary;
     private readonly spawnProcess;
     private readonly timeoutMs;
+    private readonly capabilities?;
     constructor(options?: RemoteHelperInstallerOptions);
     install(alias: string, signal?: AbortSignal): Promise<RemoteHelperInstallResult>;
 }

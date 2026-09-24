@@ -42,6 +42,7 @@ export declare class RemoteHelperManager {
     private readonly listeners;
     private readonly spawnProcess;
     private readonly sshBinary;
+    private readonly capabilities?;
     private readonly reconnectBaseMs;
     private readonly reconnectMaxMs;
     private readonly healthIntervalMs;

@@ -20,8 +20,8 @@ export interface RemoteHelperInstallerOptions {
   timeoutMs?: number;
   /**
    * Pre-resolved local OpenSSH capabilities. When omitted, the installer probes
-   * `ssh -V` once (cached) so the 9.9-only transport options are only emitted
-   * when the client actually accepts them. Inject in tests for hermetic runs.
+   * `ssh -G` once (cached) without loading user config. Inject in tests for
+   * hermetic runs.
    */
   capabilities?: SshCapabilities;
 }
@@ -86,10 +86,9 @@ export function buildHelperConnectCommand(sha256: string): string {
 }
 
 /**
- * Local OpenSSH client capabilities relevant to the helper transport. The
- * `SessionType`, `StdinNull`, and `RemoteCommand=none` keywords were all added
- * in OpenSSH 9.9 (2024-11). Older clients reject them with
- * "Bad configuration option" and abort before the helper can install/connect.
+ * Local OpenSSH transport options. RemoteCommand is present in 8.2;
+ * SessionType and StdinNull appear in 8.7. Probe the actual binary since
+ * vendors may backport features independently of the version banner.
  */
 export interface SshCapabilities {
   readonly sessionTypeSupported: boolean;
@@ -100,23 +99,18 @@ export const MODERN_SSH_CAPABILITIES: SshCapabilities = { sessionTypeSupported: 
 
 const capabilityCache = new Map<string, Promise<SshCapabilities>>();
 
-/**
- * Probe the local OpenSSH client once and cache the result per binary. On a
- * recognized OpenSSH banner, `SessionType` support is gated on >= 9.9; on an
- * unreadable banner or probe failure the original (modern) behaviour is kept.
- */
+/** Probe supported transport options without connecting to a host. */
 export async function detectSshCapabilities(
   sshBinary = 'ssh',
-  runVersion: (binary: string) => Promise<string> = runSshVersion,
+  probeOptions: (binary: string) => Promise<boolean> = probeSystemSshOptions,
 ): Promise<SshCapabilities> {
   let probe = capabilityCache.get(sshBinary);
   if (!probe) {
     probe = (async () => {
       try {
-        const version = parseOpenSshVersion(await runVersion(sshBinary));
-        return { sessionTypeSupported: version === null || atLeast(version, 9, 9) };
+        return { sessionTypeSupported: await probeOptions(sshBinary) };
       } catch {
-        return MODERN_SSH_CAPABILITIES;
+        return { sessionTypeSupported: false };
       }
     })();
     capabilityCache.set(sshBinary, probe);
@@ -129,27 +123,15 @@ export function resetSshCapabilityCache(): void {
   capabilityCache.clear();
 }
 
-/** Parse an `OpenSSH_X.Y[pZ]` banner into a `[major, minor]` tuple. */
-function parseOpenSshVersion(banner: string): [number, number] | null {
-  const match = /OpenSSH_(\d+)(?:\.(\d+))?/iu.exec(banner);
-  if (!match) return null;
-  const major = Number(match[1]);
-  const minor = match[2] !== undefined ? Number(match[2]) : 0;
-  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor)) return null;
-  return [major, minor];
-}
-
-function atLeast(version: [number, number], major: number, minor: number): boolean {
-  return version[0] > major || (version[0] === major && version[1] >= minor);
-}
-
-/** `ssh -V` prints its banner to stderr and exits 0 on every OpenSSH build. */
-function runSshVersion(sshBinary: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(sshBinary, ['-V'], { encoding: 'utf8', timeout: 5_000 }, (error, stdout, stderr) => {
-      if (stderr) { resolve(stderr); return; }
-      if (stdout) { resolve(stdout); return; }
-      reject(error ?? new Error(`${sshBinary} -V produced no output`));
+/** `-G` expands isolated options and never opens a network connection. */
+function probeSystemSshOptions(sshBinary: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(sshBinary, [
+      '-F', '/dev/null', '-G',
+      '-o', 'SessionType=default', '-o', 'StdinNull=no',
+      'probe.invalid',
+    ], { encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 }, (error) => {
+      resolve(error === null);
     });
   });
 }
@@ -161,11 +143,11 @@ export function buildSystemSshArgs(
 ): string[] {
   assertSshAlias(alias);
   const args = ['-T', '-o', 'BatchMode=yes'];
+  // RemoteCommand is supported by OpenSSH 8.2 and must always override a
+  // Host-level remote command when the helper sends its own command.
+  args.push('-o', 'RemoteCommand=none');
   if (capabilities.sessionTypeSupported) {
-    // OpenSSH >= 9.9: defensively cancel a session-type / remote-command /
-    // null-stdin override the user may have set for this Host. Older clients
-    // reject these keywords, so they are gated on the probed client version.
-    args.push('-o', 'RemoteCommand=none', '-o', 'SessionType=default', '-o', 'StdinNull=no');
+    args.push('-o', 'SessionType=default', '-o', 'StdinNull=no');
   }
   args.push(
     '-o', 'ConnectTimeout=15',

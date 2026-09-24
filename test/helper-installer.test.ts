@@ -85,7 +85,7 @@ describe('RemoteHelperInstaller', () => {
     expect(buildHelperConnectCommand(result.sha256)).toContain('connect --stdio');
   });
 
-  it('omits OpenSSH 9.9-only options on older clients so install does not abort', async () => {
+  it('omits unsupported transport options on older clients so install does not abort', async () => {
     const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
     const child = new FakeChild();
     const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
@@ -99,9 +99,8 @@ describe('RemoteHelperInstaller', () => {
 
     const args = spawnProcess.mock.calls[0][1] as string[];
     expect(args).toContain('BatchMode=yes');
-    // These three keywords are OpenSSH >= 9.9 only; older clients reject them
-    // with "Bad configuration option" before the helper can install.
-    expect(args).not.toContain('RemoteCommand=none');
+    // RemoteCommand works on OpenSSH 8.2 and must still override a Host entry.
+    expect(args).toContain('RemoteCommand=none');
     expect(args).not.toContain('SessionType=default');
     expect(args).not.toContain('StdinNull=no');
     expect(args).toContain('openkylin-atom');
@@ -137,7 +136,7 @@ describe('RemoteHelperInstaller', () => {
 });
 
 describe('buildSystemSshArgs capability gating', () => {
-  it('emits the 9.9-only transport options for a modern client', () => {
+  it('emits supported transport options for a modern client', () => {
     const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: true });
     expect(args).toContain('SessionType=default');
     expect(args).toContain('RemoteCommand=none');
@@ -145,10 +144,10 @@ describe('buildSystemSshArgs capability gating', () => {
     expect(args).toContain('BatchMode=yes');
   });
 
-  it('withholds the 9.9-only options for an older client', () => {
+  it('withholds unsupported options but keeps RemoteCommand on an 8.2 client', () => {
     const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: false });
     expect(args).not.toContain('SessionType=default');
-    expect(args).not.toContain('RemoteCommand=none');
+    expect(args).toContain('RemoteCommand=none');
     expect(args).not.toContain('StdinNull=no');
     expect(args).toContain('BatchMode=yes');
     expect(args).toContain('-T');
@@ -156,34 +155,31 @@ describe('buildSystemSshArgs capability gating', () => {
 });
 
 describe('detectSshCapabilities', () => {
-  it('gates SessionType support on OpenSSH >= 9.9 from the -V banner', async () => {
+  it('caches the result of an option probe for an older client', async () => {
     resetSshCapabilityCache();
-    const probe = vi.fn(async () => 'OpenSSH_8.2p1 Ubuntu-4kylin3k1.4update5, OpenSSL 1.1.1f 31 Mar 2020');
+    const probe = vi.fn(async () => false);
     await expect(detectSshCapabilities('ssh', probe)).resolves.toEqual({ sessionTypeSupported: false });
     expect(probe).toHaveBeenCalledTimes(1);
-    // Cached: a second probe does not re-run ssh -V.
+    // Cached: a second connection does not re-run ssh -G.
     await detectSshCapabilities('ssh', probe);
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
-  it('recognizes OpenSSH 9.9 and newer as SessionType-capable', async () => {
+  it('enables options accepted by the actual binary, including OpenSSH 8.7', async () => {
     resetSshCapabilityCache();
-    await expect(detectSshCapabilities('ssh', async () => 'OpenSSH_9.9p1, OpenSSL 3.0.13'))
-      .resolves.toEqual({ sessionTypeSupported: true });
-    resetSshCapabilityCache();
-    await expect(detectSshCapabilities('ssh', async () => 'OpenSSH_10.0p1, OpenSSL 3.5.0'))
+    await expect(detectSshCapabilities('ssh', async () => true))
       .resolves.toEqual({ sessionTypeSupported: true });
   });
 
-  it('falls back to the modern default when the banner is unreadable', async () => {
-    resetSshCapabilityCache();
-    await expect(detectSshCapabilities('ssh', async () => 'some other ssh client v1.2'))
-      .resolves.toEqual({ sessionTypeSupported: true });
-  });
-
-  it('falls back to the modern default when ssh -V fails', async () => {
+  it('fails closed when the option probe throws', async () => {
     resetSshCapabilityCache();
     await expect(detectSshCapabilities('ssh', async () => { throw new Error('not found'); }))
+      .resolves.toEqual({ sessionTypeSupported: false });
+  });
+
+  it('probes the installed SSH client without contacting a host', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('/usr/bin/ssh'))
       .resolves.toEqual({ sessionTypeSupported: true });
   });
 });
