@@ -1,7 +1,7 @@
 # DSH Remote Helper Protocol v1
 
 `dsh_remote_helper.py` is the bootstrap implementation of the optional remote
-execution plane. It requires Python 3.9 or newer and only uses the standard
+execution plane. It requires Python 3.8 or newer and only uses the standard
 library. Linux is the primary target. The protocol is capability-driven: the
 Python implementation reports `dirfd-no-follow`, not `openat2`, and reports
 whether a working Bubblewrap sandbox is available.

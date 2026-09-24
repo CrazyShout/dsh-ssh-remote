@@ -94,7 +94,7 @@ Removing the anchor and the last routing hooks requires an upstream first-class
 - DSH `0.1.1-rc.2` or a compatible newer `0.1.x` release is required.
 - A concrete `Host` alias in `~/.ssh/config` that already works with
   `ssh <alias>` in batch mode.
-- Remote POSIX system with Python 3.9 or newer.
+- Remote POSIX system with Python 3.8 or newer.
 - Linux bubblewrap (`bwrap`) for `read-only` or `workspace-write` process/PTY
   confinement. File operations remain dirfd-confined independently.
 
@@ -167,7 +167,7 @@ npm test
 npm run build
 ```
 
-CI covers Node 22/24 and Python 3.9/3.10/3.12. `lib/` is committed because DSH
+CI covers Node 22/24 and Python 3.8/3.9/3.10/3.12. `lib/` is committed because DSH
 can install the repository directly without running a package build script.
 
 Design records:
