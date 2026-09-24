@@ -8,8 +8,11 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import {
   RemoteHelperInstaller,
   buildHelperConnectCommand,
+  buildSystemSshArgs,
+  detectSshCapabilities,
   helperRemotePath,
   redactHelperDiagnostic,
+  resetSshCapabilityCache,
 } from '../src/helper/installer.js';
 
 class FakeChild extends EventEmitter {
@@ -42,6 +45,7 @@ class FakeChild extends EventEmitter {
 let temporary: string | undefined;
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetSshCapabilityCache();
   if (temporary) await rm(temporary, { recursive: true, force: true });
   temporary = undefined;
 });
@@ -58,7 +62,11 @@ describe('RemoteHelperInstaller', () => {
     const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
     const child = new FakeChild();
     const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
-    const installer = new RemoteHelperInstaller({ assetPath: path, spawnProcess: spawnProcess as never });
+    const installer = new RemoteHelperInstaller({
+      assetPath: path,
+      spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true },
+    });
 
     const result = await installer.install('gpu-dev');
 
@@ -75,6 +83,28 @@ describe('RemoteHelperInstaller', () => {
     expect(args.at(-1)).toContain('chmod 600');
     expect(result.remotePath).toBe(helperRemotePath(result.sha256));
     expect(buildHelperConnectCommand(result.sha256)).toContain('connect --stdio');
+  });
+
+  it('omits OpenSSH 9.9-only options on older clients so install does not abort', async () => {
+    const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
+    const child = new FakeChild();
+    const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
+    const installer = new RemoteHelperInstaller({
+      assetPath: path,
+      spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: false },
+    });
+
+    await installer.install('openkylin-atom');
+
+    const args = spawnProcess.mock.calls[0][1] as string[];
+    expect(args).toContain('BatchMode=yes');
+    // These three keywords are OpenSSH >= 9.9 only; older clients reject them
+    // with "Bad configuration option" before the helper can install.
+    expect(args).not.toContain('RemoteCommand=none');
+    expect(args).not.toContain('SessionType=default');
+    expect(args).not.toContain('StdinNull=no');
+    expect(args).toContain('openkylin-atom');
   });
 
   it('rejects option-like aliases before spawning SSH', async () => {
@@ -103,5 +133,57 @@ describe('RemoteHelperInstaller', () => {
   it('redacts credentials and home-directory identities from stderr', () => {
     expect(redactHelperDiagnostic('password=hunter2 token:abc /Users/atlas/.ssh/id SSH_AUTH_SOCK=/tmp/s'))
       .toBe('password=[REDACTED] token=[REDACTED] ~/.ssh/id SSH_AUTH_SOCK=[REDACTED]');
+  });
+});
+
+describe('buildSystemSshArgs capability gating', () => {
+  it('emits the 9.9-only transport options for a modern client', () => {
+    const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: true });
+    expect(args).toContain('SessionType=default');
+    expect(args).toContain('RemoteCommand=none');
+    expect(args).toContain('StdinNull=no');
+    expect(args).toContain('BatchMode=yes');
+  });
+
+  it('withholds the 9.9-only options for an older client', () => {
+    const args = buildSystemSshArgs('host', 'echo hi', { sessionTypeSupported: false });
+    expect(args).not.toContain('SessionType=default');
+    expect(args).not.toContain('RemoteCommand=none');
+    expect(args).not.toContain('StdinNull=no');
+    expect(args).toContain('BatchMode=yes');
+    expect(args).toContain('-T');
+  });
+});
+
+describe('detectSshCapabilities', () => {
+  it('gates SessionType support on OpenSSH >= 9.9 from the -V banner', async () => {
+    resetSshCapabilityCache();
+    const probe = vi.fn(async () => 'OpenSSH_8.2p1 Ubuntu-4kylin3k1.4update5, OpenSSL 1.1.1f 31 Mar 2020');
+    await expect(detectSshCapabilities('ssh', probe)).resolves.toEqual({ sessionTypeSupported: false });
+    expect(probe).toHaveBeenCalledTimes(1);
+    // Cached: a second probe does not re-run ssh -V.
+    await detectSshCapabilities('ssh', probe);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes OpenSSH 9.9 and newer as SessionType-capable', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => 'OpenSSH_9.9p1, OpenSSL 3.0.13'))
+      .resolves.toEqual({ sessionTypeSupported: true });
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => 'OpenSSH_10.0p1, OpenSSL 3.5.0'))
+      .resolves.toEqual({ sessionTypeSupported: true });
+  });
+
+  it('falls back to the modern default when the banner is unreadable', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => 'some other ssh client v1.2'))
+      .resolves.toEqual({ sessionTypeSupported: true });
+  });
+
+  it('falls back to the modern default when ssh -V fails', async () => {
+    resetSshCapabilityCache();
+    await expect(detectSshCapabilities('ssh', async () => { throw new Error('not found'); }))
+      .resolves.toEqual({ sessionTypeSupported: true });
   });
 });
