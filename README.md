@@ -76,7 +76,7 @@
 - 本机 Node.js 22 或更高版本。
 - 要求 DSH `0.1.1-rc.2` 或兼容的更新 `0.1.x` 版本。
 - `~/.ssh/config` 中存在具体 Host alias，且 `ssh <alias>` 的 batch 连接可用。
-- 远端是 POSIX 系统并提供 Python 3.9 或更高版本。
+- 远端是 POSIX 系统并提供 Python 3.8 或更高版本。
 - `read-only` / `workspace-write` 进程和 PTY 隔离需要 Linux bubblewrap (`bwrap`)；
   文件操作本身始终独立使用 dirfd 限制。
 
@@ -143,7 +143,7 @@ npm test
 npm run build
 ```
 
-CI 覆盖 Node 22/24 与 Python 3.9/3.10/3.12。仓库提交 `lib/`，因为 DSH 可以直接从
+CI 覆盖 Node 22/24 与 Python 3.8/3.9/3.10/3.12。仓库提交 `lib/`，因为 DSH 可以直接从
 Git 安装，不应依赖安装时执行构建脚本。
 
 设计记录：

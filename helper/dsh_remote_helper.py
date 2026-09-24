@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DSH remote helper protocol v1 MVP (Python 3.9+, stdlib only)."""
+"""DSH remote helper protocol v1 MVP (Python 3.8+, stdlib only)."""
 from __future__ import annotations
 
 import argparse
