@@ -142,11 +142,22 @@ describe('remote Workspace routing', () => {
 
     runtime.spawn({ argv: ['pwd'], cwd: '/tmp', stdio: {}, graceMs: 1000 } as never);
     expect(spawn).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/tmp' }));
+    const localSearch = {
+      argv: ['/app/node_modules/@vscode/ripgrep/bin/rg', '--files'],
+      cwd: '/tmp', stdio: {}, graceMs: 1000,
+    };
+    runtime.spawn(localSearch as never);
+    expect(spawn.mock.calls.at(-1)?.[0]).toBe(localSearch);
     restore();
   });
 });
 
 describe('OpenSSH process invocation', () => {
+  const cwd = 'ssh://gpu/home/atlas/project';
+  const packagedRg = '/app/node_modules/@vscode/ripgrep/bin/rg';
+  const anchor = '/anchors/project';
+  const resolver = (path: string) => path === anchor ? cwd : undefined;
+
   it('quotes cwd, argv and explicit environment into one remote shell command', () => {
     const invocation = buildRemoteSshInvocation(
       'ssh://atlas@gpu:2202/home/atlas/My Project',
@@ -191,5 +202,50 @@ describe('OpenSSH process invocation', () => {
     );
     expect(invocation.at(-1)).toContain('/home/atlas/project');
     expect(invocation.at(-1)).not.toContain('/Users/me/.dsh/ssh-workspace-anchors/project');
+  });
+
+  it('gives pathless DSH content searches an explicit cwd instead of SSH stdin', () => {
+    const args = ['--no-config', '--json', `--regexp=${anchor}`];
+    expect(buildRemoteSshInvocation(cwd, [packagedRg, ...args], undefined, false, resolver))
+      .toEqual(buildRemoteSshInvocation(cwd, ['rg', ...args, '--', '.'], undefined, false));
+  });
+
+  it('does not widen an explicitly selected relative directory', () => {
+    const args = ['--no-config', '--files', 'src'];
+    expect(buildRemoteSshInvocation(cwd, [packagedRg, ...args], undefined, false, resolver))
+      .toEqual(buildRemoteSshInvocation(cwd, ['rg', ...args], undefined, false));
+  });
+
+  it('preserves a positional pattern that resembles a local anchor', () => {
+    const args = ['--', anchor, '.'];
+    expect(buildRemoteSshInvocation(cwd, [packagedRg, ...args], undefined, false, resolver))
+      .toEqual(buildRemoteSshInvocation(cwd, ['rg', ...args], undefined, false));
+  });
+
+  it('does not mistake substring lookalikes for the packaged executable', () => {
+    const binary = '/tools/@vscode-custom/not-ripgrep/bin/rg';
+    expect(buildRemoteSshInvocation(cwd, [binary, '--files'], undefined, false).at(-1))
+      .toContain(binary);
+  });
+
+  it('maps a same-host SSH URI root without changing the search pattern', () => {
+    const args = ['--json', `--regexp=${cwd}`, '--', `${cwd}/src`];
+    expect(buildRemoteSshInvocation(cwd, [packagedRg, ...args], undefined, false, resolver))
+      .toEqual(buildRemoteSshInvocation(cwd, ['rg', '--json', `--regexp=${cwd}`, '--', '/home/atlas/project/src'], undefined, false));
+  });
+
+  it.each(['ssh://other/home/atlas/project', 'ssh://user@gpu/home/atlas/project', 'ssh://gpu:2222/home/atlas/project'])(
+    'rejects a search root on another SSH authority: %s', target => {
+      expect(() => buildRemoteSshInvocation(cwd, [packagedRg, '--files', '--', anchor], undefined, false, () => target))
+        .toThrow(/different SSH host/);
+    },
+  );
+
+  it.each([
+    '/app/node_modules/@vscode/ripgrep-linux-x64/bin/rg',
+    'C:\\app\\node_modules\\@vscode\\ripgrep-win32-x64\\bin\\rg.exe',
+  ])('recognizes the packaged binary layout: %s', binary => {
+    expect(buildRemoteSshInvocation(cwd, [binary, '--files'], undefined, false))
+      .toEqual(buildRemoteSshInvocation(cwd, ['rg', '--files', '--', '.'], undefined, false));
   });
 });

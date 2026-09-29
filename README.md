@@ -77,6 +77,8 @@
 - 要求 DSH `0.1.1-rc.2` 或兼容的更新 `0.1.x` 版本。
 - `~/.ssh/config` 中存在具体 Host alias，且 `ssh <alias>` 的 batch 连接可用。
 - 远端是 POSIX 系统并提供 Python 3.8 或更高版本。
+- DSH 的远程 `glob` / `grep` 搜索需要远端 PATH 中提供 `rg`（ripgrep）。插件会使用
+  远端二进制并转换工作区路径，不会把本机打包的可执行文件发送到另一种操作系统运行。
 - `read-only` / `workspace-write` 进程和 PTY 隔离需要 Linux bubblewrap (`bwrap`)；
   文件操作本身始终独立使用 dirfd 限制。
 

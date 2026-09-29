@@ -95,6 +95,9 @@ Removing the anchor and the last routing hooks requires an upstream first-class
 - A concrete `Host` alias in `~/.ssh/config` that already works with
   `ssh <alias>` in batch mode.
 - Remote POSIX system with Python 3.8 or newer.
+- DSH remote `glob` / `grep` searches require `rg` (ripgrep) on the remote PATH.
+  The plugin uses that binary and translates workspace roots instead of trying
+  to execute the locally packaged binary on another operating system.
 - Linux bubblewrap (`bwrap`) for `read-only` or `workspace-write` process/PTY
   confinement. File operations remain dirfd-confined independently.
 
