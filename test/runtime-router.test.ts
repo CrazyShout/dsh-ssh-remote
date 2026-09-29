@@ -159,4 +159,37 @@ describe('OpenSSH process invocation', () => {
     expect(invocation.at(-1)).toContain('DEMO=');
     expect(invocation.at(-1)).toContain('My Project');
   });
+
+  it('runs packaged ripgrep requests through remote PATH rg scoped to cwd', () => {
+    const invocation = buildRemoteSshInvocation(
+      'ssh://gpu/home/atlas/project',
+      ['/Users/me/app/node_modules/.pnpm/@vscode+ripgrep-darwin-arm64@1.18.0/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg', '--no-config', '--files'],
+      undefined,
+      false,
+    );
+    expect(invocation.at(-1)).toContain('rg');
+    expect(invocation.at(-1)).toContain('--files');
+    expect(invocation.at(-1)).toMatch(/--.*\./u);
+    expect(invocation.at(-1)).not.toContain('ripgrep-darwin-arm64');
+  });
+
+  it('maps packaged ripgrep local anchor roots to remote paths', () => {
+    const invocation = buildRemoteSshInvocation(
+      'ssh://gpu/home/atlas/project',
+      [
+        '/Users/me/app/node_modules/.pnpm/@vscode+ripgrep-darwin-arm64@1.18.0/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg',
+        '--no-config',
+        '--files',
+        '--',
+        '/Users/me/.dsh/ssh-workspace-anchors/project',
+      ],
+      undefined,
+      false,
+      path => path === '/Users/me/.dsh/ssh-workspace-anchors/project'
+        ? 'ssh://gpu/home/atlas/project'
+        : undefined,
+    );
+    expect(invocation.at(-1)).toContain('/home/atlas/project');
+    expect(invocation.at(-1)).not.toContain('/Users/me/.dsh/ssh-workspace-anchors/project');
+  });
 });

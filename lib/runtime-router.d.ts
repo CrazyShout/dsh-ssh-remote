@@ -12,7 +12,7 @@ export type RemotePathResolver = (path: string) => string | undefined;
  */
 export declare function installRemoteFileSystemRouter(fs: FileSystem, connections: SshConnectionManager, resolveRemotePath: RemotePathResolver, helpers?: RemoteHelperProvider): () => void;
 /** Build the local OpenSSH argv used for a remote process or terminal. */
-export declare function buildRemoteSshInvocation(cwd: string, argv: readonly string[], env: NodeJS.ProcessEnv | undefined, terminal: boolean): readonly string[];
+export declare function buildRemoteSshInvocation(cwd: string, argv: readonly string[], env: NodeJS.ProcessEnv | undefined, terminal: boolean, resolveRemotePath?: RemotePathResolver): readonly string[];
 /**
  * Route process execution by Workspace cwd. The stock local provider still
  * owns stream collection, PTY behavior, cancellation and teardown; for a
