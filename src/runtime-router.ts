@@ -9,7 +9,7 @@ import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/
 import { createRemoteFileSystemAdapter } from './fs.js';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
 import type { SshConnectionManager } from './connection.js';
-import { parseSshUri } from './types.js';
+import { parseSshUri, type SshUri } from './types.js';
 
 type AnyFunction = (...args: any[]) => any;
 
@@ -176,12 +176,49 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+function sameRemote(left: SshUri, right: SshUri): boolean {
+  return left.host === right.host && left.port === right.port && left.user === right.user;
+}
+
+function remoteArgv(cwd: SshUri, argv: readonly string[], resolveRemotePath?: RemotePathResolver): readonly string[] {
+  const executable = argv[0];
+  if (executable === undefined) return argv;
+  const normalized = executable.replaceAll('\\', '/');
+  if (!/(?:^|\/)@vscode\/ripgrep(?:-[a-z0-9-]+)?\/bin\/rg(?:\.exe)?$/u.test(normalized)) {
+    return argv;
+  }
+  const rewritten = ['rg', ...argv.slice(1)];
+  const separator = rewritten.indexOf('--');
+  // DSH's glob/grep templates use long flags (values in --flag=value form)
+  // followed by optional roots behind `--`. Limit path rewriting to those
+  // templates: arbitrary rg invocations may put a PATTERN behind `--`, and
+  // explicit roots without a separator must not be widened by appending `.`.
+  const options = rewritten.slice(1, separator === -1 ? undefined : separator);
+  const dshSearch = options.every(value => value.startsWith('--')) && (
+    options.includes('--files')
+    || (options.includes('--json') && options.some(value => value.startsWith('--regexp=')))
+  );
+  if (!dshSearch) return rewritten;
+  // In particular, pathless grep must search cwd, not the SSH stdin pipe.
+  if (separator === -1) return [...rewritten, '--', '.'];
+  if (separator === rewritten.length - 1) return [...rewritten, '.'];
+  return rewritten.map((value, index) => {
+    if (index <= separator) return value;
+    const mapped = isSshPath(value) ? value : resolveRemotePath?.(value);
+    if (mapped === undefined) return value;
+    const mappedUri = parseSshUri(mapped);
+    if (!sameRemote(cwd, mappedUri)) throw new Error('remote ripgrep search root belongs to a different SSH host');
+    return mappedUri.path;
+  });
+}
+
 /** Build the local OpenSSH argv used for a remote process or terminal. */
 export function buildRemoteSshInvocation(
   cwd: string,
   argv: readonly string[],
   env: NodeJS.ProcessEnv | undefined,
   terminal: boolean,
+  resolveRemotePath?: RemotePathResolver,
 ): readonly string[] {
   if (argv.length === 0) throw new Error('remote subprocess argv is empty');
   const uri = parseSshUri(cwd);
@@ -190,7 +227,7 @@ export function buildRemoteSshInvocation(
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
     .map(([key, value]) => shellQuote(`${key}=${value}`));
-  const command = argv.map(shellQuote);
+  const command = remoteArgv(uri, argv, resolveRemotePath).map(shellQuote);
   const exec = environment.length > 0
     ? `exec env ${environment.join(' ')} ${command.join(' ')}`
     : `exec ${command.join(' ')}`;
@@ -221,7 +258,7 @@ export function installRemoteSubprocessRouter(
     if (remoteCwd === undefined) return originalSpawn.call(subprocess, spec);
     return originalSpawn.call(subprocess, {
       ...spec,
-      argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, false),
+      argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, false, resolveRemotePath),
       cwd: process.cwd(),
       env: undefined,
     });
@@ -232,7 +269,7 @@ export function installRemoteSubprocessRouter(
     if (remoteCwd === undefined) return originalSpawnTerminal.call(subprocess, spec);
     return originalSpawnTerminal.call(subprocess, {
       ...spec,
-      argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, true),
+      argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, true, resolveRemotePath),
       cwd: process.cwd(),
       env: undefined,
     });
