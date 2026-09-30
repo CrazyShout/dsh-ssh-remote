@@ -6,3 +6,4 @@
 - insert:
     - id: dsh-ssh-remote
       name: 'dsh-ssh-remote'
+      config: {}

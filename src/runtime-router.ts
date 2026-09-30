@@ -132,6 +132,17 @@ export function installRemoteFileSystemRouter(
         : original.call(fs, ...args);
   }
 
+  // DSH 0.1.7 adds readByteRange for ranged file reads (e.g. workspace file
+  // previews). Intercept it the same way when the host provides it; older DSH
+  // versions and test mocks without it are unaffected.
+  const originalReadByteRange = (fs as unknown as Record<string, AnyFunction>).readByteRange;
+  if (typeof originalReadByteRange === 'function') {
+    originals.set('readByteRange', originalReadByteRange);
+    (fs as unknown as Record<string, AnyFunction>).readByteRange = (...args: any[]) =>
+      isSshTarget(args[0])
+        ? (remote as unknown as Record<string, AnyFunction>).readByteRange(...args)
+        : originalReadByteRange.call(fs, ...args);
+  }
 
   const originalWriteText = remember('writeText');
   (fs as any).writeText = async (

@@ -55,7 +55,7 @@ function parameter(name: string) {
     name,
     wire: name,
     source: 'json',
-    codec: { mode: 'strict', typeSymbol: `dsh-ssh-remote#${name}`, schema: string },
+    codec: { mode: 'strict', typeSymbol: `dsh-ssh-remote#${name}`, create: () => string },
   };
 }
 
@@ -67,7 +67,7 @@ function invocation(method: string, parameters: unknown[], schema: z.ZodType, ty
     method,
     invocation: { kind: 'direct' },
     parameters,
-    result: { mode: 'strict', typeSymbol, schema },
+    result: { mode: 'strict', typeSymbol, create: () => schema },
     sourceLocation: { file: 'src/registry.ts', line: 1, column: 1 },
   };
 }

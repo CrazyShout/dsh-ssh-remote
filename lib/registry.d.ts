@@ -1,7 +1,47 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
+import z from '@deepseek-ai/schemastery';
 import { SshConnectionManager } from './connection.js';
 import { RemoteHelperManager, type RemoteHelperStatus } from './helper/manager.js';
+/**
+ * Pre-Codex-style settings schema. Existing entries remain a read-only
+ * fallback so an upgrade does not break already registered workspaces.
+ * Declared as the plugin's Cordis `Config`; resolved values reach
+ * `apply(ctx, config)` and the service constructor.
+ */
+export declare const LegacySshRemoteSettingsSchema: z<Schemastery.ObjectS<NoInfer<{
+    hosts: z<({
+        name?: string | null | undefined;
+        host?: string | null | undefined;
+        port?: number | null | undefined;
+        user?: string | null | undefined;
+        identityFile?: string | null | undefined;
+        proxyJump?: string | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<NoInfer<{
+        name: z<string, string, "plain">;
+        host: z<string, string, "plain">;
+        port: z<number, number, "defined">;
+        user: z<string, string, "defined">;
+        identityFile: z<string, string, "defined">;
+        proxyJump: z<string, string, "defined">;
+    }>>[], "defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    hosts: z<({
+        name?: string | null | undefined;
+        host?: string | null | undefined;
+        port?: number | null | undefined;
+        user?: string | null | undefined;
+        identityFile?: string | null | undefined;
+        proxyJump?: string | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<NoInfer<{
+        name: z<string, string, "plain">;
+        host: z<string, string, "plain">;
+        port: z<number, number, "defined">;
+        user: z<string, string, "defined">;
+        identityFile: z<string, string, "defined">;
+        proxyJump: z<string, string, "defined">;
+    }>>[], "defined">;
+}>>, "plain">;
 export interface SshHostEntry {
     name: string;
     host: string;
@@ -9,6 +49,9 @@ export interface SshHostEntry {
     user: string;
     identityFile: string;
     proxyJump: string;
+}
+export interface LegacySshConfig {
+    hosts: SshHostEntry[];
 }
 /** A concrete SSH alias discovered and resolved through local OpenSSH. */
 export interface DiscoveredSshHost {
@@ -79,12 +122,12 @@ declare module '@deepseek-ai/cordis' {
 export declare class SshRemoteService extends TypertRemoteService {
     readonly connections: SshConnectionManager;
     readonly helpers: RemoteHelperManager;
-    private readonly settings;
+    private readonly legacyConfig;
     private readonly anchors;
     private readonly hostResolver?;
     private anchorSaveQueue;
     private readonly ownsHelpers;
-    constructor(ctx: Context, helpers?: RemoteHelperManager);
+    constructor(ctx: Context, helpers: RemoteHelperManager | undefined, config: LegacySshConfig);
     private createHostResolver;
     private readKey;
     /** Discover and resolve the user's local OpenSSH aliases (Web Remote). */

@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
 import {
   Button,
-  IconFolderClose16,
-  IconPlusOutline16,
+  IconFolderCloseRegular,
+  IconPlusOutlineRegular,
   Input,
   Modal,
   Pill,
@@ -21,6 +20,17 @@ import TYPERT_REMOTE from './typert.remote-client.js';
 
 export const name = 'dsh-ssh-remote-client';
 export const inject = ['remote'];
+
+/** Local view of the Workspace types the owner surface exchanges. */
+interface WorkspaceId { readonly __brand: unique symbol }
+interface WorkspaceView {
+  workspaceId: WorkspaceId;
+  path: string;
+  title: string;
+  sessionIds: readonly string[];
+  createdAt: string;
+  updatedAt: string;
+}
 
 interface DiscoveredHost {
   alias: string;
@@ -604,7 +614,7 @@ function SshDirectoryFlow({
                   key={entry.path}
                   variant="ghost"
                   size="sm"
-                  icon={<IconFolderClose16 />}
+                  icon={<IconFolderCloseRegular />}
                   disabled={disabled}
                   onClick={() => navigate(entry.path)}
                   style={entryRowStyle}
@@ -632,7 +642,7 @@ function SshDirectoryFlow({
               </div>
               <Button
                 variant="ghost"
-                icon={<IconPlusOutline16 />}
+                icon={<IconPlusOutlineRegular />}
                 disabled={disabled || !newFolder.trim()}
                 onClick={() => void createFolder()}
               >
