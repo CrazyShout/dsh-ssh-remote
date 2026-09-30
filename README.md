@@ -52,9 +52,9 @@
 
 ## 当前 DSH 上游边界
 
-0.3.1 已验证 DSH `0.1.1-rc.2` 和 npm `latest` 的 `0.1.5-rc.2`（其依赖可解析到
-`0.1.5-rc.3`）。兼容新版 Settings namespace、拆分后的 `uiWorkspace` 目录服务和
-`directory-picker/unavailable` 错误码；SSH 上传中断只会令本次连接失败。
+0.3.2 已验证 DSH `0.2.0-rc.2`。早期版本的 `dsh-settings` register API 和
+`ShellExecutor` 的 `run`/`start` 接口已分别被标准 Cordis `Config` 和单一
+`execute()` 方法取代，插件已随之适配。SSH 上传中断只会令本次连接失败。
 当前公开接口仍带来以下用户可见限制：
 
 1. Harness Workspace 必须是真实本地目录，因此插件仍会创建一个很小的本地 anchor，
@@ -74,7 +74,7 @@
 ## 环境要求
 
 - 本机 Node.js 22 或更高版本。
-- 要求 DSH `0.1.1-rc.2` 或兼容的更新 `0.1.x` 版本。
+- 要求 DSH `0.2.0-rc.2` 或兼容的更新 `0.2.x` 版本。
 - `~/.ssh/config` 中存在具体 Host alias，且 `ssh <alias>` 的 batch 连接可用。
 - 远端是 POSIX 系统并提供 Python 3.8 或更高版本。
 - DSH 的远程 `glob` / `grep` 搜索需要远端 PATH 中提供 `rg`（ripgrep）。插件会使用

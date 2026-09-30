@@ -152,7 +152,7 @@ const diagnosticsSchema = {
 };
 
 function parameter(name: string) {
-  return { name, wire: name, source: 'json', codec: { mode: 'strict', typeSymbol: `dsh-ssh-remote#${name}`, schema: stringSchema } };
+  return { name, wire: name, source: 'json', codec: { mode: 'strict', typeSymbol: `dsh-ssh-remote#${name}`, create: () => stringSchema } };
 }
 
 function invocation(method: string, parameters: unknown[], schema: { parse(value: unknown): unknown }, typeSymbol: string) {
@@ -160,7 +160,7 @@ function invocation(method: string, parameters: unknown[], schema: { parse(value
     id: `dsh-ssh-remote#sshRemote/${method}`,
     service: 'sshRemote', namespace: 'sshRemote', method,
     invocation: { kind: 'direct' }, parameters,
-    result: { mode: 'strict', typeSymbol, schema },
+    result: { mode: 'strict', typeSymbol, create: () => schema },
     sourceLocation: { file: 'src/registry.ts', line: 1, column: 1 },
   };
 }

@@ -24,6 +24,10 @@ export declare class RemoteFileSystem extends FileSystem {
     readText(target: FsTarget, signal?: AbortSignal): Promise<string>;
     streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>>;
     readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>;
+    readByteRange(target: FsTarget, range: {
+        offset: number;
+        length: number;
+    }, signal?: AbortSignal): Promise<Uint8Array>;
     listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]>;
     writeText(target: FsTarget, content: string, expected?: FsWriteIntent, signal?: AbortSignal, _sandboxPolicy?: unknown): Promise<FsWriteOutcome>;
     private writeTextUnlocked;

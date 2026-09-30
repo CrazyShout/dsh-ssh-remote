@@ -1,10 +1,9 @@
 import { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
-import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import z from '@deepseek-ai/schemastery';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, join, posix, relative, resolve, sep } from 'node:path';
 import { SshConnectionManager, type SshHostConfig } from './connection.js';
@@ -23,10 +22,6 @@ import {
 } from './ssh-config.js';
 import { formatSshUri, parseSshUri } from './types.js';
 
-// Newer DSH validates namespace literals in register(); the old runtime
-// settingsNamespace() export was removed. This fixed identifier is valid on
-// both APIs; retain the brand only for the rc.2 registration signature.
-const SETTINGS_NS = 'ssh-remote' as SettingsNamespace;
 const DIRECTORY_PAGE_LIMIT = 1000;
 /** Hard input bound so one hostile/huge remote directory cannot exhaust RAM. */
 const DIRECTORY_INPUT_LIMIT = 5000;
@@ -35,8 +30,10 @@ const DIRECTORY_SCAN_BATCH = 32;
 /**
  * Pre-Codex-style settings schema. Existing entries remain a read-only
  * fallback so an upgrade does not break already registered workspaces.
+ * Declared as the plugin's Cordis `Config`; resolved values reach
+ * `apply(ctx, config)` and the service constructor.
  */
-const LegacySshRemoteSettingsSchema = z.object({
+export const LegacySshRemoteSettingsSchema = z.object({
   hosts: z
     .array(
       z.object({
@@ -60,7 +57,7 @@ export interface SshHostEntry {
   proxyJump: string;
 }
 
-interface LegacySshConfig {
+export interface LegacySshConfig {
   hosts: SshHostEntry[];
 }
 
@@ -164,15 +161,15 @@ function anchorRootPath(): string {
 export class SshRemoteService extends TypertRemoteService {
   readonly connections: SshConnectionManager;
   readonly helpers: RemoteHelperManager;
-  private readonly settings: SettingsScope<LegacySshConfig>;
+  private readonly legacyConfig: LegacySshConfig;
   private readonly anchors = new Map<string, SshWorkspaceAnchor>();
   private readonly hostResolver?: (host: string) => SshHostConfig | undefined;
   private anchorSaveQueue: Promise<void> = Promise.resolve();
   private readonly ownsHelpers: boolean;
 
-  constructor(ctx: Context, helpers?: RemoteHelperManager) {
+  constructor(ctx: Context, helpers: RemoteHelperManager | undefined, config: LegacySshConfig) {
     super(ctx, 'sshRemote');
-    this.settings = ctx.settings.register(SETTINGS_NS, LegacySshRemoteSettingsSchema);
+    this.legacyConfig = config;
     this.hostResolver = this.createHostResolver();
     this.connections = new SshConnectionManager(this.hostResolver);
     this.helpers = helpers ?? new RemoteHelperManager();
@@ -182,10 +179,10 @@ export class SshRemoteService extends TypertRemoteService {
 
   private createHostResolver(): (host: string) => SshHostConfig | undefined {
     return (host: string) => {
-      // `~/.ssh/config` is authoritative. Only consult the old DSH settings
+      // `~/.ssh/config` is authoritative. Only consult the legacy Config
       // namespace when the workspace names no concrete OpenSSH alias.
       if (hasConcreteSshAlias(host)) return undefined;
-      const hosts = this.settings.get().hosts;
+      const hosts = this.legacyConfig.hosts;
       const h = hosts.find((x) => x.name === host || x.host === host);
       if (!h) return undefined;
       return {
@@ -227,7 +224,7 @@ export class SshRemoteService extends TypertRemoteService {
           helper: helperStatusView(status),
         };
       }),
-      legacyHostCount: this.settings.get().hosts.length,
+      legacyHostCount: this.legacyConfig.hosts.length,
     };
   }
 
@@ -667,3 +664,4 @@ function helperDiagnosticsView(diagnostics: RemoteHelperDiagnostics): HelperHost
     assetPath: diagnostics.assetPath,
   };
 }
+

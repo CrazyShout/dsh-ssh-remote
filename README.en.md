@@ -62,11 +62,11 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.3.1 is validated with DSH `0.1.1-rc.2` and npm `latest` CLI
-`0.1.5-rc.2` (whose dependencies may resolve to `0.1.5-rc.3`). It supports the
-new Settings namespace API, split `uiWorkspace` directory service, and
-`directory-picker/unavailable` error code. Interrupted SSH uploads fail only
-the connection. The public seams still impose these visible limits:
+Version 0.3.2 is validated with DSH `0.2.0-rc.2`. The earlier `dsh-settings`
+register API and the `ShellExecutor` `run`/`start` methods were replaced by the
+standard Cordis `Config` and a single `execute()` method respectively; the
+plugin has been adapted accordingly. Interrupted SSH uploads fail only the
+connection. The public seams still impose these visible limits:
 
 1. A Harness Workspace must be a real local directory. The plugin therefore
    creates a small local anchor and maps only that anchor and its descendants to
@@ -91,7 +91,7 @@ Removing the anchor and the last routing hooks requires an upstream first-class
 ## Requirements
 
 - Local Node.js 22 or newer.
-- DSH `0.1.1-rc.2` or a compatible newer `0.1.x` release is required.
+- DSH `0.2.0-rc.2` or a compatible newer `0.2.x` release is required.
 - A concrete `Host` alias in `~/.ssh/config` that already works with
   `ssh <alias>` in batch mode.
 - Remote POSIX system with Python 3.8 or newer.

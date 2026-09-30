@@ -175,6 +175,42 @@ export class RemoteFileSystem extends FileSystem {
     return new Uint8Array(buf);
   }
 
+  async readByteRange(
+    target: FsTarget,
+    range: { offset: number; length: number },
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const { uri, path } = this.split(target);
+    return this.sftp(uri, async (sftp) => new Promise<Uint8Array>((resolve, reject) => {
+      const stream = sftp.createReadStream(path, {
+        start: range.offset,
+        end: range.offset + range.length - 1,
+      });
+      const chunks: Buffer[] = [];
+      let total = 0;
+      const onAbort = (): void => { stream.destroy(new Error('aborted')); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      stream.on('data', (chunk: Buffer) => {
+        if (total + chunk.length > range.length) {
+          chunks.push(chunk.subarray(0, range.length - total));
+          total = range.length;
+          stream.destroy();
+        } else {
+          chunks.push(chunk);
+          total += chunk.length;
+        }
+      });
+      stream.once('end', () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(new Uint8Array(Buffer.concat(chunks, total)));
+      });
+      stream.once('error', (err: Error) => {
+        signal?.removeEventListener('abort', onAbort);
+        reject(err);
+      });
+    }));
+  }
+
   async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
     const { uri, path } = this.split(target);
     return this.sftp(uri, async (sftp) => {

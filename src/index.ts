@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import { RemoteHelperManager } from './helper/manager.js';
 import { hasConcreteSshAlias } from './ssh-config.js';
-import { SshRemoteService } from './registry.js';
+import { SshRemoteService, LegacySshRemoteSettingsSchema, type LegacySshConfig } from './registry.js';
 import { installRemoteShellRouter, RemoteShellProcessTracker } from './helper-shell.js';
 import {
   installRemoteFileSystemRouter,
@@ -29,12 +29,15 @@ export type {
 export { LegacySsh2RemoteTerminalBackend, Ssh2RemoteTerminalBackend } from './terminal.js';
 
 export const name = 'dsh-ssh-remote';
-export const inject = ['settings', 'fs', 'subprocess'];
+export const inject = ['fs', 'subprocess'];
 
-export function apply(ctx: Context) {
+/** Legacy SSH host fallback consumed through the standard Cordis Config. */
+export const Config = LegacySshRemoteSettingsSchema;
+
+export function apply(ctx: Context, config: LegacySshConfig) {
   const helpers = new RemoteHelperManager({ aliasValidator: hasConcreteSshAlias });
   const shellProcesses = new RemoteShellProcessTracker();
-  const service = new SshRemoteService(ctx, helpers);
+  const service = new SshRemoteService(ctx, helpers, config);
   const resolveRemotePath = service.resolveRemotePath.bind(service);
   const restoreFileSystem = installRemoteFileSystemRouter(
     ctx.fs,

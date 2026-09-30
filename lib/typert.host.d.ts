@@ -16,7 +16,7 @@ export declare const TYPERT: {
         result: {
             mode: string;
             typeSymbol: string;
-            schema: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+            create: () => z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
         };
         sourceLocation: {
             file: string;

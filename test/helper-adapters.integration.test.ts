@@ -157,19 +157,18 @@ describe('real TypeScript ↔ Python helper adapters', () => {
 
   it('routes foreground and background ShellExecutor calls over the helper wire', async () => {
     const fixture = await remoteFixture();
-    const localRun = vi.fn(async () => ({ local: true }));
-    const localStart = vi.fn(() => ({ local: true }));
-    const shell = { run: localRun, start: localStart };
+    const localExecute = vi.fn(async () => ({ local: true }));
+    const shell = { execute: localExecute };
     const tracker = new RemoteShellProcessTracker();
     const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor, tracker);
     try {
-      const result = await shell.run({
+      const result = await (await shell.execute({
         command: "printf 'shell-out'; printf 'shell-err' >&2",
         workdir: '/anchor',
         timeoutMs: 5_000,
         stdoutMaxBytes: 64 * 1024,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
-      } as never) as any;
+      } as never) as any).result();
       expect(result).toMatchObject({
         exitCode: 0,
         timedOut: false,
@@ -177,22 +176,22 @@ describe('real TypeScript ↔ Python helper adapters', () => {
         stdout: { text: 'shell-out', truncated: false },
         stderr: { text: 'shell-err', truncated: false },
       });
-      expect(localRun).not.toHaveBeenCalled();
+      expect(localExecute).not.toHaveBeenCalled();
 
       const stdin = 'stdin-chunk-'.repeat(100_000);
-      const stdinResult = await shell.run({
+      const stdinResult = await (await shell.execute({
         command: 'wc -c',
         workdir: '/anchor',
         timeoutMs: 10_000,
         stdoutMaxBytes: 64 * 1024,
         stdin,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
-      } as never) as any;
+      } as never) as any).result();
       expect(stdinResult.exitCode).toBe(0);
       expect(Number(stdinResult.stdout.text.trim())).toBe(Buffer.byteLength(stdin));
 
       const abortController = new AbortController();
-      const abortedRun = shell.run({
+      const abortedExecution = (await shell.execute({
         command: 'sleep 10',
         workdir: '/anchor',
         timeoutMs: 10_000,
@@ -200,19 +199,19 @@ describe('real TypeScript ↔ Python helper adapters', () => {
         stdin: 'blocked-stdin'.repeat(200_000),
         signal: abortController.signal,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
-      } as never) as Promise<any>;
+      } as never) as any);
       setTimeout(() => abortController.abort(new Error('abort foreground')), 200);
-      await expect(abortedRun).resolves.toMatchObject({ aborted: true, timedOut: false });
+      await expect(abortedExecution.result()).resolves.toMatchObject({ aborted: true, timedOut: false });
 
-      await expect(shell.run({
+      await expect((await shell.execute({
         command: 'sleep 10',
         workdir: '/anchor',
         timeoutMs: 200,
         stdoutMaxBytes: 64 * 1024,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
-      } as never)).resolves.toMatchObject({ timedOut: true, aborted: false });
+      } as never) as any).result()).resolves.toMatchObject({ timedOut: true, aborted: false });
 
-      const process = shell.start({
+      const process = await shell.execute({
         command: "printf 'background-out'",
         workdir: '/anchor',
         timeoutMs: 5_000,
@@ -222,10 +221,10 @@ describe('real TypeScript ↔ Python helper adapters', () => {
       await process.done;
       expect(process.status).toBe('completed');
       expect(process.readOutput()).toMatchObject({ delta: 'background-out', lossy: false });
-      expect(localStart).not.toHaveBeenCalled();
+      expect(localExecute).not.toHaveBeenCalled();
 
       const controller = new AbortController();
-      const cancelled = shell.start({
+      const cancelled = await shell.execute({
         command: 'sleep 10',
         workdir: '/anchor',
         timeoutMs: 15_000,
@@ -241,7 +240,7 @@ describe('real TypeScript ↔ Python helper adapters', () => {
       ]);
       expect(cancelled.status).toBe('killed');
 
-      const owned = shell.start({
+      const owned = await shell.execute({
         command: 'sleep 10',
         workdir: '/anchor',
         timeoutMs: 15_000,

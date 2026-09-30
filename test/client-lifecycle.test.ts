@@ -25,7 +25,7 @@ describe('client lifecycle', () => {
     expect(TYPERT.invocations.map((entry) => entry.method)).toEqual(methods);
   });
 
-  it.each(['legacy', 'split'] as const)('mounts and disposes Remote and directory services (%s)', async (mode) => {
+  it('mounts and disposes Remote and directory services', async () => {
     const events: string[] = [];
     const disposeMount = vi.fn(async () => {
       events.push('remote:dispose');
@@ -39,7 +39,6 @@ describe('client lifecycle', () => {
     const childScope = {
       remote: { sshRemote: {} },
       workspaces: {
-        ...(mode === 'legacy' ? directoryService : {}),
         create: vi.fn(),
         rename: vi.fn(),
       },
@@ -87,7 +86,7 @@ describe('client lifecycle', () => {
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
-      ...(mode === 'split' ? ['inject:uiWorkspace'] : []),
+      'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
@@ -105,7 +104,7 @@ describe('client lifecycle', () => {
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
-      ...(mode === 'split' ? ['inject:uiWorkspace'] : []),
+      'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
