@@ -272,6 +272,7 @@ export class RemoteHelperRpcClient implements RemoteHelperClient {
   }
 
   private waitForHello(signal: AbortSignal | undefined, timeoutMs: number): Promise<ServerHello> {
+    if (this.closeReasonValue !== undefined) return Promise.reject(this.closeReasonValue);
     if (this.hello !== undefined) return Promise.resolve(this.hello);
     signal?.throwIfAborted();
     return new Promise<ServerHello>((resolve, reject) => {
@@ -364,6 +365,11 @@ export class RemoteHelperRpcClient implements RemoteHelperClient {
       return;
     }
 
+    if ('error' in frame && frame.id === null) {
+      this.failAll(new RemoteHelperRpcError(frame.error));
+      this.options.closeTransport?.();
+      return;
+    }
     const id = String(frame.id);
     const pending = this.pending.get(id);
     if (pending === undefined) {

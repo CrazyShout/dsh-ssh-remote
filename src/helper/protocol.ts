@@ -40,7 +40,8 @@ export interface DshRpcErrorBody {
 
 export interface DshRpcFailure {
   dshRpc: typeof DSH_RPC_VERSION;
-  id: RpcId;
+  /** null identifies a connection-level failure before a request can be correlated. */
+  id: RpcId | null;
   error: DshRpcErrorBody;
 }
 
@@ -130,10 +131,10 @@ export function parseDshRpcFrame(value: unknown): DshRpcFrame {
   }
 
   if (!hasId) throw new DshRpcProtocolError('RPC response is missing id');
-  assertRpcId(object.id);
   if (hasResult === hasError) {
     throw new DshRpcProtocolError('RPC response must contain exactly one of result or error');
   }
+  if (!(hasError && object.id === null)) assertRpcId(object.id);
   if (hasError) parseErrorBody(object.error);
   return object as unknown as DshRpcSuccess | DshRpcFailure;
 }

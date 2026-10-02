@@ -62,7 +62,10 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.3.2 is validated with DSH `0.2.0-rc.2`. The earlier `dsh-settings`
+Version 0.3.3 is validated with DSH `0.2.0-rc.2`. Cancelled connection probes
+release daemon connection capacity even when a stream closes with a broken
+pipe; pre-handshake connection failures retain their original error code and
+message. The earlier `dsh-settings`
 register API and the `ShellExecutor` `run`/`start` methods were replaced by the
 standard Cordis `Config` and a single `execute()` method respectively; the
 plugin has been adapted accordingly. Interrupted SSH uploads fail only the

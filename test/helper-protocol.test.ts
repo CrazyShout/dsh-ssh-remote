@@ -22,6 +22,14 @@ const helloFrame = {
 } as const;
 
 describe('helper protocol', () => {
+  it('accepts connection-level failures while rejecting null request and success ids', () => {
+    const failure = { dshRpc: '1', id: null,
+      error: { code: 'E_RESOURCE_LIMIT', message: 'daemon connection limit reached', retryable: true } };
+    expect(parseDshRpcFrame(failure)).toEqual(failure);
+    expect(() => parseDshRpcFrame({ dshRpc: '1', id: null, result: null })).toThrow(/RPC id/u);
+    expect(() => parseDshRpcFrame({ dshRpc: '1', id: null, method: 'health/ping' })).toThrow(/RPC id/u);
+  });
+
   it('validates server hello and protocol compatibility', () => {
     const frame = parseDshRpcFrame(helloFrame);
     expect('method' in frame && frame.method).toBe('server/hello');
@@ -58,4 +66,3 @@ describe('helper protocol', () => {
     expect(result.capabilities.fs).toBe(true);
   });
 });
-

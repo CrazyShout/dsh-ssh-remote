@@ -82,6 +82,63 @@ afterEach(async () => {
 });
 
 describe('Python remote helper v1', () => {
+  it('returns connector capacity even when disconnected socket streams fail during cleanup', () => {
+    const program = String.raw`
+import importlib.util,io,json,os,socket,sys,tempfile
+spec=importlib.util.spec_from_file_location('dsh_helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+BaseState=m.DaemonState
+observed=[]
+for failure in ('input-close','output-close','makefile'):
+ states=[]
+ class State(BaseState):
+  def __init__(self,*args):
+   super().__init__(*args);states.append(self)
+ class Stream(io.BytesIO):
+  def __init__(self,mode):
+   super().__init__();self.mode=mode
+  def close(self):
+   if self.closed:return
+   super().close()
+   if failure==self.mode+'-close':raise BrokenPipeError('cancelled probe')
+ class Client:
+  def __enter__(self):return self
+  def __exit__(self,*args):pass
+  def makefile(self,mode):
+   if failure=='makefile':raise OSError('closed socket')
+   return Stream('input' if mode=='rb' else 'output')
+ class Listener:
+  accepted=False
+  def bind(self,path):
+   with open(path,'wb'):pass
+  def listen(self,*args):pass
+  def settimeout(self,*args):pass
+  def close(self):pass
+  def accept(self):
+   if not self.accepted:
+    self.accepted=True;return Client(),None
+   states[0].shutdown.set();raise socket.timeout()
+ class Thread:
+  def __init__(self,target,args,**kwargs):self.target=target;self.args=args
+  def start(self):
+   try:self.target(*self.args)
+   except OSError:pass
+ m.socket.socket=lambda *args:Listener()
+ m.threading.Thread=Thread
+ m.DaemonState=State
+ m.serve_protocol=lambda *args:None
+ with tempfile.TemporaryDirectory() as root:
+  m.run_daemon(os.path.join(root,'daemon.sock'),600)
+ observed.append(states[0].connections)
+print(json.dumps(observed))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([0, 0, 0]);
+  }, integrationTimeout);
+
   it('enforces daemon session and connector ceilings without allocating resources past the limit', () => {
     const program = [
       'import importlib.util,json,sys',

@@ -32,7 +32,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -1288,10 +1288,19 @@ def run_daemon(path: str, idle_timeout: float) -> int:
                 except OSError: pass
                 conn.close(); continue
             def handle(client: socket.socket) -> None:
-                with client:
-                    inp = client.makefile("rb"); out = client.makefile("wb")
-                    try: serve_protocol(inp, out, state)
-                    finally: inp.close(); out.close(); state.close_connection()
+                try:
+                    with client:
+                        streams = []
+                        try:
+                            inp = client.makefile("rb"); streams.append(inp)
+                            out = client.makefile("wb"); streams.append(out)
+                            serve_protocol(inp, out, state)
+                        finally:
+                            for stream in streams:
+                                try: stream.close()
+                                except (OSError, ValueError): pass
+                finally:
+                    state.close_connection()
             threading.Thread(target=handle, args=(conn,), daemon=True).start()
     finally:
         listener.close()

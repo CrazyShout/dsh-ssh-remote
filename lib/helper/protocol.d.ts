@@ -32,7 +32,8 @@ export interface DshRpcErrorBody {
 }
 export interface DshRpcFailure {
     dshRpc: typeof DSH_RPC_VERSION;
-    id: RpcId;
+    /** null identifies a connection-level failure before a request can be correlated. */
+    id: RpcId | null;
     error: DshRpcErrorBody;
 }
 export type DshRpcFrame = DshRpcRequest | DshRpcNotification | DshRpcSuccess | DshRpcFailure;

@@ -69,6 +69,24 @@ async function initialize(peer: ReturnType<typeof createPeer>): Promise<void> {
 }
 
 describe('RemoteHelperClient', () => {
+  it('surfaces a pre-hello admission failure with its real error code', async () => {
+    const peer = createPeer();
+    const ready = peer.client.initialize({ clientId: 'client-1' });
+    peer.send({ dshRpc: '1', id: null,
+      error: { code: 'E_RESOURCE_LIMIT', message: 'daemon connection limit reached', retryable: true } });
+    await expect(ready).rejects.toMatchObject({
+      name: 'RemoteHelperRpcError', code: 'E_RESOURCE_LIMIT',
+      message: 'daemon connection limit reached', retryable: true,
+    });
+  });
+
+  it('rejects initialization immediately when admission already closed the transport', async () => {
+    const peer = createPeer();
+    peer.send({ dshRpc: '1', id: null,
+      error: { code: 'E_RESOURCE_LIMIT', message: 'daemon connection limit reached', retryable: true } });
+    await expect(peer.client.initialize({ clientId: 'client-1' })).rejects.toMatchObject({ code: 'E_RESOURCE_LIMIT' });
+  });
+
   it('handshakes, correlates calls, and publishes notifications', async () => {
     const peer = createPeer();
     await initialize(peer);

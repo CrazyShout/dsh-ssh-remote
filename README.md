@@ -52,7 +52,8 @@
 
 ## 当前 DSH 上游边界
 
-0.3.2 已验证 DSH `0.2.0-rc.2`。早期版本的 `dsh-settings` register API 和
+0.3.3 已验证 DSH `0.2.0-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
+连接计数；握手阶段的连接级错误保留原始错误代码和提示。早期版本的 `dsh-settings` register API 和
 `ShellExecutor` 的 `run`/`start` 接口已分别被标准 Cordis `Config` 和单一
 `execute()` 方法取代，插件已随之适配。SSH 上传中断只会令本次连接失败。
 当前公开接口仍带来以下用户可见限制：
