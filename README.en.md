@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-Codex-style SSH workspaces for DeepSeek Harness. The plugin discovers concrete
+Codex-style SSH workspaces for DeepSeek Harness Web / Desktop. The plugin discovers concrete
 hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
@@ -62,11 +62,11 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.3.1 is validated with DSH `0.1.1-rc.2` and npm `latest` CLI
-`0.1.5-rc.2` (whose dependencies may resolve to `0.1.5-rc.3`). It supports the
-new Settings namespace API, split `uiWorkspace` directory service, and
-`directory-picker/unavailable` error code. Interrupted SSH uploads fail only
-the connection. The public seams still impose these visible limits:
+Version 0.3.2 is validated with DSH `0.2.0-rc.2`. The earlier `dsh-settings`
+register API and the `ShellExecutor` `run`/`start` methods were replaced by the
+standard Cordis `Config` and a single `execute()` method respectively; the
+plugin has been adapted accordingly. Interrupted SSH uploads fail only the
+connection. The public seams still impose these visible limits:
 
 1. A Harness Workspace must be a real local directory. The plugin therefore
    creates a small local anchor and maps only that anchor and its descendants to
@@ -91,7 +91,7 @@ Removing the anchor and the last routing hooks requires an upstream first-class
 ## Requirements
 
 - Local Node.js 22 or newer.
-- DSH `0.1.1-rc.2` or a compatible newer `0.1.x` release is required.
+- DSH `0.2.0-rc.2` or a compatible newer `0.2.x` release is required.
 - A concrete `Host` alias in `~/.ssh/config` that already works with
   `ssh <alias>` in batch mode.
 - Remote POSIX system with Python 3.8 or newer.
@@ -134,8 +134,17 @@ dsh plugin --profile web add dsh-ssh-remote
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
 
-Restart `dsh web`, open **Settings → SSH Remote**, and connect or browse a host.
+Restart `dsh web`, open **Settings → Built-in Plugins → SSH Remote**, and connect or browse a host.
 The first connection installs the matching helper automatically.
+
+The official Desktop uses the same Web client and Host plugin interfaces.
+Install `github:CrazyShout/dsh-ssh-remote` through the desktop application's
+plugin manager and restart the application to use SSH Remote settings and the
+remote directory workspace picker. Its bundled engine must be a compatible DSH
+`0.2.x` release, starting at `0.2.0-rc.2`; DSH `0.1.x` users should keep plugin
+`0.3.1` (Git commit `1432649`). Desktop distributions may use a different
+profile, so the CLI's `--profile web` command is not a substitute for the
+desktop application's own plugin manager.
 
 ## Security model
 

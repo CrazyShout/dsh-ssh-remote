@@ -17,11 +17,13 @@ function fakeFileSystem() {
     readText: vi.fn(),
     streamText: vi.fn(),
     readBytes: vi.fn(),
+    readByteRange: vi.fn(),
     listDir: vi.fn(),
     writeText: vi.fn(),
     editText: vi.fn(),
   };
 }
+
 
 function fakeConnections() {
   const sftp = {
@@ -30,6 +32,12 @@ function fakeConnections() {
     },
     lstat(_path: string, callback: (error: Error | undefined) => void) {
       callback(Object.assign(new Error('no such file'), { code: 2 }));
+    },
+    createReadStream(path: string, options: { start: number; end: number }) {
+      const total = options.end - options.start + 1;
+      const buf = Buffer.alloc(total, 0x41);
+      const stream = new (require('stream').Readable)({ read() { this.push(buf); this.push(null); } });
+      return stream;
     },
   };
   return {
@@ -115,6 +123,35 @@ describe('remote Workspace routing', () => {
         mode: 'workspace-write',
         workspaceRoot: '/anchors/project',
       })).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('routes readByteRange to the remote adapter for SSH targets and to the original for local paths', async () => {
+    const fs = fakeFileSystem();
+    const originalReadByteRange = fs.readByteRange as any;
+    const localResult = new Uint8Array([1, 2, 3]);
+    originalReadByteRange.mockResolvedValue(localResult);
+    const restore = installRemoteFileSystemRouter(
+      fs as never,
+      fakeConnections() as never,
+      (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      // Local path: original provider answers.
+      const local = await fs.resolve('/tmp/file.txt');
+      const localData = await (fs.readByteRange as any)(local, { offset: 0, length: 3 });
+      expect(localData).toBe(localResult);
+      expect(originalReadByteRange).toHaveBeenCalledWith(local, { offset: 0, length: 3 });
+
+      // Remote path: routed to the SFTP-backed adapter, not the local mock.
+      originalReadByteRange.mockClear();
+      const remote = await fs.resolve('ssh://gpu/home/atlas/project/file.bin');
+      const remoteData = await (fs.readByteRange as any)(remote, { offset: 10, length: 5 });
+      expect(originalReadByteRange).not.toHaveBeenCalled();
+      expect(remoteData).toBeInstanceOf(Uint8Array);
+      expect(remoteData.length).toBe(5);
     } finally {
       restore();
     }

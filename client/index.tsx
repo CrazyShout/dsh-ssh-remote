@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client';
+import type {} from '@deepseek-ai/dsh-api-workspace-controller/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
 import {
   Button,
-  IconFolderClose16,
-  IconPlusOutline16,
+  IconFolderCloseRegular,
+  IconPlusOutlineRegular,
   Input,
   Modal,
   Pill,
@@ -160,12 +162,8 @@ export async function apply(ctx: ClientContext) {
         ),
       );
     };
-    // DSH 0.1.5 split directory UI operations from the Workspace controller.
-    // Read the new service only inside its own injection scope; rc.2 still
-    // supplies these operations on workspaces and needs no extra dependency.
-    if (typeof scope.workspaces.pickDirectory === 'function') {
-      return mountUi(scope, scope.workspaces);
-    }
+    // DSH 0.2.0 split directory UI operations into `ctx.uiWorkspace`
+    // (UiWorkspace), separate from `ctx.workspaces` (IWorkspaces).
     const directories = scope.inject(['uiWorkspace'], next => mountUi(
       next,
       (next as ClientContext & { uiWorkspace: DirectoryService }).uiWorkspace,
@@ -604,7 +602,7 @@ function SshDirectoryFlow({
                   key={entry.path}
                   variant="ghost"
                   size="sm"
-                  icon={<IconFolderClose16 />}
+                  icon={<IconFolderCloseRegular />}
                   disabled={disabled}
                   onClick={() => navigate(entry.path)}
                   style={entryRowStyle}
@@ -632,7 +630,7 @@ function SshDirectoryFlow({
               </div>
               <Button
                 variant="ghost"
-                icon={<IconPlusOutline16 />}
+                icon={<IconPlusOutlineRegular />}
                 disabled={disabled || !newFolder.trim()}
                 onClick={() => void createFolder()}
               >

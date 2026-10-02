@@ -250,6 +250,87 @@ export class HelperRemoteFileSystem {
     return new Uint8Array(bytes);
   }
 
+  async readByteRange(
+    target: FsTarget,
+    range: { offset: number; length: number },
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const { offset, length } = range;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new FsError('offset must be a non-negative safe integer', 'FS_IO_ERROR');
+    }
+    if (!Number.isSafeInteger(length) || length < 0) {
+      throw new FsError('length must be a non-negative safe integer', 'FS_IO_ERROR');
+    }
+    if (length > 0 && offset > Number.MAX_SAFE_INTEGER - (length - 1)) {
+      throw new FsError('byte range exceeds safe integer bounds', 'FS_IO_ERROR');
+    }
+    if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED');
+    if (length === 0) return new Uint8Array(0);
+    const { uri } = this.split(target);
+    let scope: HelperScope | undefined;
+    const handleId = randomUUID();
+    let opened: HelperReadOpenResult | undefined;
+    try {
+      scope = await this.scope(uri, '/', 'read-only', signal);
+      signal?.throwIfAborted();
+      opened = await scope.client.call<HelperReadOpenResult>('fs/readOpen', {
+        workspaceId: scope.workspaceId,
+        path: scope.path,
+        handleId,
+        operationId: handleId,
+      }, { timeoutMs: 20_000, mutation: true });
+      // The helper's read stream is sequential (no seek), so skip `offset`
+      // bytes by reading and discarding before collecting `length` bytes.
+      let skipped = 0;
+      let cursor = '0';
+      while (skipped < offset) {
+        signal?.throwIfAborted();
+        const next = await scope.client.call<HelperReadNextResult>('fs/readNext', {
+          handleId: opened.handleId,
+          afterSeq: cursor,
+          maxBytes: Math.min(STREAM_CHUNK_BYTES, offset - skipped),
+        }, { signal, timeoutMs: 30_000 });
+        cursor = next.seq;
+        const chunk = Buffer.from(next.data, 'base64');
+        skipped += chunk.length;
+        if (next.eof) return new Uint8Array(0); // file shorter than offset
+      }
+      // Collect `length` bytes starting from the current position.
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for (;;) {
+        signal?.throwIfAborted();
+        const next = await scope.client.call<HelperReadNextResult>('fs/readNext', {
+          handleId: opened.handleId,
+          afterSeq: cursor,
+          maxBytes: Math.min(STREAM_CHUNK_BYTES, length - total),
+        }, { signal, timeoutMs: 30_000 });
+        cursor = next.seq;
+        const chunk = Buffer.from(next.data, 'base64');
+        if (total + chunk.length >= length) {
+          chunks.push(chunk.subarray(0, length - total));
+          return new Uint8Array(Buffer.concat(chunks, length));
+        }
+        chunks.push(chunk);
+        total += chunk.length;
+        if (next.eof) return new Uint8Array(Buffer.concat(chunks, total));
+      }
+    } catch (error) {
+      if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED', { cause: error });
+      if (error instanceof FsError) throw error;
+      throw mapHelperFsError(error);
+    } finally {
+      if (opened !== undefined && scope !== undefined) {
+        await scope.client.call('fs/close', {
+          handleId: opened.handleId,
+          operationId: `close:${opened.handleId}`,
+        }, { timeoutMs: 5_000, mutation: true }).catch(() => {});
+      }
+      await scope?.release();
+    }
+  }
+
   async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
     const { uri } = this.split(target);
     const scope = await this.scope(uri, '/', 'read-only', signal);
