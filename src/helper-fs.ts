@@ -262,12 +262,17 @@ export class HelperRemoteFileSystem {
     if (!Number.isSafeInteger(length) || length < 0) {
       throw new FsError('length must be a non-negative safe integer', 'FS_IO_ERROR');
     }
+    if (length > 0 && offset > Number.MAX_SAFE_INTEGER - (length - 1)) {
+      throw new FsError('byte range exceeds safe integer bounds', 'FS_IO_ERROR');
+    }
+    if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED');
     if (length === 0) return new Uint8Array(0);
     const { uri } = this.split(target);
-    const scope = await this.scope(uri, '/', 'read-only', signal);
+    let scope: HelperScope | undefined;
     const handleId = randomUUID();
     let opened: HelperReadOpenResult | undefined;
     try {
+      scope = await this.scope(uri, '/', 'read-only', signal);
       signal?.throwIfAborted();
       opened = await scope.client.call<HelperReadOpenResult>('fs/readOpen', {
         workspaceId: scope.workspaceId,
@@ -284,17 +289,10 @@ export class HelperRemoteFileSystem {
         const next = await scope.client.call<HelperReadNextResult>('fs/readNext', {
           handleId: opened.handleId,
           afterSeq: cursor,
-          maxBytes: STREAM_CHUNK_BYTES,
+          maxBytes: Math.min(STREAM_CHUNK_BYTES, offset - skipped),
         }, { signal, timeoutMs: 30_000 });
         cursor = next.seq;
         const chunk = Buffer.from(next.data, 'base64');
-        const remaining = offset - skipped;
-        if (chunk.length >= remaining) {
-          skipped = offset;
-          // The tail of this chunk belongs to the range; keep it.
-          if (next.eof) return new Uint8Array(chunk.subarray(remaining, remaining + Math.min(length, chunk.length - remaining)));
-          break;
-        }
         skipped += chunk.length;
         if (next.eof) return new Uint8Array(0); // file shorter than offset
       }
@@ -306,7 +304,7 @@ export class HelperRemoteFileSystem {
         const next = await scope.client.call<HelperReadNextResult>('fs/readNext', {
           handleId: opened.handleId,
           afterSeq: cursor,
-          maxBytes: STREAM_CHUNK_BYTES,
+          maxBytes: Math.min(STREAM_CHUNK_BYTES, length - total),
         }, { signal, timeoutMs: 30_000 });
         cursor = next.seq;
         const chunk = Buffer.from(next.data, 'base64');
@@ -319,15 +317,17 @@ export class HelperRemoteFileSystem {
         if (next.eof) return new Uint8Array(Buffer.concat(chunks, total));
       }
     } catch (error) {
+      if (signal?.aborted) throw new FsError('aborted', 'FS_ABORTED', { cause: error });
       if (error instanceof FsError) throw error;
       throw mapHelperFsError(error);
     } finally {
-      if (opened !== undefined) {
+      if (opened !== undefined && scope !== undefined) {
         await scope.client.call('fs/close', {
           handleId: opened.handleId,
           operationId: `close:${opened.handleId}`,
         }, { timeoutMs: 5_000, mutation: true }).catch(() => {});
       }
+      await scope?.release();
     }
   }
 

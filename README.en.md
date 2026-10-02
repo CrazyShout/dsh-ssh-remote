@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-Codex-style SSH workspaces for DeepSeek Harness. The plugin discovers concrete
+Codex-style SSH workspaces for DeepSeek Harness Web / Desktop. The plugin discovers concrete
 hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
@@ -134,8 +134,17 @@ dsh plugin --profile web add dsh-ssh-remote
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
 
-Restart `dsh web`, open **Settings → SSH Remote**, and connect or browse a host.
+Restart `dsh web`, open **Settings → Built-in Plugins → SSH Remote**, and connect or browse a host.
 The first connection installs the matching helper automatically.
+
+The official Desktop uses the same Web client and Host plugin interfaces.
+Install `github:CrazyShout/dsh-ssh-remote` through the desktop application's
+plugin manager and restart the application to use SSH Remote settings and the
+remote directory workspace picker. Its bundled engine must be a compatible DSH
+`0.2.x` release, starting at `0.2.0-rc.2`; DSH `0.1.x` users should keep plugin
+`0.3.1` (Git commit `1432649`). Desktop distributions may use a different
+profile, so the CLI's `--profile web` command is not a substitute for the
+desktop application's own plugin manager.
 
 ## Security model
 

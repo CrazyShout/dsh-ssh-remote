@@ -66,11 +66,12 @@ class RemoteShellTimeoutReason extends Error {
   }
 }
 
-function shellDeadline(upstream: AbortSignal | undefined, timeoutMs: number): {
+function shellDeadline(upstream: AbortSignal | undefined, timeoutMs: number, onExpiry?: ShellExecSpec['onExpiry']): {
   signal: AbortSignal;
   dispose(): void;
 } {
   const timer = new AbortController();
+  if (onExpiry === 'none') return { signal: upstream ?? timer.signal, dispose: () => {} };
   const id = setTimeout(() => timer.abort(new RemoteShellTimeoutReason(timeoutMs)), timeoutMs);
   return {
     signal: upstream === undefined ? timer.signal : AbortSignal.any([upstream, timer.signal]),
@@ -93,11 +94,13 @@ export function installRemoteShellRouter(
 ): () => void {
   const originalExecute = shell.execute;
 
-  shell.execute = function (spec: ShellExecSpec): Promise<ShellExecution> {
+  shell.execute = async function (spec: ShellExecSpec): Promise<ShellExecution> {
     const uri = remoteUri(spec.workdir, resolveRemotePath);
     if (uri === undefined) return originalExecute.call(shell, spec);
     const process = new RemoteShellProcess(uri, spec, helpers, resolveRemotePath);
-    return Promise.resolve(processes?.track(process) ?? process);
+    processes?.track(process);
+    await process.waitUntilPrepared();
+    return process;
   };
 
   return () => {
@@ -123,16 +126,6 @@ export class RemoteShellProcessTracker {
   }
 }
 
-async function runRemoteShell(
-  uri: string,
-  spec: ShellExecSpec,
-  helpers: RemoteHelperProvider,
-  resolveRemotePath: RemotePathResolver,
-): Promise<ShellRunResult> {
-  const process = new RemoteShellProcess(uri, spec, helpers, resolveRemotePath);
-  return process.result();
-}
-
 class RemoteShellProcess implements ShellExecution {
   status = 'running' as const as ShellProcess['status'];
   exitCode: number | null = null;
@@ -142,14 +135,9 @@ class RemoteShellProcess implements ShellExecution {
   /** Offset readers over the same captured streams `readOutput` drains. */
   readonly observed: { stdout: OutputOffsetReader; stderr: OutputOffsetReader };
   private readonly unread = new BoundedOutput(DEFAULT_OUTPUT_MAX_BYTES);
-  private readonly stdout = new BoundedOutput(DEFAULT_OUTPUT_MAX_BYTES);
+  private readonly stdout: BoundedOutput;
   private readonly stderr = new BoundedOutput(DEFAULT_OUTPUT_MAX_BYTES);
-  private readonly decoder = new ProcessOutputDecoder(
-    this.stdout,
-    this.stderr,
-    value => this.unread.append(value),
-    () => this.unread.markTruncated(),
-  );
+  private readonly decoder: ProcessOutputDecoder;
   private scope: ProcessScope | undefined;
   private process: HelperProcessStart | undefined;
   private killed = false;
@@ -158,6 +146,10 @@ class RemoteShellProcess implements ShellExecution {
   private aborted = false;
   private readonly timeoutMs: number;
   private resultMemo: Promise<ShellRunResult> | undefined;
+  private readonly prepared: Promise<void>;
+  private publish!: () => void;
+  private failure: { cause: unknown } | undefined;
+  private abortReason: unknown;
 
   constructor(
     uri: string,
@@ -166,11 +158,15 @@ class RemoteShellProcess implements ShellExecution {
     resolveRemotePath: RemotePathResolver,
   ) {
     this.timeoutMs = spec.timeoutMs;
+    this.stdout = new BoundedOutput(spec.stdoutMaxBytes ?? DEFAULT_OUTPUT_MAX_BYTES);
+    this.decoder = new ProcessOutputDecoder(this.stdout, this.stderr,
+      value => this.unread.append(value), () => this.unread.markTruncated());
+    this.prepared = new Promise(resolve => { this.publish = resolve; });
     this.observed = {
       stdout: new OutputOffsetReader(this.stdout),
       stderr: new OutputOffsetReader(this.stderr),
     };
-    const deadline = shellDeadline(spec.signal, spec.timeoutMs);
+    const deadline = shellDeadline(spec.signal, spec.timeoutMs, spec.onExpiry);
     if (spec.signal !== undefined) {
       const onAbort = (): void => { this.kill(); };
       spec.signal.addEventListener('abort', onAbort, { once: true });
@@ -181,6 +177,13 @@ class RemoteShellProcess implements ShellExecution {
     this.done = this.run(uri, spec, helpers, resolveRemotePath, deadline);
   }
 
+  async waitUntilPrepared(): Promise<void> {
+    await this.prepared;
+    if (this.process !== undefined) return;
+    if (this.failure !== undefined) throw this.failure.cause;
+    if (this.aborted) throw this.abortReason;
+  }
+
   readOutput(): ShellProcessRead {
     const read = this.unread.consume();
     return { delta: read.text, lossy: read.truncated };
@@ -188,16 +191,19 @@ class RemoteShellProcess implements ShellExecution {
 
   result(): Promise<ShellRunResult> {
     if (this.resultMemo === undefined) {
-      this.resultMemo = this.done.then(() => ({
-        exitCode: this.exitCode,
-        signal: this.signal,
-        timedOut: this.timedOut,
-        aborted: this.aborted,
-        timeoutMs: this.timeoutMs,
-        stdout: this.stdout.final(),
-        stderr: this.stderr.final(),
-        ...(this.sandbox === undefined ? {} : { sandbox: this.sandbox }),
-      }));
+      this.resultMemo = this.done.then(() => {
+        if (this.failure !== undefined) throw this.failure.cause;
+        return {
+          exitCode: this.exitCode,
+          signal: this.signal,
+          timedOut: this.timedOut,
+          aborted: this.aborted,
+          timeoutMs: this.timeoutMs,
+          stdout: this.stdout.final(),
+          stderr: this.stderr.final(),
+          ...(this.sandbox === undefined ? {} : { sandbox: this.sandbox }),
+        };
+      });
     }
     return this.resultMemo;
   }
@@ -236,6 +242,7 @@ class RemoteShellProcess implements ShellExecution {
       } finally {
         await closeWorkspaceBestEffort(this.scope);
       }
+      this.publish();
       if (this.killed) await terminateBestEffort(this.scope.client, this.process.processId);
       if (spec.stdin !== undefined) {
         await writeAndCloseStdin(this.scope.client, this.process.processId, spec.stdin, deadline.signal);
@@ -281,11 +288,17 @@ class RemoteShellProcess implements ShellExecution {
       if (deadline.signal.aborted && !terminationRequested) {
         this.timedOut = deadline.signal.reason instanceof RemoteShellTimeoutReason;
         this.aborted = !this.timedOut;
+        this.abortReason = deadline.signal.reason;
       }
       this.status = 'killed';
-      this.signal = 'SIGKILL';
+      this.signal = this.process === undefined ? null : 'SIGKILL';
       this.decoder.flush();
-      this.unread.append(`[stderr]\nspawn failed: ${messageOf(error)}\n`);
+      if (!deadline.signal.aborted) {
+        this.failure = { cause: error };
+        const note = `remote shell failed: ${messageOf(error)}\n`;
+        this.stderr.append(note);
+        this.unread.append(`[stderr]\n${note}`);
+      }
       try {
         await rollbackShellAllocation(helpers, uri, ids);
         rolledBack = true;
@@ -299,6 +312,7 @@ class RemoteShellProcess implements ShellExecution {
       if (!rolledBack && this.scope !== undefined && this.process !== undefined) {
         await releaseBestEffort(this.scope.client, this.process.processId);
       }
+      this.publish();
     }
   }
 }
@@ -523,11 +537,13 @@ function sandboxInfo(
 class BoundedOutput {
   private text = '';
   private dropped = false;
+  private totalBytes = 0;
 
   constructor(private readonly maxBytes: number) {}
 
   append(value: string): void {
     if (value.length === 0) return;
+    this.totalBytes += Buffer.byteLength(value, 'utf8');
     const bytes = Buffer.from(this.text + value, 'utf8');
     if (bytes.length <= this.maxBytes) {
       this.text += value;
@@ -557,6 +573,18 @@ class BoundedOutput {
   final(): CollectedOutput {
     return { text: this.text, truncated: this.dropped };
   }
+
+  readFrom(fromByte: number): SubprocessOutputRead {
+    const bytes = Buffer.from(this.text, 'utf8');
+    const start = this.totalBytes - bytes.length;
+    const offset = Math.min(this.totalBytes, Math.max(0, fromByte));
+    const lossy = offset < start || (offset === 0 && this.dropped);
+    return {
+      text: bytes.subarray(Math.max(0, offset - start)).toString('utf8'),
+      nextOffset: this.totalBytes,
+      lossy,
+    };
+  }
 }
 
 /**
@@ -567,19 +595,10 @@ class BoundedOutput {
  * reported — matching the in-memory-only capture the helper delivers.
  */
 class OutputOffsetReader {
-  private lastSnapshot = '';
   constructor(private readonly output: BoundedOutput) {}
 
   readFrom(fromByte: number): SubprocessOutputRead {
-    const snap = this.output.snapshot();
-    const lossy = fromByte < snap.text.length && this.lastSnapshot !== snap.text;
-    const text = snap.text;
-    this.lastSnapshot = text;
-    return {
-      text,
-      nextOffset: text.length,
-      lossy: snap.truncated || lossy,
-    };
+    return this.output.readFrom(fromByte);
   }
 }
 

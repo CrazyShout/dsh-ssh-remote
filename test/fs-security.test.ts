@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SFTPWrapper } from 'ssh2';
 import { Readable } from 'node:stream';
 import { createRemoteFileSystemAdapter } from '../src/fs.js';
@@ -204,6 +204,59 @@ describe('remote filesystem streaming text', () => {
     };
 
     await expect(consume()).rejects.toMatchObject({ code: 'FS_NOT_TEXT' });
+  });
+});
+
+describe('remote SFTP byte windows', () => {
+  function fixture() {
+    const content = Buffer.from('0123456789');
+    const createReadStream = vi.fn((_path: string, range: { start: number; end: number }) => {
+      if (range.end < range.start) throw new Error('invalid SFTP byte window');
+      return Readable.from([content.subarray(range.start, range.end + 1)]);
+    });
+    const fs = createRemoteFileSystemAdapter({
+      async transport() {
+        return { async sftp<T>(operation: (value: SFTPWrapper) => Promise<T>) {
+          return operation({ createReadStream } as unknown as SFTPWrapper);
+        } };
+      },
+    } as never);
+    const target = { targetKey: 'ssh://gpu/work/file.txt', displayPath: 'remote' } as never;
+    return { fs, target, createReadStream };
+  }
+
+  it('returns the requested bytes and shorter windows at EOF', async () => {
+    const { fs, target } = fixture();
+    expect(Buffer.from(await fs.readByteRange(target, { offset: 2, length: 3 })).toString()).toBe('234');
+    expect(Buffer.from(await fs.readByteRange(target, { offset: 8, length: 9 })).toString()).toBe('89');
+    expect(await fs.readByteRange(target, { offset: 10, length: 3 })).toHaveLength(0);
+  });
+
+  it('returns empty zero-length windows without opening a remote stream', async () => {
+    const { fs, target, createReadStream } = fixture();
+    await expect(fs.readByteRange(target, { offset: 2, length: 0 })).resolves.toHaveLength(0);
+    expect(createReadStream).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid bounds before opening a remote stream', async () => {
+    const { fs, target, createReadStream } = fixture();
+    for (const range of [
+      { offset: -1, length: 1 }, { offset: 0.5, length: 1 },
+      { offset: 0, length: -1 }, { offset: 0, length: Infinity },
+      { offset: Number.MAX_SAFE_INTEGER, length: 2 },
+    ]) {
+      await expect(fs.readByteRange(target, range)).rejects.toMatchObject({ code: 'FS_IO_ERROR' });
+    }
+    expect(createReadStream).not.toHaveBeenCalled();
+  });
+
+  it('reports a cancelled read using the FileSystem abort code', async () => {
+    const { fs, target, createReadStream } = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(fs.readByteRange(target, { offset: 0, length: 3 }, controller.signal))
+      .rejects.toMatchObject({ code: 'FS_ABORTED' });
+    expect(createReadStream).not.toHaveBeenCalled();
   });
 });
 

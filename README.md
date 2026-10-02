@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 中文
 
-面向 DeepSeek Harness 的 Codex 风格 SSH 远程工作区插件。它从本机 OpenSSH 配置发现
+面向 DeepSeek Harness Web / Desktop 的 Codex 风格 SSH 远程工作区插件。它从本机 OpenSSH 配置发现
 具体 Host，通过标准「添加工作区」选择远端目录，并把 DSH 原生文件、Shell 和终端操作
 路由到远端的版本化 helper。
 
@@ -113,8 +113,15 @@ dsh plugin --profile web add dsh-ssh-remote
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
 
-重启 `dsh web`，打开「设置 → SSH Remote」，可以先连接，也可以直接在「添加工作区」
+重启 `dsh web`，打开「设置 → 内置插件 → SSH Remote」，可以先连接，也可以直接在「添加工作区」
 中选择主机。首次连接会自动安装匹配版本的 helper。
+
+官方 Desktop 复用同一套 Web 客户端和 Host 插件接口。在桌面应用的插件管理页面中安装
+`github:CrazyShout/dsh-ssh-remote`，然后重启应用，即可使用「SSH Remote」设置和远程
+目录工作区选择器。请确认桌面应用内置的是兼容的 DSH `0.2.x` 引擎，最低版本为
+`0.2.0-rc.2`；旧 `0.1.x` 引擎应继续使用插件 `0.3.1`（Git commit `1432649`）。
+不同桌面发行版的 profile 可能不同，CLI 的 `--profile web` 安装命令不应代替桌面应用
+自己的插件管理入口。
 
 Harness 会把精确映射保存在 `$DSH_HOME/ssh-workspace-anchors.json`，anchor 目录位于
 `$DSH_HOME/ssh-workspace-anchors/`。其他本地路径继续使用原来的本机 provider。

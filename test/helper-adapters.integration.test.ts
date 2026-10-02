@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from '../src/helper-fs.js';
 import { installRemoteShellRouter, RemoteShellProcessTracker } from '../src/helper-shell.js';
+import type { ShellExecution } from '@deepseek-ai/dsh-shell';
 import { RemoteHelperRpcClient } from '../src/helper/rpc-client.js';
 import { formatSshUri } from '../src/types.js';
 
@@ -254,4 +255,156 @@ describe('real TypeScript ↔ Python helper adapters', () => {
       restore();
     }
   }, 15_000);
+
+  it('reads exact byte windows across helper chunks and handles EOF and cancellation', async () => {
+    const fixture = await remoteFixture();
+    const fs = new HelperRemoteFileSystem(fixture.helper, fixture.resolveAnchor);
+    const target = await fs.resolve('ranges.txt', { cwd: fixture.uri });
+    const content = Buffer.from('0123456789abcdef'.repeat(30_000));
+    await fs.writeText(target, content.toString(), { kind: 'createIfAbsent' }, undefined,
+      { mode: 'workspace-write', workspaceRoot: '/anchor' });
+    const ranges = [
+      { offset: 3, length: 20 },
+      { offset: 192 * 1024 - 3, length: 12 },
+      { offset: 192 * 1024 + 7, length: 192 * 1024 + 11 },
+      { offset: content.length - 5, length: 20 },
+      { offset: content.length, length: 20 },
+      { offset: content.length + 5, length: 20 },
+      { offset: 0, length: 0 },
+    ];
+    for (const range of ranges) {
+      expect(Buffer.from(await fs.readByteRange(target, range)))
+        .toEqual(content.subarray(range.offset, range.offset + range.length));
+    }
+    const controller = new AbortController();
+    controller.abort(new Error('cancel byte preview'));
+    await expect(fs.readByteRange(target, { offset: 0, length: 10 }, controller.signal))
+      .rejects.toMatchObject({ code: 'FS_ABORTED' });
+  });
+
+  it('keeps onExpiry:none jobs alive and exposes independent byte-based output cursors', async () => {
+    const fixture = await remoteFixture();
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const tracker = new RemoteShellProcessTracker();
+    const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor, tracker);
+    try {
+      const process = await shell.execute({
+        command: "printf 'A🙂'; sleep 0.2; printf 'B'",
+        workdir: '/anchor', timeoutMs: 50, onExpiry: 'none', stdoutMaxBytes: 1024,
+        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+      } as never);
+      expect(await process.result()).toMatchObject({
+        exitCode: 0, timedOut: false, aborted: false,
+        stdout: { text: 'A🙂B', truncated: false },
+      });
+      expect(process.observed.stdout.readFrom(0)).toEqual({ text: 'A🙂B', nextOffset: 6, lossy: false });
+      expect(process.observed.stdout.readFrom(1)).toEqual({ text: '🙂B', nextOffset: 6, lossy: false });
+      expect(process.observed.stdout.readFrom(6)).toEqual({ text: '', nextOffset: 6, lossy: false });
+      expect(process.observed.stdout.readFrom(0)).toEqual({ text: 'A🙂B', nextOffset: 6, lossy: false });
+      expect(process.readOutput()).toMatchObject({ delta: 'A🙂B', lossy: false });
+      expect(process.readOutput()).toMatchObject({ delta: '', lossy: false });
+    } finally {
+      restore();
+      await tracker.dispose();
+    }
+  });
+
+  it('honors the stdout byte budget and preserves whole-stream offsets after truncation', async () => {
+    const fixture = await remoteFixture();
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor);
+    try {
+      const process = await shell.execute({
+        command: "printf '0123456789'", workdir: '/anchor', timeoutMs: 5000,
+        onExpiry: 'kill', stdoutMaxBytes: 8,
+        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+      } as never);
+      expect(await process.result()).toMatchObject({ stdout: { text: '23456789', truncated: true } });
+      expect(process.observed.stdout.readFrom(0)).toEqual({ text: '23456789', nextOffset: 10, lossy: true });
+      expect(process.observed.stdout.readFrom(8)).toEqual({ text: '89', nextOffset: 10, lossy: false });
+      expect(process.observed.stdout.readFrom(10)).toEqual({ text: '', nextOffset: 10, lossy: false });
+
+      const full = await shell.execute({
+        command: "python3 -c \"print('x' * 70000, end='')\"", workdir: '/anchor', timeoutMs: 5000,
+        onExpiry: 'kill', stdoutMaxBytes: 80000,
+        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+      } as never);
+      expect((await full.result()).stdout).toEqual({ text: 'x'.repeat(70000), truncated: false });
+    } finally {
+      restore();
+    }
+  });
+
+  it('reports infrastructure failures instead of a successful empty command result', async () => {
+    const failure = new Error('fixture helper unavailable');
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const restore = installRemoteShellRouter(shell as never,
+      { client: async () => { throw failure; } }, () => 'ssh://fixture/work');
+    try {
+      await expect((async () => {
+        const process = await shell.execute({ command: 'true', workdir: '/anchor', timeoutMs: 5000,
+          onExpiry: 'kill', stdoutMaxBytes: 1024 } as never);
+        return process.result();
+      })()).rejects.toThrow('fixture helper unavailable');
+    } finally {
+      restore();
+    }
+  });
+
+  it('expires preparation without spawning and rejects cancellation before publication', async () => {
+    const fixture = await remoteFixture();
+    const calls = vi.spyOn(fixture.helper.clientValue, 'call');
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const provider: RemoteHelperProvider = {
+      async client(_uri, signal) {
+        if (signal !== undefined) {
+          await new Promise<void>((_resolve, reject) => {
+            if (signal.aborted) reject(signal.reason);
+            else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        }
+        return fixture.helper.clientValue;
+      },
+    };
+    const restore = installRemoteShellRouter(shell as never, provider, fixture.resolveAnchor);
+    try {
+      const expired = await shell.execute({ command: 'true', workdir: '/anchor', timeoutMs: 30,
+        onExpiry: 'kill', stdoutMaxBytes: 1024 } as never);
+      await expect(expired.result()).resolves.toMatchObject({
+        exitCode: null, signal: null, timedOut: true, aborted: false,
+        stdout: { text: '', truncated: false }, stderr: { text: '', truncated: false },
+      });
+      expect(expired.result()).toBe(expired.result());
+      const controller = new AbortController();
+      const reason = new Error('cancel before publication');
+      controller.abort(reason);
+      await expect(shell.execute({ command: 'true', workdir: '/anchor', timeoutMs: 5000,
+        onExpiry: 'none', stdoutMaxBytes: 1024, signal: controller.signal } as never)).rejects.toBe(reason);
+      expect(calls.mock.calls.some(([method]) => method === 'process/start')).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps done readable while result rejects a failure after process publication', async () => {
+    const fixture = await remoteFixture();
+    const originalCall = fixture.helper.clientValue.call.bind(fixture.helper.clientValue);
+    const failure = new Error('fixture output transport lost');
+    vi.spyOn(fixture.helper.clientValue, 'call').mockImplementation(async (method, params, options) => {
+      if (method === 'process/read') throw failure;
+      return originalCall(method, params, options);
+    });
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor);
+    try {
+      const process = await shell.execute({ command: 'sleep 10', workdir: '/anchor', timeoutMs: 5000,
+        onExpiry: 'kill', stdoutMaxBytes: 1024 } as never);
+      await expect(process.done).resolves.toBeUndefined();
+      await expect(process.result()).rejects.toBe(failure);
+      expect(process.observed.stderr.readFrom(0).text).toContain('fixture output transport lost');
+      expect(process.readOutput().delta).toContain('fixture output transport lost');
+    } finally {
+      restore();
+    }
+  });
 });
