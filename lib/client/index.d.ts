@@ -89,7 +89,7 @@ interface SshRemote {
 export declare function apply(ctx: ClientContext): Promise<() => Promise<void>>;
 type SshDirectoryFlowProps = DirectoryFlowOwnerProps & {
     ssh: SshRemote;
-    pickLocal: () => Promise<string | null>;
+    pickLocal: (signal?: AbortSignal) => Promise<string | null>;
     /** One local directory level via the composed picker's browse capability. */
     listLocal: (path?: string) => Promise<RemoteDirectoryListing>;
     /** Create one child directory under an existing local parent. */

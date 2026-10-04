@@ -378,23 +378,28 @@ describe('real TypeScript ↔ Python helper adapters', () => {
     const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor);
     let escaped: number | undefined;
     try {
-      const script = 'import os,time; p=os.fork(); print(p,flush=True) if p else None; os._exit(0) if p else None; os.setsid(); time.sleep(20)';
-      const started = Date.now();
+      const script = 'import os,time; p=os.fork(); os._exit(0) if p else None; os.setsid(); print(os.getpid(),flush=True); time.sleep(20)';
+      const controller = new AbortController();
       const execution = await shell.execute({
-        command: `python3 -c ${JSON.stringify(script)}`, workdir: '/anchor', timeoutMs: 300,
+        command: `python3 -c ${JSON.stringify(script)}`, workdir: '/anchor', timeoutMs: 20_000, signal: controller.signal,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
       } as never);
       // Capture the known test child PID early so cleanup also runs if the
       // bounded-completion assertion fails.
-      for (let attempt = 0; attempt < 50; attempt += 1) {
+      await vi.waitFor(() => {
         const match = execution.observed.stdout.readFrom(0).text.match(/^\d+/u);
-        if (match) { escaped = Number(match[0]); break; }
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
+        if (match) escaped = Number(match[0]);
+        expect(escaped).toBeGreaterThan(1);
+      }, { timeout: 10_000, interval: 20 });
+      // Start the cancellation clock only after the child has actually
+      // detached. A fixed startup timeout races slow CI process scheduling.
+      const started = Date.now();
+      controller.abort(new Error('cancel detached fixture'));
       const result = await execution.result();
-      expect(result.timedOut).toBe(true);
+      expect(result.aborted).toBe(true);
+      expect(result.timedOut).toBe(false);
       expect(escaped).toBeGreaterThan(1);
-      expect(Date.now() - started).toBeLessThan(9_000);
+      expect(Date.now() - started).toBeLessThan(12_000);
     } finally {
       if (escaped !== undefined) {
         try { process.kill(escaped, 'SIGKILL'); } catch (error) {
@@ -403,7 +408,7 @@ describe('real TypeScript ↔ Python helper adapters', () => {
       }
       restore();
     }
-  }, 15_000);
+  }, 30_000);
 
   it('reports infrastructure failures instead of a successful empty command result', async () => {
     const failure = new Error('fixture helper unavailable');

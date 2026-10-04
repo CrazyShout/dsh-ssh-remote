@@ -115,11 +115,35 @@ interface DirectoryService {
 export async function apply(ctx: ClientContext) {
   const disposeMount = await ctx.remote.$mount(TYPERT_REMOTE);
   const ui = ctx.inject(['remote.sshRemote', 'slots', 'workspaces'], (scope) => {
+    // The official Remote supports cancellation; UiWorkspace's convenience
+    // method currently drops that signal. Keep its fallback for compositions
+    // without this optional namespace, without blocking the rest of the UI.
+    let pickNative: ((signal?: AbortSignal) => Promise<string | null>) | undefined;
+    const nativePicker = scope.inject(['remote.directoryPicker'], next => {
+      const picker = next.remote.directoryPicker;
+      const adapter = async (signal?: AbortSignal) => {
+        const result = await picker.pick(signal);
+        if (!result.ok) throw new Error(`directory picker failed: ${result.error.message}`);
+        return result.value;
+      };
+      pickNative = adapter;
+      return () => { if (pickNative === adapter) pickNative = undefined; };
+    });
     const mountUi = (scope: ClientContext, directories: DirectoryService) => {
       const ssh = scope.remote.sshRemote;
       const flowInject = () => ({
         ssh,
-        pickLocal: () => directories.pickDirectory(),
+        pickLocal: (signal?: AbortSignal) => {
+          // Match the stock native slot: Desktop owns a window-parented
+          // dialog bridge; bypassing it incorrectly sends Desktop to the
+          // Web host's external OS chooser instead.
+          const desktop = (globalThis as typeof globalThis & {
+            __DSH_DIRECTORY_PICKER__?: { pick(): Promise<string | null> };
+          }).__DSH_DIRECTORY_PICKER__;
+          return desktop === undefined
+            ? pickNative?.(signal) ?? directories.pickDirectory()
+            : desktop.pick();
+        },
         // The composed picker's browse capability (in-app listing/creation).
         // Served only when the host composes the `-browse` backend; chooseLocal
         // probes for it and falls back to the native chooser only on the
@@ -173,7 +197,10 @@ export async function apply(ctx: ClientContext) {
       next,
       (next as ClientContext & { uiWorkspace: DirectoryService }).uiWorkspace,
     ));
-    return () => directories.dispose();
+    return async () => {
+      await directories.dispose();
+      await nativePicker.dispose();
+    };
   });
 
   try {
@@ -195,7 +222,7 @@ type BrowseTarget = { kind: 'local' } | { kind: 'ssh'; alias: string };
 
 type SshDirectoryFlowProps = DirectoryFlowOwnerProps & {
   ssh: SshRemote;
-  pickLocal: () => Promise<string | null>;
+  pickLocal: (signal?: AbortSignal) => Promise<string | null>;
   /** One local directory level via the composed picker's browse capability. */
   listLocal: (path?: string) => Promise<RemoteDirectoryListing>;
   /** Create one child directory under an existing local parent. */
@@ -222,7 +249,7 @@ function withReadDeadline<T>(operation: Promise<T>, label: string): Promise<T> {
   return withDeadline(operation, `${label} 超过 ${READ_DEADLINE_MS / 1000} 秒，请重试。`, READ_DEADLINE_MS);
 }
 
-function withDeadline<T>(operation: Promise<T>, message: string, milliseconds: number): Promise<T> {
+function withDeadline<T>(operation: Promise<T>, message: string, milliseconds: number, onTimeout?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (run: () => void): void => {
@@ -232,7 +259,10 @@ function withDeadline<T>(operation: Promise<T>, message: string, milliseconds: n
       run();
     };
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(message)));
+      finish(() => {
+        onTimeout?.();
+        reject(new Error(message));
+      });
     }, milliseconds);
     operation.then(
       value => finish(() => resolve(value)),
@@ -276,6 +306,7 @@ export function SshDirectoryFlow({
   /** Owns the mutation busy flag even if navigation/open state changes. */
   const mutationEpoch = useRef(0);
   const mounted = useRef(false);
+  const nativePicker = useRef<AbortController | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -283,6 +314,7 @@ export function SshDirectoryFlow({
       mounted.current = false;
       navigationEpoch.current += 1;
       mutationEpoch.current += 1;
+      nativePicker.current?.abort();
     };
   }, []);
 
@@ -321,7 +353,8 @@ export function SshDirectoryFlow({
       if (navigationEpoch.current === epoch) setLoading(false);
     });
     return () => {
-      if (navigationEpoch.current === epoch) navigationEpoch.current += 1;
+      navigationEpoch.current += 1;
+      nativePicker.current?.abort();
     };
   }, [open, ssh, listLocal]);
 
@@ -432,14 +465,23 @@ export function SshDirectoryFlow({
   /** The only native-chooser path, entered solely on the explicit unavailable signal. */
   async function pickLocalFallback() {
     const epoch = ++navigationEpoch.current;
+    nativePicker.current?.abort();
+    const controller = new AbortController();
+    nativePicker.current = controller;
     setLoading(true);
     setError('');
     try {
-      const path = await pickLocal();
+      const path = await withDeadline(
+        pickLocal(controller.signal),
+        '系统文件夹选择器超过 30 秒未返回，已停止等待。若系统对话框仍在或置于后台，请先关闭后重试；若仍无对话框，请重启 DSH 后再试。',
+        READ_DEADLINE_MS,
+        () => controller.abort(),
+      );
       if (navigationEpoch.current === epoch && path) onPicked(path);
     } catch (reason) {
       if (navigationEpoch.current === epoch) setError(messageOf(reason));
     } finally {
+      if (nativePicker.current === controller) nativePicker.current = null;
       if (navigationEpoch.current === epoch) setLoading(false);
     }
   }
@@ -531,6 +573,7 @@ export function SshDirectoryFlow({
 
   function cancel(): void {
     navigationEpoch.current += 1;
+    nativePicker.current?.abort();
     onCancel();
   }
 
@@ -559,7 +602,7 @@ export function SshDirectoryFlow({
         </>
       }
     >
-      <style>{'.dsh-ssh-remote-flow{width:min(880px,94vw)}'}</style>
+      <style>{'.dsh-ssh-remote-flow{width:min(880px,94vw)}.dsh-ssh-remote-flow .dsh-ssh-remote-field{width:100%;box-sizing:border-box}'}</style>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {!target || !listing ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -608,6 +651,7 @@ export function SshDirectoryFlow({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Input
                   aria-label="文件夹路径"
+                  className="dsh-ssh-remote-field"
                   value={pathInput}
                   disabled={busy || mutating}
                   onChange={event => setPathInput(event.target.value)}
@@ -665,6 +709,7 @@ export function SshDirectoryFlow({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Input
                   value={newFolder}
+                  className="dsh-ssh-remote-field"
                   disabled={disabled}
                   onChange={(event) => setNewFolder(event.target.value)}
                   onKeyDown={(event) => {

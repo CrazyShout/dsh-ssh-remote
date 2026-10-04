@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply } from '../client/index.js';
 import { TYPERT_REMOTE } from '../client/typert.remote-client.js';
 import { TYPERT } from '../src/typert.host.js';
@@ -14,6 +14,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Modal: () => null,
   Pill: () => null,
 }));
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('client lifecycle', () => {
   it('ships helper lifecycle methods from the source-owned Remote descriptor', () => {
@@ -37,7 +39,10 @@ describe('client lifecycle', () => {
     }
   });
 
-  it('mounts and disposes Remote and directory services', async () => {
+  it.each([true, false, 'desktop'] as const)('mounts and disposes directory services with optional cancellable picker: %s', async (mode) => {
+    const nativeAvailable = mode !== false;
+    const desktopPicker = mode === 'desktop' ? { pick: vi.fn(async () => '/desktop-local') } : undefined;
+    if (desktopPicker) vi.stubGlobal('__DSH_DIRECTORY_PICKER__', desktopPicker);
     const events: string[] = [];
     const disposeMount = vi.fn(async () => {
       events.push('remote:dispose');
@@ -49,7 +54,10 @@ describe('client lifecycle', () => {
       createDirectory: vi.fn(async () => '/local/new'),
     };
     const childScope = {
-      remote: { sshRemote: {} },
+      remote: {
+        sshRemote: {},
+        directoryPicker: { pick: vi.fn(async () => ({ ok: true, value: '/native-local' })) },
+      },
       workspaces: {
         create: vi.fn(),
         rename: vi.fn(),
@@ -73,10 +81,10 @@ describe('client lifecycle', () => {
 
     const inject = vi.fn((deps: string[], callback: (scope: any) => unknown) => {
       events.push(`inject:${deps.join(',')}`);
-      const dispose = callback({
+      const dispose = (deps.includes('remote.directoryPicker') && !nativeAvailable ? () => {} : callback({
         ...childScope, inject,
         ...(deps.includes('uiWorkspace') ? { uiWorkspace: directoryService } : {}),
-      }) as () => void;
+      })) as () => void;
       // Cordis effects must return a disposer, not the child Fiber itself.
       expect(typeof dispose).toBe('function');
       const fiber = Promise.resolve() as Promise<void> & { dispose: () => Promise<void> };
@@ -98,6 +106,7 @@ describe('client lifecycle', () => {
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
+      'inject:remote.directoryPicker',
       'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
@@ -105,10 +114,15 @@ describe('client lifecycle', () => {
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
-    await expect(flow.pickLocal()).resolves.toBe('/local');
+    const controller = new AbortController();
+    await expect(flow.pickLocal(controller.signal)).resolves.toBe(desktopPicker ? '/desktop-local' : nativeAvailable ? '/native-local' : '/local');
     await flow.listLocal('/local');
     await flow.createLocalDirectory('/local', 'new');
-    expect(directoryService.pickDirectory).toHaveBeenCalledOnce();
+    expect(directoryService.pickDirectory).toHaveBeenCalledTimes(nativeAvailable ? 0 : 1);
+    if (desktopPicker) {
+      expect(desktopPicker.pick).toHaveBeenCalledOnce();
+      expect(childScope.remote.directoryPicker.pick).not.toHaveBeenCalled();
+    } else if (nativeAvailable) expect(childScope.remote.directoryPicker.pick).toHaveBeenCalledWith(controller.signal);
     expect(directoryService.listDirectory).toHaveBeenCalledWith('/local');
     expect(directoryService.createDirectory).toHaveBeenCalledWith('/local', 'new');
     await dispose?.();
@@ -116,6 +130,7 @@ describe('client lifecycle', () => {
     expect(events).toEqual([
       'remote:mount',
       'inject:remote.sshRemote,slots,workspaces',
+      'inject:remote.directoryPicker',
       'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',

@@ -214,6 +214,66 @@ async function openRemote(ssh: ReturnType<typeof remote>) {
 }
 
 describe('rendered SSH directory flow', () => {
+  function nativeProps() {
+    const props = directoryProps(remote());
+    props.listLocal.mockRejectedValue(Object.assign(new Error('native picker has no browse capability'), {
+      rpcError: { code: 'directory-picker/unavailable' },
+    }));
+    return props;
+  }
+
+  async function chooseLocal() {
+    const local = [...container.querySelectorAll('button')].find(item => item.querySelector('strong')?.textContent === '本机')!;
+    await act(async () => local.click());
+  }
+
+  it('times out a stuck native chooser, aborts its signal and releases the dialog', async () => {
+    vi.useFakeTimers();
+    const props = nativeProps();
+    let signal: AbortSignal | undefined;
+    props.pickLocal.mockImplementation((next: AbortSignal) => {
+      signal = next;
+      return new Promise((_resolve, reject) => next.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    });
+    await render(SshDirectoryFlow, props);
+    expect(container.textContent).toContain('使用系统文件夹选择器');
+    await chooseLocal();
+    expect(signal?.aborted).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(signal?.aborted).toBe(true);
+    expect(container.textContent).toContain('系统文件夹选择器超过 30 秒未返回');
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(props.onPicked).not.toHaveBeenCalled();
+    expect(button('取消').disabled).toBe(false);
+  });
+
+  it('ignores a timed-out fallback chooser that cannot honor cancellation', async () => {
+    vi.useFakeTimers();
+    const props = nativeProps();
+    const pending = deferred();
+    props.pickLocal.mockReturnValue(pending.promise);
+    await render(SshDirectoryFlow, props);
+    await chooseLocal();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => pending.resolve('/late-selection'));
+    expect(props.onPicked).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('已停止等待');
+  });
+
+  it.each(['cancel', 'close'])('aborts the native chooser on %s without accepting a late selection', async kind => {
+    const props = nativeProps();
+    const pending = deferred();
+    let signal: AbortSignal | undefined;
+    props.pickLocal.mockImplementation((next: AbortSignal) => { signal = next; return pending.promise; });
+    await render(SshDirectoryFlow, props);
+    await chooseLocal();
+    if (kind === 'cancel') await click('取消');
+    else await render(SshDirectoryFlow, { ...props, open: false });
+    expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve('/late-selection'));
+    expect(props.onPicked).not.toHaveBeenCalled();
+  });
+
   it('opens an unlisted absolute path with Enter and supports home and refresh', async () => {
     const ssh = remote();
     await openRemote(ssh);
