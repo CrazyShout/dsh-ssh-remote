@@ -1,0 +1,1 @@
+{"version":3,"file":"connection-error.d.ts","sourceRoot":"","sources":["../../src/helper/connection-error.ts"],"names":[],"mappings":"AAIA,MAAM,WAAW,iBAAiB;IAChC,SAAS,EAAE,MAAM,CAAC;IAClB,SAAS,EAAE,OAAO,CAAC;IACnB,IAAI,EAAE,MAAM,CAAC;CACd;AAED,6EAA6E;AAC7E,wBAAgB,uBAAuB,CAAC,KAAK,EAAE,OAAO,EAAE,MAAM,SAAK,EAAE,WAAW,UAAQ,GAAG,iBAAiB,CA2B3G"}

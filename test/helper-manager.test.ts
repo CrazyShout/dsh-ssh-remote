@@ -99,6 +99,186 @@ function helperPeer(
 }
 
 describe('RemoteHelperManager', () => {
+  it.each(['exit', 'EPIPE'])('stops retrying permanent installation failures with a stable hint (%s)', async (failure) => {
+    const spawnProcess = vi.fn(() => {
+      const child = new FakeChild();
+      child.stdin.once('finish', () => {
+        child.stderr.write('Permission denied (publickey).');
+        if (failure === 'EPIPE') { child.stdin.emit('error', new Error('write EPIPE')); return; }
+        child.exitCode = 255;
+        queueMicrotask(() => child.emit('close', 255, null));
+      });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, reconnectBaseMs: 10, reconnectMaxMs: 10 });
+    await expect(manager.client('gpu')).rejects.toThrow(failure === 'EPIPE' ? /failed to upload/u : /Permission denied/u);
+    expect(manager.status('gpu')).toMatchObject({ state: 'error', errorCode: 'SSH_AUTH', retryable: false });
+    expect(manager.status('gpu').nextRetryAt).toBeUndefined();
+    expect(manager.diagnostics('gpu').stderr).toContain('Permission denied');
+    expect(manager.status('gpu').lastError).toContain('Permission denied');
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    await manager.dispose();
+  });
+
+  it('cancels an in-progress upload and ignores its late completion', async () => {
+    const child = new FakeChild();
+    const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof spawn>);
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0 });
+    const pending = manager.client('gpu').catch(reason => reason);
+    await vi.waitFor(() => expect(manager.status('gpu').state).toBe('installing'));
+    await manager.close('gpu');
+    expect(await pending).toBeInstanceOf(Error);
+    child.emit('close', 0, null);
+    expect(child.killed).toBe(true);
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    expect(manager.status('gpu').state).toBe('disconnected');
+    await manager.dispose();
+  });
+
+  it.each(['initialize', 'environment/check'] as const)(
+    'stops during %s and ignores a successful response arriving after close',
+    async (stage) => {
+      const capabilities = { ...completeCapabilities, environment: { check: true } };
+      let transport: FakeChild | undefined;
+      let releaseLateReply: (() => void) | undefined;
+      const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+        const child = new FakeChild();
+        if (String(args.at(-1)).includes('connect --stdio')) {
+          transport = child;
+          helperPeer(child, {
+            capabilities,
+            onRequest(frame, peer) {
+              if (frame.method !== stage) return false;
+              releaseLateReply = () => peer.stdout.write(encodeDshRpcFrame({
+                dshRpc: '1', id: frame.id!,
+                result: stage === 'initialize' ? {
+                  protocol: 1,
+                  session: {
+                    sessionId: 'session-1', clientId: String(frame.params?.clientId),
+                    resumeToken: 'resume-1', resumed: false, retentionMs: 120_000, serverEpoch: 1,
+                  },
+                  capabilities,
+                  limits: { maxFrameBytes: 1_048_576 },
+                } : { search: { available: true, path: '/usr/bin/rg', version: 'ripgrep fixture' } },
+              }));
+              return true;
+            },
+          });
+        } else {
+          child.stdin.once('finish', () => {
+            child.exitCode = 0;
+            queueMicrotask(() => child.emit('close', 0, null));
+          });
+        }
+        return child as unknown as ReturnType<typeof spawn>;
+      });
+      const manager = new RemoteHelperManager({
+        assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+        capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0,
+        reconnectBaseMs: 10, reconnectMaxMs: 10, random: () => 0.5,
+      });
+      const states: string[] = [];
+      manager.onStatus(status => states.push(status.state));
+      try {
+        // Attach rejection handling before aborting to catch stale attempts without
+        // creating an unhandled rejection in the application/test process.
+        const pending = manager.client('gpu').catch(reason => reason);
+        await vi.waitFor(() => expect(releaseLateReply).toBeTypeOf('function'));
+        expect(manager.status('gpu').state).toBe('connecting');
+        await manager.close('gpu');
+        expect(await pending).toBeInstanceOf(Error);
+        expect(transport?.killed).toBe(true);
+        const statesAfterClose = states.length;
+
+        // A successful reply from the retired transport must not resurrect the
+        // helper, install a session id, or schedule a background reconnect.
+        releaseLateReply!();
+        await new Promise(resolve => setTimeout(resolve, 40));
+        expect(manager.status('gpu')).toMatchObject({ state: 'disconnected', attempt: 0 });
+        expect(manager.status('gpu').sessionId).toBeUndefined();
+        expect(manager.status('gpu').nextRetryAt).toBeUndefined();
+        expect(spawnProcess).toHaveBeenCalledTimes(2);
+        expect(states.slice(statesAfterClose)).toEqual([]);
+        expect(states).not.toContain('connected');
+        expect(states).not.toContain('degraded');
+      } finally {
+        await manager.dispose();
+      }
+    },
+  );
+
+  it('reports missing search and refreshes it without reconnecting or killing tasks', async () => {
+    let available = false;
+    let hold = false;
+    const pendingProbes: Array<(available: boolean) => void> = [];
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (String(args.at(-1)).includes('connect --stdio')) {
+        helperPeer(child, { capabilities: { ...completeCapabilities, environment: { check: true } },
+          onRequest(frame, transport) {
+            if (frame.method !== 'environment/check') return false;
+            if (hold) {
+              pendingProbes.push(value => transport.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: { search: { available: value } } })));
+              return true;
+            }
+            transport.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: {
+              search: available ? { available: true, path: '/home/test/.local/bin/rg', version: 'ripgrep 15.2.0' }
+                : { available: false, error: 'ripgrep missing in login PATH' },
+            } }));
+            return true;
+          } });
+      } else child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0 });
+    const client = await manager.client('gpu');
+    expect(manager.status('gpu')).toMatchObject({ state: 'degraded', environment: { search: { available: false } } });
+    available = true;
+    await manager.refreshEnvironment('gpu');
+    expect(manager.status('gpu')).toMatchObject({ state: 'connected', environment: { search: { available: true } } });
+    expect(await manager.client('gpu')).toBe(client);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    hold = true;
+    const oldProbe = manager.refreshEnvironment('gpu');
+    const newProbe = manager.refreshEnvironment('gpu');
+    await vi.waitFor(() => expect(pendingProbes.length).toBe(2));
+    pendingProbes[1](true);
+    await newProbe;
+    pendingProbes[0](false);
+    await oldProbe;
+    expect(manager.status('gpu')).toMatchObject({ state: 'connected', environment: { search: { available: true } } });
+    await manager.dispose();
+  });
+
+  it('does not publish a closed connection when environment probing loses transport', async () => {
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (String(args.at(-1)).includes('connect --stdio')) {
+        helperPeer(child, { capabilities: { ...completeCapabilities, environment: { check: true } },
+          onRequest(frame, transport) {
+            if (frame.method !== 'environment/check') return false;
+            transport.exitCode = 255;
+            queueMicrotask(() => transport.emit('close', 255, null));
+            return true;
+          } });
+      } else child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0, reconnectBaseMs: 1000, random: () => 0.9 });
+    const states: string[] = [];
+    manager.onStatus(status => states.push(status.state));
+    await expect(manager.client('gpu')).rejects.toThrow(/transport exited/u);
+    expect(manager.status('gpu')).toMatchObject({ state: 'reconnecting', retryable: true, errorCode: 'SSH_NETWORK' });
+    expect(states).not.toContain('connected');
+    expect(states).not.toContain('degraded');
+    await manager.dispose();
+  });
+
   it('fails closed before SSH when a configured alias was removed', async () => {
     const path = await helperAsset();
     const spawnProcess = vi.fn();

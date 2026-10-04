@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   HELPER_STDERR_MAX_BYTES,
   RemoteHelperInstaller,
+  RemoteHelperInstallError,
   assertSshAlias,
   buildHelperConnectCommand,
   buildSystemSshArgs,
@@ -26,6 +27,11 @@ import type {
   ServerHello,
 } from './protocol.js';
 import { parseSshUri } from '../types.js';
+import { classifyConnectionError, type ConnectionFailure } from './connection-error.js';
+
+export interface RemoteEnvironment {
+  search: { available: boolean; path?: string; version?: string; error?: string };
+}
 
 export type RemoteHelperConnectionState =
   | 'disconnected'
@@ -49,6 +55,10 @@ export interface RemoteHelperStatus {
   lastConnectedAt?: number;
   lastHealthAt?: number;
   nextRetryAt?: number;
+  errorCode?: string;
+  retryable?: boolean;
+  hint?: string;
+  environment?: RemoteEnvironment;
 }
 
 export interface RemoteHelperDiagnostics extends RemoteHelperStatus {
@@ -85,6 +95,7 @@ interface ManagedHelper {
   facade?: ManagedRemoteHelperFacade;
   child?: ChildProcess;
   pending?: Promise<RemoteHelperRpcClient>;
+  connectController?: AbortController;
   retryTimer?: ReturnType<typeof setTimeout>;
   healthTimer?: ReturnType<typeof setTimeout>;
   stderr: string;
@@ -97,6 +108,9 @@ interface ManagedHelper {
   lastConnectedAt?: number;
   lastHealthAt?: number;
   nextRetryAt?: number;
+  failure?: ConnectionFailure;
+  environment?: RemoteEnvironment;
+  environmentEpoch?: number;
 }
 
 /** Host-scoped, single-flight controller for managed helper SSH sessions. */
@@ -131,7 +145,7 @@ export class RemoteHelperManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 20_000;
     this.clientName = options.clientName ?? 'dsh-ssh-remote';
-    this.clientVersion = options.clientVersion ?? '0.3.3';
+    this.clientVersion = options.clientVersion ?? '0.4.0';
     this.retentionMs = options.retentionMs ?? 120_000;
     this.aliasValidator = options.aliasValidator;
     this.random = options.random ?? Math.random;
@@ -209,6 +223,7 @@ export class RemoteHelperManager {
     const entry = this.entry(alias);
     entry.wanted = true;
     entry.generation += 1;
+    entry.connectController?.abort();
     this.clearRetry(entry);
     this.clearHealth(entry);
     await this.retireTransport(entry, 'manual retry');
@@ -230,6 +245,7 @@ export class RemoteHelperManager {
     if (entry === undefined) return;
     entry.wanted = false;
     entry.generation += 1;
+    entry.connectController?.abort();
     this.clearRetry(entry);
     this.clearHealth(entry);
     await this.closeRemoteSessionBestEffort(entry);
@@ -251,6 +267,7 @@ export class RemoteHelperManager {
     await Promise.allSettled([...this.entries.values()].map(async (entry) => {
       entry.wanted = false;
       entry.generation += 1;
+      entry.connectController?.abort();
       this.clearRetry(entry);
       this.clearHealth(entry);
       await this.closeRemoteSessionBestEffort(entry);
@@ -265,11 +282,16 @@ export class RemoteHelperManager {
   private async connect(entry: ManagedHelper, generation: number): Promise<RemoteHelperRpcClient> {
     let child: ChildProcess | undefined;
     let client: RemoteHelperRpcClient | undefined;
+    const controller = new AbortController();
     try {
       this.assertAliasConfigured(entry.alias);
       this.assertCurrent(entry, generation);
+      entry.connectController = controller;
+      entry.stderr = '';
+      entry.failure = undefined;
+      entry.environment = undefined;
       this.setState(entry, entry.attempt === 0 ? 'installing' : 'reconnecting');
-      await this.installer.install(entry.alias);
+      await this.installer.install(entry.alias, controller.signal);
       this.assertCurrent(entry, generation);
       this.setState(entry, 'connecting');
 
@@ -315,9 +337,9 @@ export class RemoteHelperManager {
         clientVersion: this.clientVersion,
         ...(entry.resumeToken === undefined ? {} : { resumeToken: entry.resumeToken }),
         retentionMs: this.retentionMs,
-      }, { timeoutMs: this.initializeTimeoutMs });
+      }, { timeoutMs: this.initializeTimeoutMs, signal: controller.signal });
       this.assertCurrent(entry, generation, client);
-      await client.call('health/ping', { nonce: randomUUID() }, { timeoutMs: this.healthTimeoutMs });
+      await client.call('health/ping', { nonce: randomUUID() }, { timeoutMs: this.healthTimeoutMs, signal: controller.signal });
       this.assertCurrent(entry, generation, client);
 
       entry.resumeToken = client.session.resumeToken;
@@ -326,12 +348,15 @@ export class RemoteHelperManager {
       entry.capabilities = client.capabilities;
       entry.limits = client.limits;
       entry.hello = client.hello;
+      await this.checkEnvironment(entry, client, generation, controller.signal);
+      this.assertCurrent(entry, generation, client);
       entry.lastError = undefined;
+      entry.failure = undefined;
       entry.lastConnectedAt = this.now();
       entry.lastHealthAt = this.now();
       entry.nextRetryAt = undefined;
       entry.attempt = 0;
-      this.setState(entry, isDegraded(client.capabilities) ? 'degraded' : 'connected');
+      this.setState(entry, this.connectedState(entry));
       entry.facade?.bind(client);
       this.scheduleHealth(entry, generation, client);
       return client;
@@ -361,13 +386,55 @@ export class RemoteHelperManager {
       if (this.isCurrent(entry, generation)) {
         entry.client = undefined;
         entry.child = undefined;
-        entry.lastError = messageOf(error);
+        if (error instanceof RemoteHelperInstallError && error.stderr) {
+          entry.stderr = appendDiagnostic(entry.stderr, error.stderr);
+        }
+        const message = redactHelperDiagnostic(messageOf(error));
+        entry.lastError = entry.stderr && !message.includes(entry.stderr) ? `${message}: ${entry.stderr}` : message;
+        entry.failure = classifyConnectionError(error, entry.stderr, Boolean(client?.sessionId));
         entry.attempt += 1;
         this.setState(entry, 'error');
         this.scheduleReconnect(entry, generation);
       }
       throw error;
+    } finally {
+      if (entry.connectController === controller) entry.connectController = undefined;
     }
+  }
+
+  /** Explicit refresh rechecks dependencies without interrupting a live task. */
+  async refreshEnvironment(uriOrAlias: string): Promise<void> {
+    const entry = this.entries.get(normalizeAlias(uriOrAlias));
+    if (!entry?.client || !['connected', 'degraded'].includes(entry.state)) return;
+    const client = entry.client;
+    const generation = entry.generation;
+    await this.checkEnvironment(entry, client, generation);
+    if (this.isCurrent(entry, generation, client)) {
+      this.setState(entry, this.connectedState(entry));
+    }
+  }
+
+  private async checkEnvironment(entry: ManagedHelper, client: RemoteHelperRpcClient, generation: number, signal?: AbortSignal): Promise<void> {
+    const capability = client.capabilities.environment;
+    if (!capability || typeof capability !== 'object' || Array.isArray(capability) || capability.check !== true) return;
+    const epoch = entry.environmentEpoch = (entry.environmentEpoch ?? 0) + 1;
+    let environment: RemoteEnvironment;
+    try {
+      const result = await client.call<RemoteEnvironment>('environment/check', {}, { timeoutMs: 7_000, signal });
+      if (typeof result?.search?.available !== 'boolean') throw new Error('invalid environment/check response');
+      environment = { search: { available: result.search.available } };
+      for (const key of ['path', 'version', 'error'] as const) {
+        if (typeof result.search[key] === 'string') environment.search[key] = redactHelperDiagnostic(result.search[key]!.slice(0, 2048));
+      }
+    } catch (error) {
+      if (client.closeReason !== undefined) throw client.closeReason;
+      environment = { search: { available: false, error: `环境检查失败：${redactHelperDiagnostic(messageOf(error))}` } };
+    }
+    if (this.isCurrent(entry, generation, client) && entry.environmentEpoch === epoch) entry.environment = environment;
+  }
+
+  private connectedState(entry: ManagedHelper): 'connected' | 'degraded' {
+    return isDegraded(entry.capabilities ?? {}) || entry.environment?.search.available === false ? 'degraded' : 'connected';
   }
 
   private onClientClosed(
@@ -377,12 +444,15 @@ export class RemoteHelperManager {
     reason: Error,
   ): void {
     if (!this.isCurrent(entry, generation, client)) return;
+    // Setup failures are classified once by connect(), with final stderr.
+    if (entry.connectController !== undefined) return;
     this.clearHealth(entry);
     const child = entry.child;
     entry.client = undefined;
     entry.child = undefined;
     terminateChildNow(child);
-    entry.lastError = reason.message;
+    entry.lastError = redactHelperDiagnostic(reason.message);
+    entry.failure = classifyConnectionError(reason, entry.stderr, client.sessionId !== '');
     entry.attempt += 1;
     this.setState(entry, 'error');
     this.scheduleReconnect(entry, generation);
@@ -411,7 +481,7 @@ export class RemoteHelperManager {
   }
 
   private scheduleReconnect(entry: ManagedHelper, generation: number): void {
-    if (!entry.wanted || this.disposed || entry.retryTimer !== undefined) return;
+    if (!entry.wanted || this.disposed || entry.retryTimer !== undefined || entry.failure?.retryable !== true) return;
     const ceiling = Math.min(
       this.reconnectMaxMs,
       this.reconnectBaseMs * (2 ** Math.min(Math.max(entry.attempt - 1, 0), 20)),
@@ -514,11 +584,14 @@ export class RemoteHelperManager {
       ...(entry.lastConnectedAt === undefined ? {} : { lastConnectedAt: entry.lastConnectedAt }),
       ...(entry.lastHealthAt === undefined ? {} : { lastHealthAt: entry.lastHealthAt }),
       ...(entry.nextRetryAt === undefined ? {} : { nextRetryAt: entry.nextRetryAt }),
+      ...entry.failure,
+      ...(entry.environment === undefined ? {} : { environment: entry.environment }),
     };
   }
 
   private assertCurrent(entry: ManagedHelper, generation: number, client?: RemoteHelperRpcClient): void {
     if (!this.isCurrent(entry, generation, client)) throw new Error('stale remote helper connection attempt');
+    if (client?.closeReason !== undefined) throw client.closeReason;
   }
 
   private isCurrent(entry: ManagedHelper, generation: number, client?: RemoteHelperRpcClient): boolean {

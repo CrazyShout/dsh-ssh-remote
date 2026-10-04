@@ -260,7 +260,7 @@ export class RemoteHelperRpcClient implements RemoteHelperClient {
         id,
         method,
         params: params as JsonObject,
-      }, () => { pending.started = true; }).catch((error) => {
+      }, () => { pending.started = true; }, () => !pending.settled && this.pending.get(id) === pending).catch((error) => {
         if (!(error instanceof DshRpcProtocolError)) {
           this.failAll(asError(error, 'remote helper transport write failed'));
           this.options.closeTransport?.();
@@ -296,9 +296,13 @@ export class RemoteHelperRpcClient implements RemoteHelperClient {
     });
   }
 
-  private enqueue(frame: DshRpcFrame, onStarted?: () => void): Promise<void> {
+  private enqueue(frame: DshRpcFrame, onStarted?: () => void, shouldSend?: () => boolean): Promise<void> {
     let operation!: Promise<void>;
     operation = this.writeChain.catch(() => undefined).then(async () => {
+      // Abort/timeout can retire a request while an earlier write is applying
+      // backpressure. Retirement before dispatch means it must NEVER be sent.
+      // Skipping is successful queue progress, not a transport failure.
+      if (shouldSend?.() === false) return;
       if (this.closeReasonValue !== undefined) throw this.closeReasonValue;
       const encoded = encodeDshRpcFrame(frame);
       await new Promise<void>((resolve, reject) => {

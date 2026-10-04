@@ -48,6 +48,7 @@ class FakeHelperClient implements RemoteHelperClient {
   foreground = { pgid: 4321, verified: true };
   gracefulTerminateFailure: Error | undefined;
   onStart: (() => void) | undefined;
+  startedRunning = true;
   workspaceOpenFailure: Error | undefined;
   onWorkspaceOpen: (() => void) | undefined;
   unknownRollbackResources = false;
@@ -75,8 +76,8 @@ class FakeHelperClient implements RemoteHelperClient {
           pid: 1234,
           pgid: 1234,
           tty: true,
-          running: true,
-          exitCode: null,
+          running: this.startedRunning,
+          exitCode: this.startedRunning ? null : 0,
           signal: null,
           latestSeq: '0',
         } as T;
@@ -175,6 +176,25 @@ afterEach(() => {
 });
 
 describe('helper-backed remote terminal setup', () => {
+  it('drains all retained pages when the PTY exited before startup returned', async () => {
+    const client = new FakeHelperClient(); client.startedRunning = false;
+    client.queuedReads.push(emptyRead({
+      chunks: [{ seq: '1', stream: 'pty', data: Buffer.from('a'.repeat(64 * 1024)).toString('base64') }],
+      nextSeq: '1', exitCode: 0,
+    }), emptyRead({
+      chunks: [{ seq: '2', stream: 'pty', data: Buffer.from('b'.repeat(64 * 1024) + 'PTY_FINAL').toString('base64') }],
+      nextSeq: '2', exited: true, exitCode: 0,
+    }));
+    const { backend } = fixture(client);
+    const session = await backend.spawn(spawnSpec());
+    await vi.waitFor(() => expect(session.read({}).text.endsWith('PTY_FINAL')).toBe(true));
+    const output = session.read({});
+    expect(Buffer.byteLength(output.text)).toBe(64 * 1024);
+    expect(output.truncated).toBe(true);
+    expect(client.calls.filter(call => call.method === 'process/read')).toHaveLength(2);
+    await session.close('test');
+  });
+
   it('uses the remote account login shell reported by helper hello', async () => {
     const client = new FakeHelperClient();
     client.hello = { platform: { shell: '/bin/zsh' } };

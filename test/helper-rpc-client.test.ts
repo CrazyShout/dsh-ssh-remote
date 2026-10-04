@@ -1,4 +1,4 @@
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { DshRpcLineDecoder, encodeDshRpcFrame } from '../src/helper/framing.js';
 import {
@@ -69,6 +69,50 @@ async function initialize(peer: ReturnType<typeof createPeer>): Promise<void> {
 }
 
 describe('RemoteHelperClient', () => {
+  it.each(['abort', 'timeout'] as const)('never dispatches a queued mutation retired by %s', async (kind) => {
+    const output = new PassThrough();
+    const frames: any[] = [];
+    let release: (() => void) | undefined;
+    const input = new Writable({ write(chunk, _encoding, callback) {
+      const frame = JSON.parse(String(chunk));
+      frames.push(frame);
+      if (frame.method === 'block') release = () => callback();
+      else {
+        output.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id, result: frame.method === 'initialize'
+          ? { protocol: 1, session: { sessionId: 's', clientId: 'c', resumeToken: 'r', resumed: false,
+            retentionMs: 120_000, serverEpoch: 1 }, capabilities: {}, limits: {} } : {} }));
+        callback();
+      }
+    } });
+    const client = new RemoteHelperRpcClient({ readable: output, writable: input });
+    output.write(encodeDshRpcFrame(hello()));
+    await client.initialize({ clientId: 'c' });
+    const blocker = client.call('block', {}).catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const controller = new AbortController();
+    const mutation = client.call('fs/write', {}, { mutation: true, signal: controller.signal,
+      timeoutMs: kind === 'timeout' ? 10 : 1000 }).catch(reason => reason);
+    if (kind === 'abort') controller.abort();
+    const error = await mutation;
+    expect(error).toMatchObject({ mutationMayHaveStarted: false, kind });
+    release!();
+    await expect(client.call('health/ping', {})).resolves.toEqual({});
+    expect(frames.some(frame => frame.method === 'fs/write')).toBe(false);
+    expect(client.closeReason).toBeUndefined();
+    client.close();
+    await blocker;
+  });
+
+  it('marks an already sent mutation as ambiguous when aborted', async () => {
+    const peer = createPeer();
+    await initialize(peer);
+    const controller = new AbortController();
+    const pending = peer.client.call('fs/write', {}, { mutation: true, signal: controller.signal }).catch(reason => reason);
+    await vi.waitFor(() => expect(peer.requests.some(frame => 'method' in frame && frame.method === 'fs/write')).toBe(true));
+    controller.abort();
+    expect(await pending).toMatchObject({ mutationMayHaveStarted: true, kind: 'abort' });
+    peer.client.close();
+  });
   it('surfaces a pre-hello admission failure with its real error code', async () => {
     const peer = createPeer();
     const ready = peer.client.initialize({ clientId: 'client-1' });

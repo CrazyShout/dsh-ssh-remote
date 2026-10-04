@@ -32,7 +32,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -151,6 +151,44 @@ def fail_os(exc: OSError) -> RpcError:
         errno.EISDIR: "E_NOT_FILE", errno.ENOSPC: "E_NO_SPACE",
     }.get(exc.errno, "E_IO")
     return RpcError(code, exc.strerror or str(exc), code == "E_IO")
+
+
+def check_environment() -> Dict[str, Any]:
+    """Probe the same login-shell PATH as search, with bounded output/time."""
+    command = "p=$(command -v rg) || exit 127; printf '__DSH_RG_PATH__%s\\n' \"$p\"; rg --version 2>/dev/null | head -n 1"
+    child = spawn_in_broker(lambda: subprocess.Popen(
+        ["sh", "-lc", command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+    ))
+    assert child.stdout is not None
+    output = bytearray(); deadline = time.monotonic() + 5
+    selector = selectors.DefaultSelector(); selector.register(child.stdout, selectors.EVENT_READ)
+    error = None
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0: error = "search probe timed out"; break
+            if not selector.select(remaining): error = "search probe timed out"; break
+            chunk = os.read(child.stdout.fileno(), min(4096, 8193 - len(output)))
+            if not chunk: break
+            output.extend(chunk)
+            if len(output) > 8192: error = "search probe output exceeded limit"; break
+        if error is None:
+            try: child.wait(timeout=max(0.01, deadline-time.monotonic()))
+            except subprocess.TimeoutExpired: error = "search probe timed out"
+    finally:
+        selector.close(); child.stdout.close()
+        if error is not None:
+            try: os.killpg(child.pid, signalmod.SIGKILL)
+            except OSError: pass
+        try: child.wait(timeout=1)
+        except subprocess.TimeoutExpired: pass
+    if error is not None: return {"search": {"available": False, "error": error}}
+    lines = output.decode("utf-8", "replace").splitlines()
+    path = next((line[len("__DSH_RG_PATH__"):] for line in lines if line.startswith("__DSH_RG_PATH__")), None)
+    version = next((line for line in lines if line.startswith("ripgrep ")), None)
+    if not path or not version: return {"search": {"available": False, "error": "ripgrep is not available in the remote login-shell PATH"}}
+    return {"search": {"available": True, "path": path[:1024], "version": version[:256]}}
 
 
 def frame(obj: Dict[str, Any]) -> bytes:
@@ -315,6 +353,7 @@ class Server:
                         "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked"},
             "pty": {"supported": hasattr(os, "openpty"), "resize": True, "foregroundPgid": "verified"},
             "session": {"resume": self.resume_supported},
+            "environment": {"check": True},
         }
 
     def workspace(self, params: Dict[str, Any]) -> Workspace:
@@ -400,6 +439,7 @@ class Server:
                     "capabilities": self.capabilities(), "limits": protocol_limits()}
         if not self.initialized: raise RpcError("E_NOT_INITIALIZED", "initialize must be called first")
         if method == "health/ping": return {"nonce": p.get("nonce"), "ok": True}
+        if method == "environment/check": return check_environment()
         if method == "health/status": return {"ok": True, "home": os.path.realpath(os.path.expanduser("~")),
                 "uptimeMs": int((time.monotonic()-self.started)*1000), "workspaces": len(self.workspaces),
                 "processes": len(self.processes), "pathLocks": len(self.path_locks),
@@ -771,15 +811,16 @@ class Server:
         tty = p.get("tty"); stdin_mode = p.get("stdin", "pipe")
         if stdin_mode not in ("pipe", "closed"): raise RpcError("E_INVALID_PARAMS", "stdin must be pipe or closed")
         if isinstance(tty, dict) and stdin_mode != "pipe": raise RpcError("E_INVALID_PARAMS", "PTY stdin cannot start closed")
-        if workspace_under_tmp:
-            workspace_fd = os.dup(ws.fd); inherited_fds = (workspace_fd,)
-            command = [str(workspace_fd) if value == "__DSH_WORKSPACE_FD__" else value for value in command]
         with self.resources_lock:
             if len(self.processes) >= MAX_PROCESSES: raise RpcError("E_RESOURCE_LIMIT", "process limit reached")
             if process_id in self.processes: raise RpcError("E_EXISTS", "processId already exists")
             self.processes[process_id] = PROCESS_RESERVED
-        try: record = ProcessRecord(process_id, command, cwd, supplied, tty, stdin_mode, inherited_fds,
-                                    pty_inside_sandbox=isinstance(tty, dict) and ws.access != "danger-full-access")
+        try:
+            if workspace_under_tmp:
+                workspace_fd = os.dup(ws.fd); inherited_fds = (workspace_fd,)
+                command = [str(workspace_fd) if value == "__DSH_WORKSPACE_FD__" else value for value in command]
+            record = ProcessRecord(process_id, command, cwd, supplied, tty, stdin_mode, inherited_fds,
+                                   inside_sandbox=ws.access != "danger-full-access")
         except Exception:
             with self.resources_lock:
                 if self.processes.get(process_id) is PROCESS_RESERVED: self.processes.pop(process_id, None)
@@ -804,21 +845,110 @@ class Server:
             write_handles = list(self.write_handles.values()); self.write_handles.clear()
             processes = [value for value in self.processes.values() if value is not PROCESS_RESERVED]; self.processes.clear()
             workspaces = list(self.workspaces.values()); self.workspaces.clear()
+        errors = []
         for handle in handles:
             try: os.close(handle["fd"])
-            except OSError: pass
-        for handle in write_handles: self.cleanup_write_handle(handle)
-        for process in processes: process.release()
-        for ws in workspaces: ws.close()
+            except OSError as exc: errors.append(exc)
+        for handle in write_handles:
+            try: self.cleanup_write_handle(handle)
+            except Exception as exc: errors.append(exc)
+        for process in processes:
+            try: process.release()
+            except Exception as exc: errors.append(exc)
+        for ws in workspaces:
+            try: ws.close()
+            except Exception as exc: errors.append(exc)
+        if errors: raise RpcError("E_CLEANUP_FAILED", str(len(errors)) + " remote resources could not be cleanly released")
+
+
+class SupervisorChannel:
+    """Private control plane; task output never enters these framed messages."""
+    def __init__(self, endpoint: socket.socket, event: Any):
+        self.endpoint, self.event = endpoint, event
+        self.endpoint.setblocking(False)
+        self.lock, self.write_lock = threading.Lock(), threading.Lock()
+        self.pending: Dict[int, Any] = {}; self.sequence = 0; self.error: Optional[Exception] = None
+
+    def start(self) -> None:
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(self.endpoint, selectors.EVENT_READ); buffered = b""
+            while True:
+                if not selector.select(0.2):
+                    if self.endpoint.fileno() < 0: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed")
+                    continue
+                try: chunk = self.endpoint.recv(65536)
+                except BlockingIOError: continue
+                if not chunk: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed")
+                buffered += chunk
+                while b"\n" in buffered:
+                    line, buffered = buffered.split(b"\n", 1)
+                    if len(line) > 65536: raise RpcError("E_SUPERVISOR_PROTOCOL", "invalid supervisor frame")
+                    message = json.loads(line)
+                    if "event" in message: self.event(message); continue
+                    with self.lock: pending = self.pending.pop(message.get("id"), None)
+                    if pending is not None: pending[1].append(message); pending[0].set()
+                if len(buffered) > 65536: raise RpcError("E_SUPERVISOR_PROTOCOL", "invalid supervisor frame")
+        except Exception as exc:
+            with self.lock:
+                self.error = exc; pending = list(self.pending.values()); self.pending.clear()
+            for done, box in pending: box.append({"error": {"code": "E_SUPERVISOR_CLOSED", "message": "remote process supervisor closed"}}); done.set()
+            self.event({"event": "closed"})
+        finally: selector.close()
+
+    def call(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 5) -> Dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        done, box = threading.Event(), []
+        with self.lock:
+            if self.error is not None: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed")
+            self.sequence += 1; rid = self.sequence; self.pending[rid] = (done, box)
+        try:
+            raw = json.dumps({"id": rid, "method": method, "params": params or {}}).encode() + b"\n"
+            if len(raw) > 65536: raise RpcError("E_INVALID_PARAMS", "process supervisor request is too large")
+            if not self.write_lock.acquire(timeout=max(0, deadline-time.monotonic())):
+                raise RpcError("E_SUPERVISOR_TIMEOUT", "process supervisor write queue timed out")
+            selector = selectors.DefaultSelector(); sent = 0
+            try:
+                selector.register(self.endpoint, selectors.EVENT_WRITE)
+                while sent < len(raw):
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        if sent: self.close()  # Never leave a partial frame queued.
+                        raise RpcError("E_SUPERVISOR_TIMEOUT", "process supervisor send timed out")
+                    try: count = self.endpoint.send(raw[sent:])
+                    except BlockingIOError: continue
+                    if count <= 0: raise RpcError("E_SUPERVISOR_CLOSED", "process supervisor closed while sending")
+                    sent += count
+            finally: selector.close(); self.write_lock.release()
+            if not done.wait(max(0, deadline-time.monotonic())): raise RpcError("E_SUPERVISOR_TIMEOUT", "remote process supervisor did not respond")
+            result = box[0]
+            if "error" in result: raise RpcError(result["error"]["code"], result["error"]["message"])
+            return result["result"]
+        except OSError as exc: raise fail_os(exc)
+        finally:
+            with self.lock: self.pending.pop(rid, None)
+
+    def close(self) -> None:
+        try: self.endpoint.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        self.endpoint.close()
 
 
 class ProcessRecord:
     def __init__(self, process_id: str, argv: List[str], cwd: str, supplied_env: Any, tty: Any,
-                 stdin_mode: str, inherited_fds: Tuple[int, ...] = (), pty_inside_sandbox: bool = False):
+                 stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False):
         self.process_id, self.tty = process_id, isinstance(tty, dict)
         self.lock, self.changed = threading.Lock(), threading.Condition(threading.Lock())
         self.chunks: Any = deque(); self.bytes = 0; self.seq = 0; self.earliest = 1
         self.returncode: Optional[int] = None; self.released = False; self.master: Optional[int] = None
+        self.pid = 0; self.pgid = 0; self.ready = threading.Event(); self.start_error: Optional[RpcError] = None
+        self.supervisor_closed = False; self.release_lock = threading.Lock()
+        self.io_stopping = threading.Event(); self.write_cancelled = threading.Event()
+        self.reader_threads: List[threading.Thread] = []
+        self.stdin: Any = None; self.stdout_stream: Any = None; self.stderr_stream: Any = None
         self.readers = 1 if self.tty else 2
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("DSH_") and SENSITIVE_ENV_PATTERN.search(key) is None}
@@ -828,51 +958,124 @@ class ProcessRecord:
                 if not isinstance(key, str) or not isinstance(value, str) or "\0" in key + value or "=" in key:
                     raise RpcError("E_INVALID_PARAMS", "invalid environment entry")
                 env[key] = value
+        endpoint, remote_endpoint = socket.socketpair()
+        self.control = SupervisorChannel(endpoint, self._supervisor_event)
+        slave: Optional[int] = None
+        launch_fds: List[int] = []; payload_fds: Tuple[int, ...] = ()
         try:
             if self.tty:
                 master, slave = os.openpty(); self.master = master
+                os.set_blocking(master, False)
                 self._resize(int(tty.get("rows", 24)), int(tty.get("cols", 80)))
                 if isinstance(tty.get("term"), str): env["TERM"] = tty["term"]
-                if pty_inside_sandbox:
-                    target = argv.index("--") + 1
-                    launcher = argv[:target] + [sys.executable, os.path.abspath(__file__),
-                                                "pty-exec", "--slave-fd", "0", "--"] + argv[target:]
-                    self.child = spawn_in_broker(lambda: subprocess.Popen(
-                        launcher, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
-                        pass_fds=(slave,) + inherited_fds, start_new_session=True, close_fds=True,
-                    ))
+                if inside_sandbox: payload_fds = (slave, slave, slave)
+            elif inside_sandbox:
+                if stdin_mode == "closed": stdin_fd = os.open(os.devnull, os.O_RDONLY)
                 else:
-                    launcher = [sys.executable, os.path.abspath(__file__), "pty-exec", "--slave-fd", str(slave), "--"] + argv
-                    self.child = spawn_in_broker(lambda: subprocess.Popen(
-                        launcher, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        pass_fds=(slave,) + inherited_fds, start_new_session=False, close_fds=True,
-                    ))
-                os.close(slave); self.stdin = None
-                threading.Thread(target=self._reader_fd, args=(master, "pty"), daemon=True).start()
+                    stdin_fd, stdin_write = os.pipe(); self.stdin = os.fdopen(stdin_write, "wb", buffering=0)
+                    os.set_blocking(stdin_write, False)
+                stdout_read, stdout_write = os.pipe(); stderr_read, stderr_write = os.pipe()
+                self.stdout_stream = os.fdopen(stdout_read, "rb", buffering=0)
+                self.stderr_stream = os.fdopen(stderr_read, "rb", buffering=0)
+                payload_fds = (stdin_fd, stdout_write, stderr_write); launch_fds = list(payload_fds)
+            runner = [sys.executable, os.path.abspath(__file__), "supervise-exec",
+                      "--control-fd", str(remote_endpoint.fileno())]
+            if self.tty: runner += ["--tty-master-fd", str(self.master)]
+            if inside_sandbox:
+                split = argv.index("--")
+                inner = [sys.executable, os.path.abspath(__file__), "supervise-exec", "--control-fd", "3"]
+                if self.tty: inner += ["--tty-master-fd", "4"]
+                inner += ["--stdio-fds", "5,6,7"]
+                # Bubblewrap preserves explicitly inherited descriptors. Do
+                # not add --preserve-fds: supported releases such as 0.6.1 do
+                # not recognize that option (it belongs to other runtimes).
+                sandbox = argv[:split] + ["--"] + inner + ["--"] + argv[split + 1:]
+                runner = [sys.executable, os.path.abspath(__file__), "sandbox-exec", "--control-fd",
+                          str(remote_endpoint.fileno())]
+                if self.tty: runner += ["--tty-master-fd", str(self.master)]
+                runner += ["--stdio-fds", ",".join(str(fd) for fd in payload_fds)]
+                runner += ["--"] + sandbox
+            else: runner += ["--"] + argv
+            if self.tty:
+                self.child = spawn_in_broker(lambda: subprocess.Popen(
+                    runner, cwd=cwd, env=env,
+                    stdin=subprocess.DEVNULL if inside_sandbox else slave,
+                    stdout=subprocess.DEVNULL if inside_sandbox else slave,
+                    stderr=subprocess.DEVNULL if inside_sandbox else slave,
+                    pass_fds=tuple(set((remote_endpoint.fileno(), master) + payload_fds + inherited_fds)), close_fds=True,
+                ))
+                os.close(slave); slave = None; self.stdin = None
+                self._start_reader(master, "pty")
             else:
                 child_stdin: Any = subprocess.DEVNULL if stdin_mode == "closed" else subprocess.PIPE
                 self.child = spawn_in_broker(lambda: subprocess.Popen(
-                    argv, cwd=cwd, env=env, stdin=child_stdin,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    pass_fds=inherited_fds, start_new_session=True, close_fds=True, bufsize=0,
+                    runner, cwd=cwd, env=env, stdin=subprocess.DEVNULL if inside_sandbox else child_stdin,
+                    stdout=subprocess.DEVNULL if inside_sandbox else subprocess.PIPE,
+                    stderr=subprocess.DEVNULL if inside_sandbox else subprocess.PIPE,
+                    pass_fds=tuple(set((remote_endpoint.fileno(),) + payload_fds + inherited_fds)), close_fds=True, bufsize=0,
                 ))
-                self.stdin = self.child.stdin
-                assert self.child.stdout is not None and self.child.stderr is not None
-                threading.Thread(target=self._reader_fd, args=(self.child.stdout.fileno(), "stdout"), daemon=True).start()
-                threading.Thread(target=self._reader_fd, args=(self.child.stderr.fileno(), "stderr"), daemon=True).start()
-        except OSError as exc:
+                if not inside_sandbox:
+                    self.stdin = self.child.stdin
+                    self.stdout_stream, self.stderr_stream = self.child.stdout, self.child.stderr
+                for fd in launch_fds: os.close(fd)
+                launch_fds.clear()
+                if self.stdin is not None: os.set_blocking(self.stdin.fileno(), False)
+                assert self.stdout_stream is not None and self.stderr_stream is not None
+                self._start_reader(self.stdout_stream.fileno(), "stdout")
+                self._start_reader(self.stderr_stream.fileno(), "stderr")
+            remote_endpoint.close(); self.control.start()
+            if not self.ready.wait(15): raise RpcError("E_SUPERVISOR_TIMEOUT", "remote process startup timed out")
+            if self.start_error is not None: raise self.start_error
+            if self.pid <= 0: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed during startup")
+        except Exception as exc:
+            remote_endpoint.close(); self.control.close()
+            self.io_stopping.set()
+            for reader in self.reader_threads: reader.join(0.5)
+            for fd in launch_fds:
+                try: os.close(fd)
+                except OSError: pass
+            for stream in (self.stdin, self.stdout_stream, self.stderr_stream):
+                if stream is not None:
+                    try: stream.close()
+                    except OSError: pass
+            if slave is not None:
+                try: os.close(slave)
+                except OSError: pass
             if self.master is not None:
                 try: os.close(self.master)
                 except OSError: pass
-            raise fail_os(exc)
-        self.pgid = self.child.pid
-        threading.Thread(target=self._waiter, daemon=True).start()
+            if hasattr(self, "child"):
+                try: self.child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.child.kill(); self.child.wait(timeout=2)
+            if isinstance(exc, OSError): raise fail_os(exc)
+            raise
+
+    def _supervisor_event(self, message: Dict[str, Any]) -> None:
+        event = message.get("event")
+        if event == "ready":
+            self.pid, self.pgid = message["pid"], message["pgid"]; self.ready.set()
+        elif event == "error":
+            self.start_error = RpcError(message["code"], message["message"]); self.ready.set()
+        elif event == "exit":
+            with self.changed: self.returncode = message["returncode"]; self.changed.notify_all()
+        elif event == "closed":
+            self.supervisor_closed = True; self.ready.set()
+            with self.changed: self.changed.notify_all()
+
+    def _start_reader(self, fd: int, stream: str) -> None:
+        thread = threading.Thread(target=self._reader_fd, args=(fd, stream), daemon=True)
+        self.reader_threads.append(thread); thread.start()
 
     def _reader_fd(self, fd: int, stream: str) -> None:
+        selector = selectors.DefaultSelector()
         try:
-            while True:
+            os.set_blocking(fd, False); selector.register(fd, selectors.EVENT_READ)
+            while not self.io_stopping.is_set():
+                if not selector.select(0.1): continue
+                if self.io_stopping.is_set(): break
                 try: data = os.read(fd, 65536)
+                except BlockingIOError: continue
                 except OSError as exc:
                     if exc.errno in (errno.EIO, errno.EBADF): break
                     break
@@ -883,21 +1086,20 @@ class ProcessRecord:
                         old = self.chunks.popleft(); self.bytes -= len(old[2]); self.earliest = old[0] + 1
                     self.changed.notify_all()
         finally:
+            selector.close()
             with self.changed:
                 self.readers -= 1
                 self.changed.notify_all()
 
-    def _waiter(self) -> None:
-        code = self.child.wait()
-        with self.changed: self.returncode = code; self.changed.notify_all()
-
     def status(self) -> Dict[str, Any]:
-        code = self.child.poll()
+        code = self.returncode
+        if self.supervisor_closed and code is None and not self.released:
+            raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor exited before reporting task completion")
         signal_name = None
         if code is not None and code < 0:
             try: signal_name = signalmod.Signals(-code).name
             except ValueError: signal_name = f"SIG{-code}"
-        return {"processId": self.process_id, "pid": self.child.pid, "pgid": self.pgid, "tty": self.tty,
+        return {"processId": self.process_id, "pid": self.pid, "pgid": self.pgid, "tty": self.tty,
                 "running": code is None, "exitCode": code if code is not None and code >= 0 else None,
                 "signal": signal_name, "latestSeq": str(self.seq)}
 
@@ -915,7 +1117,7 @@ class ProcessRecord:
                 used += len(data); next_seq = seq
                 if used >= maximum: break
             status = self.status()
-            output_closed = self.returncode is not None and self.readers == 0
+            output_closed = self.returncode is not None and self.readers == 0 and next_seq >= self.seq
             return {"chunks": selected, "earliestSeq": str(self.earliest), "nextSeq": str(next_seq),
                     "truncated": after < self.earliest - 1, "exited": output_closed, "closed": output_closed,
                     "exitCode": status["exitCode"], "signal": status["signal"]}
@@ -924,7 +1126,7 @@ class ProcessRecord:
         try: data = base64.b64decode(p.get("data", ""), validate=True)
         except Exception as exc: raise RpcError("E_INVALID_PARAMS", "data is not valid base64") from exc
         with self.lock:
-            if self.child.poll() is not None: raise RpcError("E_PROCESS_EXITED", "process has exited")
+            if self.returncode is not None: raise RpcError("E_PROCESS_EXITED", "process has exited")
             try:
                 if self.tty:
                     assert self.master is not None; target_fd = self.master
@@ -932,10 +1134,16 @@ class ProcessRecord:
                     if self.stdin is None: raise RpcError("E_STDIN_CLOSED", "stdin is closed")
                     target_fd = self.stdin.fileno()
                 view = memoryview(data); written = 0
-                while view:
-                    count = os.write(target_fd, view)
-                    if count <= 0: raise RpcError("E_STDIN_CLOSED", "stdin write made no progress")
-                    written += count; view = view[count:]
+                selector = selectors.DefaultSelector(); selector.register(target_fd, selectors.EVENT_WRITE)
+                try:
+                    while view:
+                        if self.write_cancelled.is_set(): raise RpcError("E_STDIN_CLOSED", "stdin write cancelled by process cleanup")
+                        if not selector.select(0.05): continue
+                        try: count = os.write(target_fd, view[:65536])
+                        except BlockingIOError: continue
+                        if count <= 0: raise RpcError("E_STDIN_CLOSED", "stdin write made no progress")
+                        written += count; view = view[count:]
+                finally: selector.close()
                 if p.get("eof", False):
                     if self.tty: raise RpcError("E_NOT_SUPPORTED", "PTY stdin cannot be half-closed")
                     assert self.stdin is not None; self.stdin.close(); self.stdin = None
@@ -952,78 +1160,61 @@ class ProcessRecord:
 
     def inspect_foreground(self) -> Dict[str, Any]:
         if self.master is None: raise RpcError("E_NOT_PTY", "process has no PTY")
-        try: pgid = os.tcgetpgrp(self.master)
-        except OSError as exc: raise fail_os(exc)
-        return {"pgid": pgid, "verified": True}
+        return self.control.call("foreground")
 
     def send_signal(self, p: Dict[str, Any]) -> Dict[str, Any]:
-        name = p.get("signal", "SIGTERM")
-        allowed = {x: getattr(signalmod, x) for x in ("SIGINT", "SIGTERM", "SIGHUP", "SIGKILL", "SIGQUIT", "SIGTSTP") if hasattr(signalmod, x)}
-        if name not in allowed: raise RpcError("E_INVALID_PARAMS", "unsupported signal")
-        target = p.get("target", "group"); pgid: Optional[int] = None
-        try:
-            if target == "foreground": pgid = self.inspect_foreground()["pgid"]; os.killpg(pgid, allowed[name])
-            elif target == "group": pgid = self.pgid; os.killpg(pgid, allowed[name])
-            elif target == "process": os.kill(self.child.pid, allowed[name])
-            else: raise RpcError("E_INVALID_PARAMS", "invalid signal target")
-        except ProcessLookupError: return {"delivered": False, "targetPgid": pgid, "verified": target == "foreground"}
-        except OSError as exc: raise fail_os(exc)
-        return {"delivered": True, "targetPgid": pgid, "verified": target == "foreground"}
+        return self.control.call("signal", {"signal": p.get("signal", "SIGTERM"), "target": p.get("target", "group")})
 
     def terminate(self, force: bool = False, grace_ms: int = 2000) -> Dict[str, Any]:
-        if self.child.poll() is not None: return {"running": False}
-        grace_ms = min(max(grace_ms, 0), 30000)
-        fallback_process_only = False
-        try: os.killpg(self.pgid, signalmod.SIGKILL if force else signalmod.SIGTERM)
-        except ProcessLookupError:
-            if self.child.poll() is not None: return {"running": False}
-            # PTY pty-exec may not have completed setsid immediately after
-            # Popen returns. The process is still live even though its future
-            # process group does not exist yet, so signal the child directly.
-            try: self.child.kill() if force else self.child.terminate()
-            except ProcessLookupError: return {"running": False}
-            except OSError as exc: raise fail_os(exc)
-            fallback_process_only = True
-        except PermissionError:
-            # Some host sandboxes deny killpg even for our own child while
-            # still allowing a direct signal to that child. Production Linux
-            # normally takes the group path; the fallback prevents cleanup
-            # from turning an aborted stdin writer into E_INTERNAL.
-            try: self.child.kill() if force else self.child.terminate()
-            except ProcessLookupError: return {"running": False}
-            except OSError as exc: raise fail_os(exc)
-            fallback_process_only = True
-        if not force:
-            def escalate() -> None:
-                if self.child.poll() is None:
-                    try:
-                        if fallback_process_only: self.child.kill()
-                        else: os.killpg(self.pgid, signalmod.SIGKILL)
-                    except OSError: pass
-            timer = threading.Timer(grace_ms / 1000, escalate); timer.daemon = True; timer.start()
-        return {"running": True, "graceMs": 0 if force else grace_ms,
-                "scope": "process" if fallback_process_only else "group"}
+        if self.released: return {"running": False}
+        self.write_cancelled.set()
+        return self.control.call("terminate", {"force": force, "graceMs": min(max(grace_ms, 0), 30000)})
 
     def release(self) -> Dict[str, Any]:
-        if self.released: return {"released": False}
-        # Kill first so a writer blocked in os.write wakes and releases the
-        # action lock. Closing descriptors concurrently with that writer would
-        # race fileno()/os.write and can surface as an internal ValueError.
-        self.terminate(True)
-        with self.lock:
+        # Serialize releases separately from potentially blocked stdin writes.
+        with self.release_lock:
             if self.released: return {"released": False}
-            self.released = True; master, stdin = self.master, self.stdin
-            self.master, self.stdin = None, None
-            if master is not None:
-                try: os.close(master)
-                except OSError: pass
-            if stdin is not None:
-                try: stdin.close()
-                except (OSError, ValueError): pass
-            try: self.child.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                try: self.child.kill(); self.child.wait(timeout=1)
-                except (OSError, subprocess.TimeoutExpired): pass
+            self.write_cancelled.set()
+            errors = []
+            try:
+                if not self.supervisor_closed:
+                    try: self.control.call("release", timeout=4)
+                    except Exception as exc: errors.append(exc)
+                # EOF asks a live supervisor to clean up even if its response
+                # was lost. If it crashed, the guardian sees its own EOF.
+                self.control.close()
+                try: self.child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Never guess an unowned PGID. Killing this exact owned
+                    # supervisor triggers guardian EOF; killing bwrap tears
+                    # down its private PID namespace.
+                    self.child.kill()
+                    try: self.child.wait(timeout=2)
+                    except subprocess.TimeoutExpired: errors.append(RpcError("E_CLEANUP_TIMEOUT", "process supervisor did not exit after release"))
+            finally:
+                self.control.close()
+                self.io_stopping.set()
+                for reader in self.reader_threads: reader.join(0.5)
+                readers_stopped = all(not reader.is_alive() for reader in self.reader_threads)
+                if not readers_stopped: errors.append(RpcError("E_CLEANUP_TIMEOUT", "process output readers did not stop"))
+                acquired = self.lock.acquire(timeout=2)
+                if not acquired: errors.append(RpcError("E_CLEANUP_TIMEOUT", "remote stdin writer did not stop after cancellation"))
+                try:
+                    self.released = True; master, stdin = self.master, self.stdin
+                    self.master, self.stdin = None, None
+                    if master is not None and readers_stopped:
+                        try: os.close(master)
+                        except OSError: pass
+                    if stdin is not None:
+                        try: stdin.close()
+                        except (OSError, ValueError): pass
+                    for stream in (self.stdout_stream, self.stderr_stream) if readers_stopped else ():
+                        if stream is not None:
+                            try: stream.close()
+                            except (OSError, ValueError): pass
+                finally:
+                    if acquired: self.lock.release()
+            if errors: raise RpcError("E_CLEANUP_FAILED", str(len(errors)) + " process cleanup operations were not confirmed")
             return {"released": True}
 
 
@@ -1080,7 +1271,9 @@ class DaemonState:
                 if not server.attached and server.detached_at is not None and (now-server.detached_at)*1000 >= server.retention_ms:
                     expired.append((key, server))
             for key, _ in expired: del self.sessions[key]
-        for _, server in expired: server.close()
+        for _, server in expired:
+            try: server.close()
+            except RpcError: print("dsh remote helper: expired session cleanup was incomplete", file=sys.stderr)
         if not self.sessions and now-self.last_activity >= self.idle_timeout: self.shutdown.set()
 
 
@@ -1175,7 +1368,12 @@ def serve_protocol(input_stream: Any, output: Any, state: Optional[DaemonState] 
                     else: send({"dshRpc": PROTOCOL, "id": rid, "result": {"shuttingDown": True}}); state.shutdown.set()
                 else:
                     if state is None: send({"dshRpc": PROTOCOL, "id": rid, "error": {"code": "E_UNSUPPORTED", "message": "direct session cannot be resumed", "retryable": False}})
-                    else: state.remove(server); server = None; send({"dshRpc": PROTOCOL, "id": rid, "result": {"closed": True}})
+                    else:
+                        try: state.remove(server)
+                        except RpcError as exc:
+                            send({"dshRpc": PROTOCOL, "id": rid, "error": {"code": exc.code, "message": exc.message, "retryable": False}})
+                        else: send({"dshRpc": PROTOCOL, "id": rid, "result": {"closed": True}})
+                        finally: server = None
                 continue
             with workers_lock:
                 overloaded = len(workers) >= MAX_OUTSTANDING
@@ -1307,8 +1505,225 @@ def run_daemon(path: str, idle_timeout: float) -> int:
         try: os.unlink(path)
         except FileNotFoundError: pass
         with state.lock: sessions = list(state.sessions.values()); state.sessions.clear()
-        for server in sessions: server.close()
+        for server in sessions:
+            try: server.close()
+            except RpcError: print("dsh remote helper: shutdown session cleanup was incomplete", file=sys.stderr)
     return 0
+
+
+def close_fds_except(keep: Any) -> None:
+    """Called only in fresh single-threaded launchers and their children."""
+    try: descriptors = [int(name) for name in os.listdir("/dev/fd") if name.isdigit()]
+    except OSError: descriptors = range(65536)
+    for fd in descriptors:
+        if fd not in keep:
+            try: os.close(fd)
+            except OSError: pass
+
+
+def returncode_for(status: int) -> int:
+    return os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
+
+
+class ProcessSupervisor:
+    """Single-threaded, namespace-local owner of one pinned process group.
+
+    The guardian remains live or unreaped until the FINAL group signal. Unlike
+    checking killpg(pgid, 0), this prevents reuse rather than racing reuse.
+    """
+    def __init__(self, control_fd: int, tty_master_fd: Optional[int]):
+        self.control = socket.socket(fileno=control_fd); self.tty = tty_master_fd is not None
+        self.tty_master_fd = tty_master_fd
+        self.pid = 0; self.guardian = 0; self.guard_write = -1; self.code: Optional[int] = None
+        self.group_owned = False; self.generation = 0; self.deadline: Optional[Tuple[int, float]] = None
+        self.command_reaped = False; self.guardian_reaped = False
+
+    def send(self, message: Dict[str, Any]) -> None:
+        self.control.sendall(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+
+    def start(self, argv: List[str]) -> None:
+        os.setsid()
+        for name in ("SIGHUP", "SIGTTIN", "SIGTTOU"): signalmod.signal(getattr(signalmod, name), signalmod.SIG_IGN)
+        if self.tty: fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        gate_read, gate_write = os.pipe(); error_read, error_write = os.pipe()
+        self.pid = os.fork()
+        if self.pid == 0:
+            try:
+                os.setpgid(0, 0)
+                close_fds_except({0, 1, 2, gate_read, error_write})
+                if os.read(gate_read, 1) != b"1": os._exit(127)
+                os.close(gate_read)
+                for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGPIPE"):
+                    signalmod.signal(getattr(signalmod, name), signalmod.SIG_DFL)
+                os.execvpe(argv[0], argv, os.environ)
+            except OSError as exc:
+                os.write(error_write, json.dumps({"errno": exc.errno, "message": exc.strerror}).encode())
+            finally: os._exit(127)
+        os.close(gate_read); os.close(error_write)
+        os.setpgid(self.pid, self.pid); self.group_owned = True
+        guard_read, self.guard_write = os.pipe(); ready_read, ready_write = os.pipe()
+        self.guardian = os.fork()
+        if self.guardian == 0:
+            try:
+                os.setpgid(0, self.pid)
+                for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU"):
+                    signalmod.signal(getattr(signalmod, name), signalmod.SIG_IGN)
+                close_fds_except({guard_read, ready_write}); os.write(ready_write, b"1"); os.close(ready_write)
+                # If the supervisor crashes, its pipe closes. The still-live
+                # guardian can safely kill its own group without a stale ID.
+                while os.read(guard_read, 1): pass
+                os.killpg(os.getpgrp(), signalmod.SIGKILL)
+            except OSError: pass
+            finally: os._exit(0)
+        os.close(guard_read); os.close(ready_write)
+        if os.read(ready_read, 1) != b"1": raise RpcError("E_SUPERVISOR_START", "process group guardian did not start")
+        os.close(ready_read)
+        if self.tty: os.tcsetpgrp(0, self.pid)
+        os.write(gate_write, b"1"); os.close(gate_write)
+        error = os.read(error_read, 8192); os.close(error_read)
+        if error:
+            detail = json.loads(error); raise fail_os(OSError(detail.get("errno", errno.EIO), detail.get("message", "exec failed")))
+        # Only the command retains the output FDs. A completed command can
+        # reach EOF while the ownership guardian remains alive for cleanup.
+        close_fds_except({self.control.fileno(), self.guard_write, self.tty_master_fd})
+        self.send({"event": "ready", "pid": self.pid, "pgid": self.pid})
+
+    def collect_command(self) -> None:
+        if self.command_reaped or self.pid <= 0: return
+        pid, status = os.waitpid(self.pid, os.WNOHANG)
+        if pid:
+            self.command_reaped = True; self.code = returncode_for(status)
+            self.send({"event": "exit", "returncode": self.code})
+
+    def foreground(self) -> int:
+        if not self.tty: raise RpcError("E_NOT_PTY", "process has no PTY")
+        assert self.tty_master_fd is not None
+        pgid = os.tcgetpgrp(self.tty_master_fd)
+        if pgid <= 1: raise RpcError("E_PROCESS_EXITED", "terminal foreground group is unavailable")
+        return pgid
+
+    def signal_group(self, sig: int) -> bool:
+        if not self.group_owned: return False
+        # Job-control foreground groups are resolved from this private TTY at
+        # delivery time, never stored in delayed callbacks or used by the host.
+        if self.tty:
+            try:
+                foreground = self.foreground()
+                if foreground != self.pid: os.killpg(foreground, sig)
+            except OSError as exc:
+                if exc.errno not in (errno.ESRCH, errno.ENXIO, errno.EIO): raise
+            except RpcError: pass
+        os.killpg(self.pid, sig)
+        if sig == signalmod.SIGKILL:
+            self.group_owned = False; self.generation += 1; self.deadline = None
+        return True
+
+    def finish(self) -> None:
+        self.generation += 1; self.deadline = None
+        self.signal_group(signalmod.SIGKILL)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            self.collect_command()
+            if self.guardian and not self.guardian_reaped:
+                got, _ = os.waitpid(self.guardian, os.WNOHANG)
+                self.guardian_reaped = bool(got)
+            if self.command_reaped and (not self.guardian or self.guardian_reaped): return
+            time.sleep(0.01)
+        raise RpcError("E_CLEANUP_TIMEOUT", "supervised process group did not finish after SIGKILL")
+
+    def dispatch(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if method == "foreground": return {"pgid": self.foreground(), "verified": True}
+        if method == "terminate":
+            grace = min(max(int(params.get("graceMs", 2000)), 0), 30000)
+            force = bool(params.get("force", False)); self.generation += 1; self.deadline = None
+            delivered = self.signal_group(signalmod.SIGKILL if force else signalmod.SIGTERM)
+            if delivered and not force: self.deadline = (self.generation, time.monotonic() + grace / 1000)
+            return {"running": delivered, "graceMs": 0 if force else grace, "scope": "group"}
+        if method == "release": self.finish(); return {"released": True}
+        if method == "signal":
+            name, target = params.get("signal", "SIGTERM"), params.get("target", "group")
+            allowed = {name: getattr(signalmod, name) for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGKILL", "SIGQUIT", "SIGTSTP")}
+            if name not in allowed: raise RpcError("E_INVALID_PARAMS", "unsupported signal")
+            pgid = None; delivered = False
+            try:
+                if target == "group": pgid = self.pid; delivered = self.signal_group(allowed[name])
+                elif target == "foreground":
+                    if not self.group_owned: return {"delivered": False, "targetPgid": None, "verified": True}
+                    pgid = self.foreground(); os.killpg(pgid, allowed[name]); delivered = True
+                    if pgid == self.pid and allowed[name] == signalmod.SIGKILL:
+                        self.group_owned = False; self.generation += 1; self.deadline = None
+                elif target == "process":
+                    if not self.command_reaped: os.kill(self.pid, allowed[name]); delivered = True
+                else: raise RpcError("E_INVALID_PARAMS", "invalid signal target")
+            except ProcessLookupError: pass
+            return {"delivered": delivered, "targetPgid": pgid, "verified": target == "foreground"}
+        raise RpcError("E_METHOD_NOT_FOUND", "unknown process supervisor method")
+
+    def run(self) -> None:
+        selector = selectors.DefaultSelector(); selector.register(self.control, selectors.EVENT_READ)
+        buffered = b""
+        try:
+            while True:
+                self.collect_command()
+                if self.deadline is not None and self.deadline[0] == self.generation and time.monotonic() >= self.deadline[1]:
+                    self.signal_group(signalmod.SIGKILL)
+                if not selector.select(0.02): continue
+                chunk = self.control.recv(65536)
+                if not chunk: return
+                buffered += chunk
+                if len(buffered) > 65536: raise RpcError("E_SUPERVISOR_PROTOCOL", "supervisor control frame too large")
+                while b"\n" in buffered:
+                    line, buffered = buffered.split(b"\n", 1); request = json.loads(line)
+                    try:
+                        result = self.dispatch(request["method"], request.get("params", {}))
+                        self.send({"id": request["id"], "result": result})
+                        if request["method"] == "release": return
+                    except (RpcError, OSError) as exc:
+                        error = fail_os(exc) if isinstance(exc, OSError) else exc
+                        self.send({"id": request["id"], "error": {"code": error.code, "message": error.message}})
+        finally: selector.close()
+
+
+def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Optional[str], argv: List[str]) -> int:
+    if argv and argv[0] == "--": argv = argv[1:]
+    if stdio_fds is not None:
+        for target, source in enumerate(int(value) for value in stdio_fds.split(",")):
+            os.dup2(source, target)
+        for fd in {int(value) for value in stdio_fds.split(",")}: os.close(fd)
+    supervisor = ProcessSupervisor(control_fd, tty_master_fd)
+    try:
+        if not argv: raise RpcError("E_INVALID_PARAMS", "process argv is empty")
+        supervisor.start(argv); supervisor.run(); return 0
+    except (OSError, RpcError) as exc:
+        error = fail_os(exc) if isinstance(exc, OSError) else exc
+        try: supervisor.send({"event": "error", "code": error.code, "message": error.message})
+        except OSError: pass
+        return 1
+    finally:
+        try: supervisor.finish()
+        except (OSError, RpcError): pass
+        if supervisor.guard_write >= 0:
+            try: os.close(supervisor.guard_write)
+            except OSError: pass
+        supervisor.control.close()
+
+
+def run_sandbox_exec(control_fd: int, tty_master_fd: Optional[int], stdio_fds: str, argv: List[str]) -> int:
+    """Pass task I/O as extra FDs; bwrap's reaper retains only its DEVNULL stdio."""
+    if argv and argv[0] == "--": argv = argv[1:]
+    # Move bind descriptors before reserving 3/4 for control and the PTY master.
+    mapping = [(control_fd, 3)] + ([] if tty_master_fd is None else [(tty_master_fd, 4)])
+    mapping += [(int(fd), index + 5) for index, fd in enumerate(stdio_fds.split(","))]
+    reserved = {target for _, target in mapping}
+    for index, value in enumerate(argv[:argv.index("--")]):
+        if value == "--bind-fd" and int(argv[index + 1]) in reserved:
+            replacement = fcntl.fcntl(int(argv[index + 1]), fcntl.F_DUPFD, 10); os.set_inheritable(replacement, True)
+            argv[index + 1] = str(replacement)
+    copies = [(fcntl.fcntl(source, fcntl.F_DUPFD, 10), target) for source, target in mapping]
+    for copied, target in copies:
+        os.dup2(copied, target); os.close(copied); os.set_inheritable(target, True)
+    os.execvpe(argv[0], argv, os.environ)
+    return 127
 
 
 def run_pty_exec(slave_fd: int, argv: List[str]) -> int:
@@ -1330,11 +1745,15 @@ def main() -> int:
     connect = sub.add_parser("connect"); connect.add_argument("--stdio", action="store_true"); connect.add_argument("--socket"); connect.add_argument("--direct", action="store_true")
     daemon = sub.add_parser("daemon"); daemon.add_argument("--socket"); daemon.add_argument("--idle-timeout", type=float, default=600)
     pty_exec = sub.add_parser("pty-exec"); pty_exec.add_argument("--slave-fd", type=int, required=True); pty_exec.add_argument("argv", nargs=argparse.REMAINDER)
+    supervised = sub.add_parser("supervise-exec"); supervised.add_argument("--control-fd", type=int, required=True); supervised.add_argument("--tty-master-fd", type=int); supervised.add_argument("--stdio-fds"); supervised.add_argument("argv", nargs=argparse.REMAINDER)
+    sandbox_exec = sub.add_parser("sandbox-exec"); sandbox_exec.add_argument("--control-fd", type=int, required=True); sandbox_exec.add_argument("--tty-master-fd", type=int); sandbox_exec.add_argument("--stdio-fds", required=True); sandbox_exec.add_argument("argv", nargs=argparse.REMAINDER)
     version = sub.add_parser("version"); version.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "version":
         print(json.dumps({"version": VERSION, "buildId": build_id(), "protocol": {"min": 1, "max": 1}}) if args.json else VERSION); return 0
     if args.command == "pty-exec": return run_pty_exec(args.slave_fd, args.argv)
+    if args.command == "supervise-exec": return run_supervised(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv)
+    if args.command == "sandbox-exec": return run_sandbox_exec(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv)
     if args.command == "daemon": return run_daemon(runtime_socket(args.socket), max(30, args.idle_timeout))
     if not args.stdio: parser.error("connect requires --stdio")
     if args.direct: serve_protocol(sys.stdin.buffer, sys.stdout.buffer); return 0

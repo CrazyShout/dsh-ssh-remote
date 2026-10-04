@@ -82,6 +82,208 @@ afterEach(async () => {
 });
 
 describe('Python remote helper v1', () => {
+  it('drains every retained output page before reporting process EOF', async () => {
+    const rpc = new RpcClient(); clients.push(rpc); await rpc.hello;
+    await rpc.request('initialize', { clientId: 'output-drain' });
+    await rpc.request('workspace/open', { path: tmpdir(), access: 'danger-full-access',
+      workspaceId: 'drain-ws', operationId: 'drain-ws' });
+    for (const overflow of [false, true]) {
+      const id = overflow ? 'overflow' : 'multi-page';
+      const size = overflow ? 3 * 1024 * 1024 : 512 * 1024;
+      await rpc.request('process/start', { workspaceId: 'drain-ws', processId: id, operationId: id,
+        stdin: 'closed', argv: ['python3', '-c',
+          `import sys; sys.stdout.write('A'*${size}+'END_STDOUT'); sys.stdout.flush(); sys.stderr.write('END_STDERR')`],
+      });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (!(await rpc.request('process/status', { processId: id })).running) break;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+      let cursor = '0'; let stdout = ''; let stderr = ''; let truncated = false; let pages = 0;
+      for (;;) {
+        const read = await rpc.request('process/read', { processId: id, afterSeq: cursor, maxBytes: 64 * 1024, waitMs: 100 });
+        pages += 1; cursor = read.nextSeq; truncated ||= read.truncated;
+        for (const chunk of read.chunks) {
+          if (chunk.stream === 'stderr') stderr += Buffer.from(chunk.data, 'base64').toString();
+          else stdout += Buffer.from(chunk.data, 'base64').toString();
+        }
+        if (pages === 1) expect(read.exited).toBe(false);
+        if (read.exited) break;
+        expect(pages).toBeLessThan(100);
+      }
+      expect(stdout.endsWith('END_STDOUT')).toBe(true);
+      expect(stderr).toBe('END_STDERR');
+      expect(truncated).toBe(overflow);
+      if (!overflow) expect(stdout).toBe('A'.repeat(size) + 'END_STDOUT');
+      else expect(Buffer.byteLength(stdout + stderr)).toBeLessThanOrEqual(2 * 1024 * 1024);
+      await rpc.request('process/release', { processId: id, operationId: `release-${id}` });
+    }
+  }, integrationTimeout);
+
+  it('pins the task group after leader exit and escalates TERM for surviving descendants', () => {
+    const program = String.raw`
+import importlib.util,json,time
+spec=importlib.util.spec_from_file_location('helper',__import__('sys').argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+results=[]
+for tty in (None,{'rows':24,'cols':80}):
+ r=m.ProcessRecord('descendant',['/bin/sh','-c',"trap '' TERM; sleep 20 & printf child-started; exit 7"],'/tmp',{},tty,'pipe')
+ try:
+  deadline=time.monotonic()+3
+  while r.returncode is None and time.monotonic()<deadline:time.sleep(.01)
+  assert r.returncode==7,r.status()
+  assert not r.read({'afterSeq':'0'})['exited']
+  r.terminate(False,100)
+  deadline=time.monotonic()+3
+  while time.monotonic()<deadline:
+   data=r.read({'afterSeq':'0','waitMs':100})
+   if data['exited']:break
+  assert data['exited'],data
+  assert data['exitCode']==7,data
+  started=time.monotonic();r.release();elapsed=time.monotonic()-started
+  assert elapsed<3,elapsed
+  assert r.release()=={'released':False}
+  results.append({'tty':tty is not None,'exitCode':data['exitCode'],'readers':r.readers})
+ finally:
+  if not r.released:r.release()
+print(json.dumps(results))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 15_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      { tty: false, exitCode: 7, readers: 0 }, { tty: true, exitCode: 7, readers: 0 },
+    ]);
+  }, integrationTimeout);
+
+  it('keeps sandbox reaper stdio separate from task EOF with the inherited-FD bridge', () => {
+    const program = String.raw`
+import importlib.util,json,time,tempfile,os,sys
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+# Simulate bwrap's relevant lifecycle: pass extra FDs to the child, close our
+# copies, but retain standard descriptors until the supervised child exits.
+# This is a pipe-lifetime regression, not a substitute for Linux confinement.
+wrapper='''import os,sys,subprocess
+assert '--preserve-fds' not in sys.argv
+fds=[]
+for value in os.listdir('/dev/fd'):
+ try:
+  fd=int(value);os.fstat(fd)
+  if fd>2:fds.append(fd)
+ except (OSError,ValueError):pass
+child=subprocess.Popen(sys.argv[sys.argv.index('--')+1:],pass_fds=tuple(fds),close_fds=True)
+for fd in fds:
+ try:os.close(fd)
+ except OSError:pass
+raise SystemExit(child.wait())
+'''
+results=[]
+with tempfile.TemporaryDirectory(prefix='dsh-reaper-fixture-') as root:
+ fixture=os.path.join(root,'reaper.py')
+ with open(fixture,'w') as target:target.write(wrapper)
+ for tty in (None,{'rows':24,'cols':80}):
+  r=m.ProcessRecord('sandbox-fds',[sys.executable,fixture,'--','/bin/sh','-c','printf bridge-ok'],root,{},tty,'pipe',inside_sandbox=True)
+  try:
+   deadline=time.monotonic()+3
+   while time.monotonic()<deadline:
+    read=r.read({'afterSeq':'0','waitMs':100})
+    if read['exited']:break
+   assert read['exited'] and read['exitCode']==0,read
+   r.release();results.append({'tty':tty is not None,'eof':True})
+  finally:
+   if not r.released:r.release()
+print(json.dumps(results))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([{ tty: false, eof: true }, { tty: true, eof: true }]);
+  }, integrationTimeout);
+
+  it('bounds cleanup when an escaped child retains pipes and a stdin writer is blocked', () => {
+    const program = String.raw`
+import importlib.util,json,time,threading,base64,os,signal,sys
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+command="import os,time; p=os.fork(); print(p,flush=True) if p else None; os._exit(0) if p else None; os.setsid(); time.sleep(20)"
+r=m.ProcessRecord('escaped',[sys.executable,'-c',command],'/tmp',{},None,'pipe')
+escaped=None;writer=None;outcomes=[]
+try:
+ deadline=time.monotonic()+3;output=b''
+ while not output and time.monotonic()<deadline:
+  read=r.read({'afterSeq':'0','waitMs':100})
+  output=b''.join(base64.b64decode(c['data']) for c in read['chunks'])
+ escaped=int(output.strip())
+ # This child deliberately left the owned process group. It is not a cgroup
+ # kill target, but its pipe ownership must not hang helper cleanup.
+ def write():
+  try:r.write({'data':base64.b64encode(b'x'*(2*1024*1024)).decode()})
+  except m.RpcError as e:outcomes.append(e.code)
+ writer=threading.Thread(target=write);writer.start();time.sleep(.05)
+ started=time.monotonic();r.release();elapsed=time.monotonic()-started
+ writer.join(1)
+ assert not writer.is_alive()
+ assert elapsed<4,elapsed
+ assert r.readers==0,r.readers
+ print(json.dumps({'bounded':True,'readers':r.readers,'writerStopped':True}))
+finally:
+ if escaped:
+  try:os.kill(escaped,signal.SIGKILL)
+  except ProcessLookupError:pass
+ if not r.released:r.release()
+ if writer:writer.join(1)
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ bounded: true, readers: 0, writerStopped: true });
+  }, integrationTimeout);
+
+  it('invalidates delayed group signals and cleans every server resource after one cleanup fails', () => {
+    const program = String.raw`
+import importlib.util,json,socket,sys,time
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+left,right=socket.socketpair();s=m.ProcessSupervisor(left.detach(),None)
+s.pid=12345;s.group_owned=True;s.command_reaped=True
+signals=[];original=m.os.killpg;m.os.killpg=lambda pid,sig:signals.append((pid,sig))
+try:
+ s.dispatch('terminate',{'graceMs':1000});generation=s.generation
+ s.finish();s.finish();s.dispatch('terminate',{'graceMs':0})
+ assert s.deadline is None and s.generation>generation
+ assert len(signals)==2,signals
+finally:m.os.killpg=original;s.control.close();right.close()
+seen=[]
+class Resource:
+ def __init__(self,name,fail=False):self.name=name;self.fail=fail
+ def release(self):
+  seen.append(self.name)
+  if self.fail:raise RuntimeError('fixture cleanup failure')
+ def close(self):self.release()
+server=m.Server();server.processes={'bad':Resource('bad',True),'good':Resource('good')};server.workspaces={'w':Resource('workspace')}
+try:server.close();raise AssertionError('expected aggregate cleanup failure')
+except m.RpcError as e:assert e.code=='E_CLEANUP_FAILED'
+assert seen==['bad','good','workspace'],seen
+left,right=socket.socketpair();channel=m.SupervisorChannel(left,lambda e:None)
+channel.write_lock.acquire();started=time.monotonic()
+try:
+ try:channel.call('signal',{},timeout=.05);raise AssertionError('expected bounded lock timeout')
+ except m.RpcError as e:assert e.code=='E_SUPERVISOR_TIMEOUT'
+ assert time.monotonic()-started<.5
+finally:channel.write_lock.release();channel.close();right.close()
+print(json.dumps({'signals':len(signals),'resources':seen,'boundedControl':True}))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 5_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ signals: 2, resources: ['bad', 'good', 'workspace'], boundedControl: true });
+  });
+
   it('returns connector capacity even when disconnected socket streams fail during cleanup', () => {
     const program = String.raw`
 import importlib.util,io,json,os,socket,sys,tempfile

@@ -228,6 +228,7 @@ class RemoteShellProcess implements ShellExecution {
     const ids: ShellAllocationIds = { workspaceId: randomUUID(), processId: randomUUID() };
     let rolledBack = false;
     let terminationRequested = false;
+    let cancellationDrainDeadline: number | undefined;
     try {
       this.scope = await openProcessScope(
         uri,
@@ -248,11 +249,15 @@ class RemoteShellProcess implements ShellExecution {
         await writeAndCloseStdin(this.scope.client, this.process.processId, spec.stdin, deadline.signal);
       }
       for (;;) {
-        if (!terminationRequested && deadline.signal.aborted) {
+        if (!terminationRequested && (deadline.signal.aborted || this.killed)) {
           terminationRequested = true;
           this.timedOut = deadline.signal.reason instanceof RemoteShellTimeoutReason;
-          this.aborted = !this.timedOut;
+          this.aborted = deadline.signal.aborted && !this.timedOut;
           await terminateBestEffort(this.scope.client, this.process.processId);
+          cancellationDrainDeadline = Date.now() + 5_000;
+        }
+        if (cancellationDrainDeadline !== undefined && Date.now() >= cancellationDrainDeadline) {
+          throw new Error('remote process output did not close within 5s after cancellation');
         }
         const read = await this.scope.client.call<HelperProcessRead>('process/read', {
           processId: this.process.processId,

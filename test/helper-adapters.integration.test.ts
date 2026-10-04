@@ -335,6 +335,76 @@ describe('real TypeScript ↔ Python helper adapters', () => {
     }
   });
 
+  it('retains the correct final output after a large command exits before the first read', async () => {
+    const fixture = await remoteFixture();
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const originalCall = fixture.helper.clientValue.call.bind(fixture.helper.clientValue);
+    const firstReads = new Set<string>();
+    fixture.helper.clientValue.call = async (method, params = {}, options = {}) => {
+      if (method === 'process/read' && !firstReads.has(String(params.processId))) {
+        firstReads.add(String(params.processId));
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const status = await originalCall<{ running: boolean }>('process/status', { processId: params.processId });
+          if (!status.running) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return originalCall(method, params, options);
+    };
+    const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor);
+    try {
+      for (const cap of [600_000, 64 * 1024]) {
+        const execution = await shell.execute({
+          command: "python3 -c \"import sys; sys.stdout.write('x'*524288+'FINAL_STDOUT'); sys.stderr.write('e'*70000+'FINAL_STDERR')\"",
+          workdir: '/anchor', timeoutMs: 10_000, stdoutMaxBytes: cap,
+          sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+        } as never);
+        const result = await execution.result();
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout.text.endsWith('FINAL_STDOUT')).toBe(true);
+        expect(result.stdout.truncated).toBe(cap < 524288);
+        if (cap > 524288) expect(result.stdout.text).toBe('x'.repeat(524288) + 'FINAL_STDOUT');
+        else expect(Buffer.byteLength(result.stdout.text)).toBe(cap);
+        expect(result.stderr.text.endsWith('FINAL_STDERR')).toBe(true);
+        expect(result.stderr.truncated).toBe(true);
+      }
+    } finally { restore(); }
+  }, 15_000);
+
+  it('bounds cancellation when a deliberately detached child keeps stdout open', async () => {
+    const fixture = await remoteFixture();
+    const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };
+    const restore = installRemoteShellRouter(shell as never, fixture.helper, fixture.resolveAnchor);
+    let escaped: number | undefined;
+    try {
+      const script = 'import os,time; p=os.fork(); print(p,flush=True) if p else None; os._exit(0) if p else None; os.setsid(); time.sleep(20)';
+      const started = Date.now();
+      const execution = await shell.execute({
+        command: `python3 -c ${JSON.stringify(script)}`, workdir: '/anchor', timeoutMs: 300,
+        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+      } as never);
+      // Capture the known test child PID early so cleanup also runs if the
+      // bounded-completion assertion fails.
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const match = execution.observed.stdout.readFrom(0).text.match(/^\d+/u);
+        if (match) { escaped = Number(match[0]); break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const result = await execution.result();
+      expect(result.timedOut).toBe(true);
+      expect(escaped).toBeGreaterThan(1);
+      expect(Date.now() - started).toBeLessThan(9_000);
+    } finally {
+      if (escaped !== undefined) {
+        try { process.kill(escaped, 'SIGKILL'); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+      }
+      restore();
+    }
+  }, 15_000);
+
   it('reports infrastructure failures instead of a successful empty command result', async () => {
     const failure = new Error('fixture helper unavailable');
     const shell = { execute: vi.fn(async () => null as unknown as ShellExecution) };

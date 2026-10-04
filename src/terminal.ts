@@ -626,7 +626,9 @@ export class RemoteHelperTerminalBackendSession implements TerminalBackendSessio
   private async pumpOutput(): Promise<void> {
     try {
       let consecutiveFailures = 0;
-      while (!this.pumpController.signal.aborted && this.statusValue.kind === 'running') {
+      // Even a process that exited before publication can have multiple
+      // unread output pages. Only the helper's drained EOF ends this pump.
+      while (!this.pumpController.signal.aborted) {
         let result: HelperProcessReadResult;
         try {
           result = await this.call<HelperProcessReadResult>(

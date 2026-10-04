@@ -1,6 +1,14 @@
 import { type RemoteHelperInstallerOptions } from './installer.js';
 import { type RemoteHelperClient } from './rpc-client.js';
 import type { HelperCapabilities, HelperLimits, ServerHello } from './protocol.js';
+export interface RemoteEnvironment {
+    search: {
+        available: boolean;
+        path?: string;
+        version?: string;
+        error?: string;
+    };
+}
 export type RemoteHelperConnectionState = 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
 export interface RemoteHelperStatus {
     alias: string;
@@ -15,6 +23,10 @@ export interface RemoteHelperStatus {
     lastConnectedAt?: number;
     lastHealthAt?: number;
     nextRetryAt?: number;
+    errorCode?: string;
+    retryable?: boolean;
+    hint?: string;
+    environment?: RemoteEnvironment;
 }
 export interface RemoteHelperDiagnostics extends RemoteHelperStatus {
     assetPath: string;
@@ -68,6 +80,10 @@ export declare class RemoteHelperManager {
     close(uriOrAlias: string): Promise<void>;
     dispose(): Promise<void>;
     private connect;
+    /** Explicit refresh rechecks dependencies without interrupting a live task. */
+    refreshEnvironment(uriOrAlias: string): Promise<void>;
+    private checkEnvironment;
+    private connectedState;
     private onClientClosed;
     private resumeAfterDisconnect;
     private scheduleReconnect;
