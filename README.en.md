@@ -7,7 +7,28 @@ hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
-## What 0.3.0 changes
+## Reliability and interaction improvements in 0.4.0
+
+- Cancelled or expired queued RPCs are never dispatched; already-sent mutations
+  retain their honest ambiguous-outcome semantics.
+- Shell/PTY readers drain retained output after process exit and report truncation.
+- A single-threaded supervisor and guardian pin the owned process group through
+  TERM-to-KILL cleanup, even after its shell exits. Control I/O, stdin, output
+  drainage and release have deadlines.
+- Permanent authentication, host-key, configuration, Python, protocol and unknown
+  errors stop automatic retries; transient network failures retain backoff.
+  Installing/connecting/reconnecting can be stopped, with independent per-host state.
+- The directory picker adds an editable path, Enter navigation, home and refresh.
+- Connection/refresh checks `rg` in the same login shell used by search. Missing
+  dependencies are reported, never auto-installed; refresh after installation
+  rechecks availability without interrupting active tasks.
+
+Cleanup covers the original owned process group and the current PTY foreground
+group. It does not promise full-account process-tree cleanup for services that
+detach with `setsid`/`setpgid`. Restricted execution additionally benefits from
+bubblewrap PID-namespace teardown. Unrelated processes are never killed by name.
+
+## Architecture
 
 The default data plane is now:
 
@@ -62,7 +83,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.3.3 is validated with DSH `0.2.0-rc.2`. Cancelled connection probes
+Version 0.4.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`

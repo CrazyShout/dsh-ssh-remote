@@ -129,3 +129,24 @@ Compatibility fallback 只允许由旧版 DSH host 设置或组合代码显式�
 - 真实 `hk-wsl` 的 install、browse、read/write、shell、PTY、断线恢复和 sandbox smoke；
 - UI 展示 helper version、capabilities、connected/degraded/error、Retry/Disconnect/Diagnostics；
 - 独立安全/生命周期审查无 P0/P1。
+
+## 0.4.0 生命周期与诊断收口
+
+RPC 调用在进入写队列和真正发送之间可能被取消。发送前必须再次检查 pending 身份；
+未发出的请求跳过而不是断开整条连接，已发出的 mutation 仍保持 ambiguous 标记。
+
+`process/read` 的 `exited` / `closed` 表示进程已退出、输出管道结束且本次 cursor 已排空
+所有保留输出；`process/status.running` 则仅表示真实命令是否仍存活。两者不可互相替代。
+超过环形或客户端容量的丢头必须报告 `truncated`，不假装完整。
+
+每个任务由独立单线程 supervisor 创建真实 command 和同组 guardian。guardian 保持
+原始 PGID 身份，直到最终组信号发送并取消所有旧 deadline 后才回收。任务退出码通过
+独立通道返回，不能把 supervisor 存活当成 command 存活。受限执行的监督与信号在
+bubblewrap namespace 内完成；daemon 不拿 namespace 内 PID 调用 host killpg。
+原组和 PTY 当前前台组以外主动脱离的服务不属于全权限模式的任意进程树保证。
+I/O、控制通道和释放均有限时，避免这种服务持有 pipe 时阻塞调用方。
+
+Host 状态只添加可选 `errorCode` / `retryable` / `hint` / `environment` 字段，旧响应仍
+可解析。自动重连仅用于明确瞬时故障；未知故障与永久配置问题需要手动重试。
+`environment/check` 检查和真实搜索相同的 `sh -lc` 环境；缺少 rg 不阻断文件浏览。
+环境检查按代次发布，单个远端失败不得让整个 SSH 配置列表失败。

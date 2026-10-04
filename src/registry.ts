@@ -79,6 +79,10 @@ export interface HelperHostStatus {
   sessionId: string;
   capabilities: Record<string, unknown>;
   error: string;
+  errorCode?: string;
+  retryable?: boolean;
+  hint?: string;
+  environment?: RemoteHelperStatus['environment'];
 }
 
 export type HelperHostStatuses = Record<string, HelperHostStatus>;
@@ -208,6 +212,9 @@ export class SshRemoteService extends TypertRemoteService {
   async config(): Promise<SshConfig> {
     const configPath = userSshConfigPath();
     const hosts = await discoverSshHosts(configPath);
+    // A transient failure of one remote host must not hide local directories
+    // or other configured hosts. Its manager snapshot carries the error.
+    await Promise.allSettled(hosts.map(host => this.helpers.refreshEnvironment(host.host)));
     return {
       configPath,
       configExists: existsSync(configPath),
@@ -485,6 +492,7 @@ export class SshRemoteService extends TypertRemoteService {
   @Remote('diagnostics')
   async diagnostics(alias: string): Promise<HelperHostDiagnostics> {
     this.assertHelperAlias(alias);
+    await this.helpers.refreshEnvironment(alias).catch(() => {});
     return helperDiagnosticsView(this.helpers.diagnostics(alias));
   }
 
@@ -649,6 +657,10 @@ function helperStatusView(status: RemoteHelperStatus): HelperHostStatus {
     sessionId: status.sessionId ?? '',
     capabilities: status.capabilities === undefined ? {} : { ...status.capabilities },
     error: status.lastError ?? '',
+    ...(status.errorCode === undefined ? {} : { errorCode: status.errorCode }),
+    ...(status.retryable === undefined ? {} : { retryable: status.retryable }),
+    ...(status.hint === undefined ? {} : { hint: status.hint }),
+    ...(status.environment === undefined ? {} : { environment: status.environment }),
   };
 }
 
@@ -664,4 +676,3 @@ function helperDiagnosticsView(diagnostics: RemoteHelperDiagnostics): HelperHost
     assetPath: diagnostics.assetPath,
   };
 }
-

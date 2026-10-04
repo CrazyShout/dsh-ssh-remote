@@ -6,6 +6,10 @@ interface HelperStatus {
   sessionId: string;
   capabilities: Record<string, unknown>;
   error: string;
+  errorCode?: string;
+  retryable?: boolean;
+  hint?: string;
+  environment?: { search: { available: boolean; path?: string; version?: string; error?: string } };
 }
 
 interface HelperDiagnostics extends HelperStatus {
@@ -80,6 +84,18 @@ const helperStatusSchema = {
       if (typeof row[key] !== 'string') throw new Error(`helper.${key} must be a string`);
     }
     object(row.capabilities, 'helper capabilities');
+    for (const key of ['errorCode', 'hint']) {
+      if (row[key] !== undefined && typeof row[key] !== 'string') throw new Error(`helper.${key} must be a string`);
+    }
+    if (row.retryable !== undefined && typeof row.retryable !== 'boolean') throw new Error('helper.retryable must be boolean');
+    if (row.environment !== undefined) {
+      const environment = object(row.environment, 'helper environment');
+      const search = object(environment.search, 'helper search');
+      if (typeof search.available !== 'boolean') throw new Error('search.available must be boolean');
+      for (const key of ['path', 'version', 'error']) {
+        if (search[key] !== undefined && typeof search[key] !== 'string') throw new Error(`search.${key} must be a string`);
+      }
+    }
     return value;
   },
 };

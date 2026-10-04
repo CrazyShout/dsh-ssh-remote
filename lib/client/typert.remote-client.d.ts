@@ -5,6 +5,17 @@ interface HelperStatus {
     sessionId: string;
     capabilities: Record<string, unknown>;
     error: string;
+    errorCode?: string;
+    retryable?: boolean;
+    hint?: string;
+    environment?: {
+        search: {
+            available: boolean;
+            path?: string;
+            version?: string;
+            error?: string;
+        };
+    };
 }
 interface HelperDiagnostics extends HelperStatus {
     alias: string;

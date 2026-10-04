@@ -70,6 +70,10 @@ export interface HelperHostStatus {
     sessionId: string;
     capabilities: Record<string, unknown>;
     error: string;
+    errorCode?: string;
+    retryable?: boolean;
+    hint?: string;
+    environment?: RemoteHelperStatus['environment'];
 }
 export type HelperHostStatuses = Record<string, HelperHostStatus>;
 export interface HelperHostDiagnostics extends HelperHostStatus {

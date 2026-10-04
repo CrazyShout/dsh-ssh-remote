@@ -41,6 +41,10 @@ interface HelperHostStatus {
   sessionId: string;
   capabilities: Record<string, unknown>;
   error: string;
+  errorCode?: string;
+  retryable?: boolean;
+  hint?: string;
+  environment?: { search: { available: boolean; path?: string; version?: string; error?: string } };
 }
 
 interface HelperHostDiagnostics extends HelperHostStatus {
@@ -88,6 +92,7 @@ type RemoteResult<T> =
   | { ok: false; error: { message: string } };
 
 const MUTATION_DEADLINE_MS = 30_000;
+const READ_DEADLINE_MS = 30_000;
 
 interface SshRemote {
   config(): Promise<RemoteResult<SshConfig>>;
@@ -210,6 +215,14 @@ async function asResult<T>(run: () => Promise<T>): Promise<RemoteResult<T>> {
 
 /** Bound non-cancellable host RPCs so a wedged transport cannot lock the dialog forever. */
 function withMutationDeadline<T>(operation: Promise<T>, label: string): Promise<T> {
+  return withDeadline(operation, `${label} 超过 ${MUTATION_DEADLINE_MS / 1000} 秒；结果未知，请刷新后核对。`, MUTATION_DEADLINE_MS);
+}
+
+function withReadDeadline<T>(operation: Promise<T>, label: string): Promise<T> {
+  return withDeadline(operation, `${label} 超过 ${READ_DEADLINE_MS / 1000} 秒，请重试。`, READ_DEADLINE_MS);
+}
+
+function withDeadline<T>(operation: Promise<T>, message: string, milliseconds: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (run: () => void): void => {
@@ -219,8 +232,8 @@ function withMutationDeadline<T>(operation: Promise<T>, label: string): Promise<
       run();
     };
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`${label} 超过 ${MUTATION_DEADLINE_MS / 1000} 秒；结果未知，请刷新后核对。`)));
-    }, MUTATION_DEADLINE_MS);
+      finish(() => reject(new Error(message)));
+    }, milliseconds);
     operation.then(
       value => finish(() => resolve(value)),
       reason => finish(() => reject(reason)),
@@ -232,7 +245,7 @@ function messageOf(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-function SshDirectoryFlow({
+export function SshDirectoryFlow({
   open,
   busy,
   onPicked,
@@ -253,6 +266,7 @@ function SshDirectoryFlow({
   const [mutating, setMutating] = useState(false);
   const [error, setError] = useState('');
   const [newFolder, setNewFolder] = useState('');
+  const [pathInput, setPathInput] = useState('');
   // Tri-state browse-capability probe result: null while unknown.
   const [localCanBrowse, setLocalCanBrowse] = useState<boolean | null>(null);
   // Windows drive anchors derived from one /mnt listing; null until probed.
@@ -261,6 +275,16 @@ function SshDirectoryFlow({
   const navigationEpoch = useRef(0);
   /** Owns the mutation busy flag even if navigation/open state changes. */
   const mutationEpoch = useRef(0);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      navigationEpoch.current += 1;
+      mutationEpoch.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -270,15 +294,16 @@ function SshDirectoryFlow({
     setListing(null);
     setError('');
     setNewFolder('');
+    setPathInput('');
     setDriveAnchors(null);
     setLocalCanBrowse(null);
     setLoading(true);
     void Promise.all([
-      ssh.config().catch(error => ({
+      withReadDeadline(ssh.config(), 'SSH 配置读取').catch(error => ({
         ok: false as const,
         error: { message: messageOf(error) },
       })),
-      probeLocalBrowse(() => listLocal()).then(
+      probeLocalBrowse(() => withReadDeadline(listLocal(), '本机浏览')).then(
         value => ({ ok: true as const, value }),
         error => ({ ok: false as const, error }),
       ),
@@ -304,7 +329,7 @@ function SshDirectoryFlow({
     if (!open || target?.kind !== 'local' || driveAnchors !== null) return;
     const epoch = navigationEpoch.current;
     let cancelled = false;
-    void asResult(() => listLocal('/mnt')).then((result) => {
+    void asResult(() => withReadDeadline(listLocal('/mnt'), '本机磁盘探测')).then((result) => {
       if (!cancelled && navigationEpoch.current === epoch) {
         setDriveAnchors(result.ok ? windowsDriveAnchors(result.value.entries) : []);
       }
@@ -321,7 +346,7 @@ function SshDirectoryFlow({
     { ok: true; value: RemoteDirectoryListing } | { ok: false; error: unknown }
   > {
     try {
-      return { ok: true, value: await listLocal(path) };
+      return { ok: true, value: await withReadDeadline(listLocal(path), '本机浏览') };
     } catch (error) {
       return { ok: false, error };
     }
@@ -334,7 +359,7 @@ function SshDirectoryFlow({
     if (targetNext.kind === 'ssh') {
       let result: RemoteResult<RemoteDirectoryListing>;
       try {
-        result = await ssh.browse(targetNext.alias, path ?? '');
+        result = await withReadDeadline(ssh.browse(targetNext.alias, path ?? ''), '远程目录浏览');
       } catch (reason) {
         if (navigationEpoch.current === epoch) {
           setError(messageOf(reason));
@@ -346,6 +371,7 @@ function SshDirectoryFlow({
       if (result.ok) {
         setTarget(targetNext);
         setListing(result.value);
+        setPathInput(result.value.path);
       } else {
         setError(result.error.message);
       }
@@ -357,6 +383,7 @@ function SshDirectoryFlow({
     if (outcome.ok) {
       setTarget(targetNext);
       setListing(outcome.value);
+      setPathInput(outcome.value.path);
     } else {
       setError(messageOf(outcome.error));
     }
@@ -386,6 +413,7 @@ function SshDirectoryFlow({
         setLoading(false);
         setTarget({ kind: 'local' });
         setListing(outcome.value);
+        setPathInput(outcome.value.path);
         return;
       }
       if (!isDirectoryPickerUnavailable(outcome.error)) {
@@ -459,7 +487,7 @@ function SshDirectoryFlow({
       if (navigationEpoch.current === epoch) onError(messageOf(reason));
     } finally {
       if (navigationEpoch.current === epoch) setLoading(false);
-      if (mutationEpoch.current === mutation) setMutating(false);
+      if (mounted.current && mutationEpoch.current === mutation) setMutating(false);
     }
   }
 
@@ -497,7 +525,7 @@ function SshDirectoryFlow({
         setLoading(false);
       }
     } finally {
-      if (mutationEpoch.current === mutation) setMutating(false);
+      if (mounted.current && mutationEpoch.current === mutation) setMutating(false);
     }
   }
 
@@ -566,6 +594,7 @@ function SshDirectoryFlow({
                     {host.helper.version ? ` · ${host.helper.version}` : ''}
                   </span>
                   {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
+                  <span style={dimmedText}>{searchSummary(host.helper)}</span>
                 </Button>
               ))}
               {!loading && config?.hosts.length === 0 && (
@@ -575,6 +604,23 @@ function SshDirectoryFlow({
           </div>
         ) : (
           <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Input
+                  aria-label="文件夹路径"
+                  value={pathInput}
+                  disabled={busy || mutating}
+                  onChange={event => setPathInput(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && pathInput.trim()) navigate(pathInput.trim());
+                  }}
+                  placeholder="输入完整文件夹路径"
+                />
+              </div>
+              <Button disabled={busy || mutating || !pathInput.trim()} onClick={() => navigate(pathInput.trim())}>前往</Button>
+              <Button disabled={busy || mutating} onClick={() => navigate(listing.path)}>刷新目录</Button>
+              <Button disabled={busy || mutating} onClick={() => navigate(listing.home)}>主目录</Button>
+            </div>
             <div style={chipRowStyle}>
               <Pill disabled={disabled} onClick={() => { setTarget(null); setListing(null); }}>
                 {target.kind === 'local' ? '本机' : '主机'}
@@ -587,7 +633,6 @@ function SshDirectoryFlow({
             </div>
             {target.kind === 'local' && (
               <div style={chipRowStyle}>
-                <Pill disabled={disabled} onClick={() => navigate(listing.home)}>主目录</Pill>
                 {(driveAnchors ?? []).map((anchor) => (
                   <Pill key={anchor.path} disabled={disabled} onClick={() => navigate(anchor.path)}>
                     {anchor.label}
@@ -615,7 +660,7 @@ function SshDirectoryFlow({
                 <div style={{ padding: 16, ...dimmedText }}>此目录没有子文件夹。</div>
               )}
             </div>
-            {listing.truncated && <div style={{ fontSize: 12, ...dimmedText }}>仅显示前 1000 个目录。</div>}
+            {listing.truncated && <div style={{ fontSize: 12, ...dimmedText }}>目录列表已截断（最多 1000 项）；未显示的文件夹可输入完整路径前往。</div>}
             <div style={{ display: 'flex', gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Input
@@ -640,6 +685,7 @@ function SshDirectoryFlow({
           </>
         )}
 
+        {loading && <div role="status" style={subtleText}>正在读取…</div>}
         {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{error}</div>}
       </div>
     </Modal>
@@ -707,40 +753,72 @@ function helperCapabilitySummary(capabilities: Record<string, unknown>): string 
   return names.length === 0 ? '等待握手' : names.join(' · ');
 }
 
-function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
+function searchSummary(helper: HelperHostStatus): string {
+  const search = helper.environment?.search;
+  if (search === undefined) return '远程搜索：未检查（连接或重试后检查 rg）';
+  return search.available
+    ? `远程搜索：可用${search.version ? ` · ${search.version}` : ''}`
+    : `远程搜索：不可用；请在远端安装 ripgrep，确保 rg 在登录环境 PATH 中，然后重试连接。${search.error ? ` ${search.error}` : ''}`;
+}
+
+type HostAction = 'connect' | 'disconnect' | 'retry' | 'diagnostics';
+
+export function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
   const [config, setConfig] = useState<SshConfig | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [busyAlias, setBusyAlias] = useState('');
+  const [actions, setActions] = useState<Record<string, HostAction | undefined>>({});
+  const [hostErrors, setHostErrors] = useState<Record<string, string | undefined>>({});
   const [details, setDetails] = useState<HelperHostDiagnostics | null>(null);
   const epoch = useRef(0);
+  const mounted = useRef(false);
+  const actionEpochs = useRef(new Map<string, number>());
+  // Any host action invalidates status/config snapshots already in flight.
+  const statusRevision = useRef(0);
+  const polling = useRef<Promise<RemoteResult<Record<string, HelperHostStatus>>> | null>(null);
 
   async function load(showLoading = true) {
     const request = ++epoch.current;
+    const revision = statusRevision.current;
     if (showLoading) setLoading(true);
     try {
-      const result = await ssh.config();
-      if (epoch.current !== request) return;
+      const result = await withReadDeadline(ssh.config(), 'SSH 配置读取');
+      if (!mounted.current || epoch.current !== request) return;
       if (result.ok) {
-        setConfig(result.value);
+        setConfig(current => revision === statusRevision.current || current === null ? result.value : {
+          ...result.value,
+          hosts: result.value.hosts.map(host => ({
+            ...host,
+            helper: current.hosts.find(previous => previous.alias === host.alias)?.helper ?? host.helper,
+          })),
+        });
         setError('');
       } else setError(result.error.message);
     } catch (reason) {
-      if (epoch.current === request) setError(messageOf(reason));
+      if (mounted.current && epoch.current === request) setError(messageOf(reason));
     } finally {
-      if (showLoading && epoch.current === request) setLoading(false);
+      if (mounted.current && showLoading && epoch.current === request) setLoading(false);
     }
   }
 
   async function loadStatuses() {
+    if (!mounted.current || polling.current !== null) return;
+    const lifecycle = epoch.current;
+    const revision = statusRevision.current;
+    const operation = Promise.resolve().then(() => ssh.statuses());
+    polling.current = operation;
+    // Do not accumulate unresolved RPCs when the UI-side timeout fires.
+    void operation.finally(() => {
+      if (polling.current === operation) polling.current = null;
+    }).catch(() => {});
     try {
-      const result = await ssh.statuses();
-      if (!result.ok) return;
+      const result = await withReadDeadline(operation, '连接状态读取');
+      if (!mounted.current || epoch.current !== lifecycle || statusRevision.current !== revision || !result.ok) return;
       setConfig(current => current === null ? current : {
         ...current,
         hosts: current.hosts.map(host => ({
           ...host,
-          helper: result.value[host.alias] ?? host.helper,
+          helper: actionEpochs.current.has(host.alias) ? host.helper : result.value[host.alias] ?? host.helper,
         })),
       });
     } catch {
@@ -749,35 +827,65 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
   }
 
   useEffect(() => {
+    mounted.current = true;
     void load();
     const timer = setInterval(() => { void loadStatuses(); }, 5_000);
     return () => {
+      mounted.current = false;
       clearInterval(timer);
       epoch.current += 1;
+      statusRevision.current += 1;
+      actionEpochs.current.clear();
+      polling.current = null;
     };
   }, [ssh]);
 
   async function runHostAction(
     alias: string,
-    action: 'connect' | 'disconnect' | 'retry' | 'diagnostics',
+    action: HostAction,
   ): Promise<void> {
-    setBusyAlias(alias);
-    setError('');
+    const request = ++statusRevision.current;
+    actionEpochs.current.set(alias, request);
+    const isCurrent = () => mounted.current && actionEpochs.current.get(alias) === request;
+    setActions(current => ({ ...current, [alias]: action }));
+    setHostErrors(current => ({ ...current, [alias]: undefined }));
+    if (action === 'connect' || action === 'retry') {
+      setConfig(current => current === null ? current : {
+        ...current,
+        hosts: current.hosts.map(host => host.alias === alias ? {
+          ...host,
+          helper: { ...host.helper, status: action === 'retry' ? 'reconnecting' : 'connecting', error: '' },
+        } : host),
+      });
+    }
     try {
-      const result = action === 'connect'
-        ? await ssh.connectHost(alias)
+      const operation = action === 'connect'
+        ? ssh.connectHost(alias)
         : action === 'disconnect'
-          ? await ssh.disconnectHost(alias)
+          ? ssh.disconnectHost(alias)
           : action === 'retry'
-            ? await ssh.retryHost(alias)
-            : await ssh.diagnostics(alias);
-      if (!result.ok) setError(result.error.message);
-      else if (action === 'diagnostics') setDetails(result.value as HelperHostDiagnostics);
-      await load(false);
+            ? ssh.retryHost(alias)
+            : ssh.diagnostics(alias);
+      const result = await (action === 'diagnostics'
+        ? withReadDeadline(operation, '连接诊断')
+        : withMutationDeadline(operation, '主机操作'));
+      if (!isCurrent()) return;
+      if (!result.ok) setHostErrors(current => ({ ...current, [alias]: result.error.message }));
+      else {
+        if (action === 'diagnostics') setDetails(result.value as HelperHostDiagnostics);
+        setConfig(current => current === null ? current : {
+          ...current,
+          hosts: current.hosts.map(host => host.alias === alias ? { ...host, helper: result.value } : host),
+        });
+      }
     } catch (reason) {
-      setError(messageOf(reason));
+      if (isCurrent()) setHostErrors(current => ({ ...current, [alias]: messageOf(reason) }));
     } finally {
-      setBusyAlias('');
+      if (isCurrent()) {
+        actionEpochs.current.delete(alias);
+        statusRevision.current += 1;
+        setActions(current => ({ ...current, [alias]: undefined }));
+      }
     }
   }
 
@@ -790,7 +898,7 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
             连接由本机 OpenSSH 建立；版本化 helper 统一远端文件、进程和 PTY。显式断开会停止该 helper session 管理的远端进程。
           </div>
         </div>
-        <Button variant="outline" size="sm" disabled={loading || Boolean(busyAlias)} onClick={() => void load()}>
+        <Button variant="outline" size="sm" disabled={loading} onClick={() => void load()}>
           {loading ? '刷新中…' : '刷新'}
         </Button>
       </div>
@@ -807,10 +915,12 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {config?.hosts.map((host) => {
-          const busy = busyAlias === host.alias;
-          const connected = host.helper.status === 'connected' || host.helper.status === 'degraded';
+          const action = actions[host.alias];
+          const busy = action !== undefined;
+          const canStop = action === 'connect' || action === 'retry'
+            || ['connected', 'degraded', 'installing', 'connecting', 'reconnecting'].includes(host.helper.status);
           return (
-            <div key={host.alias} style={{ padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
+            <div key={host.alias} role="group" aria-label={`SSH 主机 ${host.alias}`} style={{ padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ fontWeight: 600 }}>{host.alias}</div>
                 <span style={{ ...dimmedText, color: host.helper.status === 'error' ? 'var(--dsw-alias-label-error)' : undefined }}>
@@ -823,7 +933,9 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
               <div style={{ marginTop: 6, ...dimmedText }}>
                 Helper {host.helper.version || '尚未握手'} · {helperCapabilitySummary(host.helper.capabilities)}
               </div>
-              {host.helper.error && <div style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{host.helper.error}</div>}
+              <div style={{ marginTop: 6, ...subtleText }}>{searchSummary(host.helper)}</div>
+              {(hostErrors[host.alias] || host.helper.error) && <div role="alert" style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{hostErrors[host.alias] || host.helper.error}</div>}
+              {host.helper.hint && <div style={{ marginTop: 6, ...subtleText }}>{host.helper.hint}</div>}
               {(host.proxyJump || host.proxyCommand || host.identityFile) && (
                 <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {host.proxyJump && <Pill>ProxyJump: {host.proxyJump}</Pill>}
@@ -832,9 +944,9 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
                 </div>
               )}
               <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {connected ? (
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'disconnect')}>
-                    {busy ? '处理中…' : '断开'}
+                {canStop ? (
+                  <Button size="sm" variant="outline" disabled={action === 'disconnect'} onClick={() => void runHostAction(host.alias, 'disconnect')}>
+                    {action === 'disconnect' ? '正在停止…' : '停止 / 断开'}
                   </Button>
                 ) : (
                   <Button size="sm" variant="primary" disabled={busy} onClick={() => void runHostAction(host.alias, 'connect')}>

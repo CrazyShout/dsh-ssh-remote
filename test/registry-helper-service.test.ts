@@ -20,6 +20,7 @@ describe('SshRemoteService helper lifecycle facade', () => {
       client: vi.fn(async () => { current = status('connected'); return {}; }),
       close: vi.fn(async () => { current = status('disconnected'); }),
       retry: vi.fn(async () => { current = status('connected'); return {}; }),
+      refreshEnvironment: vi.fn(async () => {}),
       status: vi.fn(() => current),
       diagnostics: vi.fn(() => ({
         ...current,
@@ -49,4 +50,3 @@ describe('SshRemoteService helper lifecycle facade', () => {
     expect(helpers.retry).toHaveBeenCalledWith('gpu');
   });
 });
-

@@ -6,7 +6,23 @@
 具体 Host，通过标准「添加工作区」选择远端目录，并把 DSH 原生文件、Shell 和终端操作
 路由到远端的版本化 helper。
 
-## 0.3.0 的架构
+## 0.4.0 的可靠性与交互改进
+
+- 取消或超时的排队 RPC 不再发送；已发送的 mutation 仍诚实报告结果不确定。
+- Shell/PTY 在进程退出后继续排空保留输出；输出超限明确标记截断。
+- 独立单线程 supervisor 和 guardian 保持托管进程组身份，支持父 shell 先退出后的
+  TERM→KILL 清理；控制通道、阻塞 stdin、输出读取与资源释放均有截止时间。
+- 认证、主机指纹、配置、Python、协议和未知错误停止自动重试；瞬时网络故障仍退避重连。
+  可在安装、连接或重连过程中停止，每台主机的操作状态与错误相互独立。
+- 添加工作区支持直接输入路径、回车跳转、主目录和刷新；保留目录有界扫描。
+- 连接和刷新时检查登录 shell 中的 `rg`。显示搜索可用性、错误原因及修复建议，
+  不自动安装远端依赖；补装后点击刷新即可，无须中断正在运行的任务。
+
+进程清理保证覆盖原始托管进程组及 PTY 的当前前台组；主动用 `setsid` / `setpgid`
+脱离的后台服务不属于全权限模式下的任意进程树回收保证。受限模式额外由 bubblewrap
+PID namespace 提供退出清理。插件不会按进程名扫描并终止其他任务。
+
+## 架构
 
 默认数据平面已经改为：
 
@@ -52,7 +68,7 @@
 
 ## 当前 DSH 上游边界
 
-0.3.3 已验证 DSH `0.2.0-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
+0.4.0 面向 DSH `0.2.0-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
 连接计数；握手阶段的连接级错误保留原始错误代码和提示。早期版本的 `dsh-settings` register API 和
 `ShellExecutor` 的 `run`/`start` 接口已分别被标准 Cordis `Config` 和单一
 `execute()` 方法取代，插件已随之适配。SSH 上传中断只会令本次连接失败。
@@ -151,6 +167,8 @@ npm ci
 npm run test:helper
 npm test
 npm run build
+# 可选真实远端验收：自动创建并清理一个 /tmp/dsh-ssh-smoke.* 测试目录
+node scripts/smoke-remote.mjs YOUR_SSH_ALIAS
 ```
 
 CI 覆盖 Node 22/24 与 Python 3.8/3.9/3.10/3.12。仓库提交 `lib/`，因为 DSH 可以直接从
