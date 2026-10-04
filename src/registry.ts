@@ -129,6 +129,13 @@ export interface SshWorkspaceAnchor {
   createdAt: number;
 }
 
+/** Display identity for a persisted SSH workspace; no connection is made. */
+export interface RemoteWorkspaceInfo {
+  alias: string;
+  remotePath: string;
+  uri: string;
+}
+
 interface HelperWorkspaceOpen {
   workspaceId: string;
   path: string;
@@ -441,6 +448,15 @@ export class SshRemoteService extends TypertRemoteService {
       return formatSshUri({ ...base, path: posix.join(base.path, ...suffix) });
     }
     return undefined;
+  }
+
+  @Remote('workspaceInfo')
+  async workspaceInfo(path: string): Promise<RemoteWorkspaceInfo | null> {
+    if (!path || path.includes('\0') || path.length > 32_768) return null;
+    const uri = this.resolveRemotePath(path);
+    if (uri === undefined) return null;
+    const parsed = parseSshUri(uri);
+    return { alias: parsed.host, remotePath: parsed.path, uri };
   }
 
   async ensureDirectory(uri: string): Promise<void> {

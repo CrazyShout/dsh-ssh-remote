@@ -99,6 +99,122 @@ function helperPeer(
 }
 
 describe('RemoteHelperManager', () => {
+  it.each(['initialize', 'environment/check'] as const)('does not expose a raw client before pending %s completes', async (stage) => {
+    const capabilities = { ...completeCapabilities, environment: { check: true } };
+    let release: (() => void) | undefined;
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (String(args.at(-1)).includes('connect --stdio')) {
+        helperPeer(child, { capabilities, onRequest(frame, peer) {
+          if (frame.method === stage) {
+            release = () => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result:
+              stage === 'initialize' ? {
+                protocol: 1, session: { sessionId: 'session-1', clientId: String(frame.params?.clientId),
+                  resumeToken: 'resume-1', resumed: false, retentionMs: 120_000, serverEpoch: 1 }, capabilities, limits: {},
+              } : { search: { available: true } },
+            }));
+            return true;
+          }
+          if (frame.method === 'environment/check') {
+            peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: { search: { available: true } } }));
+            return true;
+          }
+          return false;
+        } });
+      } else child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0 });
+    try {
+      const first = manager.client('gpu');
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      let settled = false;
+      const second = manager.client('gpu').then(client => { settled = true; return client; });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      release!();
+      const [a, b] = await Promise.all([first, second]);
+      expect(a).toBe(b); expect(b.sessionId).toBe('session-1');
+      await expect(b.call('health/status')).resolves.toEqual({ healthy: true });
+      expect(spawnProcess).toHaveBeenCalledTimes(2);
+    } finally { await manager.dispose(); }
+  });
+
+  it.each(['close', 'dispose'] as const)('rejects every pending initialize waiter after %s', async (action) => {
+    let held: (() => void) | undefined;
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (String(args.at(-1)).includes('connect --stdio')) helperPeer(child, { onRequest(frame, peer) {
+        if (frame.method !== 'initialize') return false;
+        held = () => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: {
+          protocol: 1, session: { sessionId: 'session-1', clientId: String(frame.params?.clientId), resumeToken: 'r',
+            resumed: false, retentionMs: 120_000, serverEpoch: 1 }, capabilities: completeCapabilities, limits: {},
+        } }));
+        return true;
+      } });
+      else child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0 });
+    const first = manager.client('gpu').catch(error => error);
+    await vi.waitFor(() => expect(held).toBeTypeOf('function'));
+    const second = manager.client('gpu').catch(error => error);
+    if (action === 'close') await manager.close('gpu'); else await manager.dispose();
+    held!();
+    expect(await first).toBeInstanceOf(Error); expect(await second).toBeInstanceOf(Error);
+    expect(manager.status('gpu').state).toBe('disconnected');
+    await manager.dispose();
+  });
+
+  it('keeps native terminal read/status callers on the same pending resumed handshake', async () => {
+    let connections = 0; let firstTransport: FakeChild | undefined; let release: (() => void) | undefined;
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (!String(args.at(-1)).includes('connect --stdio')) {
+        child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      } else {
+        connections += 1; const ordinal = connections;
+        if (ordinal === 1) firstTransport = child;
+        helperPeer(child, { resumed: ordinal > 1, onRequest(frame, peer) {
+          if (ordinal > 1 && frame.method === 'initialize') {
+            release = () => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: {
+              protocol: 1, session: { sessionId: 'session-1', clientId: String(frame.params?.clientId), resumeToken: 'resume-1',
+                resumed: true, retentionMs: 120_000, serverEpoch: 1 }, capabilities: completeCapabilities, limits: {},
+            } }));
+            return true;
+          }
+          if (frame.method === 'process/read' || frame.method === 'process/status') {
+            if (ordinal === 1) { firstTransport!.exitCode = 255; queueMicrotask(() => firstTransport!.emit('close', 255, null)); }
+            else peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: { running: true, method: frame.method } }));
+            return true;
+          }
+          return false;
+        } });
+      }
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0, reconnectBaseMs: 10_000, reconnectMaxMs: 10_000, random: () => 0.9 });
+    try {
+      const facade = await manager.client('gpu');
+      const entry = (manager as any).entries.get('gpu'); const previous = entry.client;
+      const read = facade.call('process/read', { processId: 'user-terminal' });
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      let settled = 0;
+      const status = facade.call('process/status', { processId: 'user-terminal' }).then(value => { settled += 1; return value; });
+      const acquired = manager.client('gpu').then(value => { settled += 1; return value; });
+      const resumed = (manager as any).resumeAfterDisconnect(entry, previous).then((value: unknown) => { settled += 1; return value; });
+      await new Promise(resolve => setTimeout(resolve, 10)); expect(settled).toBe(0);
+      release!();
+      await expect(read).resolves.toMatchObject({ running: true });
+      await expect(status).resolves.toMatchObject({ running: true });
+      expect(await acquired).toBe(facade); await resumed;
+      expect(facade.sessionId).toBe('session-1'); expect(facade.session.resumed).toBe(true); expect(connections).toBe(2);
+    } finally { await manager.dispose(); }
+  });
+
   it.each(['exit', 'EPIPE'])('stops retrying permanent installation failures with a stable hint (%s)', async (failure) => {
     const spawnProcess = vi.fn(() => {
       const child = new FakeChild();

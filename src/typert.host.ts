@@ -46,6 +46,7 @@ const workspaceAnchor = z.object({
   title: string,
   createdAt: z.number(),
 });
+const workspaceInfo = z.object({ alias: string, remotePath: string, uri: string }).nullable();
 const diagnostics = helperStatus.extend({
   alias: string,
   helperSha256: string,
@@ -86,6 +87,7 @@ export const TYPERT = {
   invocations: [
     invocation('config', [], config, 'dsh-ssh-remote#SshConfig'),
     invocation('statuses', [], z.record(z.string(), helperStatus), 'dsh-ssh-remote#HelperHostStatuses'),
+    invocation('workspaceInfo', [parameter('path')], workspaceInfo, 'dsh-ssh-remote#RemoteWorkspaceInfo'),
     invocation('browse', [parameter('alias'), parameter('path')], directoryListing, 'dsh-ssh-remote#RemoteDirectoryListing'),
     invocation('createDirectory', [parameter('alias'), parameter('parent'), parameter('name')], string, 'string'),
     invocation('materializeWorkspace', [parameter('alias'), parameter('remotePath')], workspaceAnchor, 'dsh-ssh-remote#SshWorkspaceAnchor'),

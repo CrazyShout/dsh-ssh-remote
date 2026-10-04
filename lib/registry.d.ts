@@ -113,6 +113,12 @@ export interface SshWorkspaceAnchor {
     title: string;
     createdAt: number;
 }
+/** Display identity for a persisted SSH workspace; no connection is made. */
+export interface RemoteWorkspaceInfo {
+    alias: string;
+    remotePath: string;
+    uri: string;
+}
 declare module '@deepseek-ai/cordis' {
     interface Context {
         /** SSH remote workspaces service (this plugin). */
@@ -151,6 +157,7 @@ export declare class SshRemoteService extends TypertRemoteService {
     materializeWorkspace(alias: string, remotePath: string): Promise<SshWorkspaceAnchor>;
     /** Exact anchor/descendant resolver consumed by fs and subprocess routers. */
     resolveRemotePath(localPath: string): string | undefined;
+    workspaceInfo(path: string): Promise<RemoteWorkspaceInfo | null>;
     ensureDirectory(uri: string): Promise<void>;
     connectHost(alias: string): Promise<HelperHostStatus>;
     disconnectHost(alias: string): Promise<HelperHostStatus>;

@@ -9,11 +9,14 @@ import {
   installRemoteTerminalRouter,
 } from './runtime-router.js';
 import { RemoteTerminalBackend } from './terminal.js';
+import { installRemoteUserSubprocessRouter } from './user-subprocess.js';
+import { installRemoteWorkspaceFilesRouter } from './workspace-files.js';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
 import type {} from '@deepseek-ai/dsh-sandbox-policy';
 import type {} from '@deepseek-ai/dsh-subprocess';
 import type {} from '@deepseek-ai/dsh-terminal';
+import type {} from '@deepseek-ai/dsh-api-workspace-files';
 
 export type {
   DiscoveredSshHost,
@@ -25,6 +28,7 @@ export type {
   SshConfig,
   SshHostEntry,
   SshWorkspaceAnchor,
+  RemoteWorkspaceInfo,
 } from './registry.js';
 export { LegacySsh2RemoteTerminalBackend, Ssh2RemoteTerminalBackend } from './terminal.js';
 
@@ -46,6 +50,12 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     helpers,
   );
   const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
+  const userSubprocess = installRemoteUserSubprocessRouter(ctx, ctx.subprocess, helpers, resolveRemotePath);
+  const workspaceFilesFiber = ctx.inject(['workspaceFiles'], scope => installRemoteWorkspaceFilesRouter(
+    scope.workspaceFiles,
+    helpers,
+    resolveRemotePath,
+  ));
 
   // Optional capability seams use child fibers: they activate whenever the
   // corresponding host services exist, unload cleanly when providers reload,
@@ -80,6 +90,8 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     const childResults = await Promise.allSettled([
       terminalFiber.dispose(),
       shellFiber.dispose(),
+      workspaceFilesFiber.dispose(),
+      userSubprocess.dispose(),
     ]);
     restoreSubprocess();
     restoreFileSystem();

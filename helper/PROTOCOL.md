@@ -57,6 +57,25 @@ capabilities, and resource limits. An unknown or stale token fails with
 `server/hello.params.platform.home` is the remote user's canonical home path;
 `platform.shell` is the validated absolute login-shell path used by the PTY backend.
 
+## Environment discovery
+
+`environment/check {}` reports login-shell search availability and environment
+diagnostics. `environment/resolveExecutable {command, env?, login?}` is a read-only
+capability, advertised as `capabilities.environment.resolveExecutable:true`.
+By default it resolves a bare name using the same scrubbed helper-process
+environment (plus explicit overrides) as directly spawned processes, or verifies
+an absolute executable path, and returns `{path:absolutePath}`. Explicit
+`login:true` performs a bounded `sh -lc` lookup, matching the search execution
+seam; the host requests this mode when translating its bundled ripgrep binary.
+Relative names containing `/`, invalid environments and non-executables fail
+closed; absent executables return `E_EXECUTABLE_NOT_FOUND`. The host maps its
+bundled ripgrep pathname to remote `rg`, never executes a local-OS binary remotely.
+
+These methods support native human terminal shell discovery. Human terminals use
+an explicitly full-access workspace at `/` and the SSH account's permissions;
+model terminal sandbox policy is separate and unchanged. The native controller
+keeps session/attachment ownership, while the helper supplies raw PTY operations.
+
 ## Identifiers and idempotency
 
 Client-supplied `clientId`, `workspaceId`, `processId`, and `operationId` use:
@@ -199,21 +218,51 @@ Methods:
 - `process/resize {processId,rows,cols,operationId}`
 - `process/status`
 - `process/inspectForeground`
-- `process/signal {signal,target,operationId}`
+- `process/signal {signal,target,operationId,denyOwnShellKill?}`
 - `process/terminate {graceMs?,force?,operationId}`
 - `process/release {processId,operationId}`
+
+Cancelling a client-generated process ID also cancels an allocation that has not
+yet published its process record. `terminate`/`release` record a bounded,
+expiring cancellation tombstone even for an unknown ID, while retaining the
+`E_UNKNOWN_PROCESS` response. A reserved `terminate` returns
+`{running:true,starting:true,cancellationScheduled:true}`; reserved `release`
+returns retryable `E_PROCESS_STARTING`. A delayed start cannot publish a live
+terminal after cancellation: it releases any created process and reports
+`E_PROCESS_CANCELLED`. Never reuse process IDs. Failed host-side cleanup retains
+the exact allocation identity for bounded retries and plugin-disposal cleanup.
 
 PTY uses `openpty`, a controlling terminal, `TIOCSWINSZ`, and `tcgetpgrp`.
 The multithreaded daemon never calls `Popen(preexec_fn=...)`. A long-lived spawn
 broker thread owns all Popen calls, which also makes Bubblewrap's
-`--die-with-parent` refer to a parent task that survives the command. PTY starts
-a fresh single-thread `pty-exec` helper with the slave FD in `pass_fds`; that
-launcher performs `setsid`, `TIOCSCTTY`, descriptor duplication, and `execvpe`.
+`--die-with-parent` refer to a parent task that survives the command. Each task
+starts a fresh single-thread `supervise-exec` helper, with an independent
+control socket and explicitly inherited PTY/stdio descriptors. Terminal setup
+uses `setsid`, `TIOCSCTTY`, and foreground process groups outside the
+multithreaded daemon. Process exit facts travel through the control channel;
+output completion is determined separately by the actual pipe/PTY reader.
+
+Darwin PTYs make the actual command the controlling-session leader, because a
+long-lived supervisor leader retains Darwin's `/dev/tty` vnode and prevents
+real EOF. The external supervisor observes the command's wait-format exit
+status with `kqueue NOTE_EXIT | NOTE_EXITSTATUS` without reaping it. Its owned
+PID remains pinned until the final group signal and timer invalidation, then is
+reaped. A detached same-group guardian provides crash protection without adding
+a hidden child to the user command. Linux and non-PTY tasks retain the direct
+supervisor-owned guardian design. `SIGCHLD` is reset to its default before fork
+so an inherited ignored disposition cannot silently defeat these ownership
+guarantees. On Darwin, leader exit causes the normal kernel terminal hangup;
+background descendants do not artificially prolong the controlling terminal.
+
 `process/write` loops until every decoded input byte is written and only then
 applies `eof`; clients keep individual writes within the 1 MiB frame budget
 (the TypeScript adapter uses 192 KiB chunks).
 Supported signals include SIGINT, SIGTERM, SIGHUP, SIGKILL, SIGQUIT, and
 SIGTSTP. `target:"foreground"` obtains the foreground PGID at signal time.
+Native human terminals set `denyOwnShellKill:true` for foreground SIGKILL. The
+helper checks the actual target against the task/shell PGID in the same dispatch
+before delivery; a separate client-side foreground probe is not an authorization
+check. Closing a terminal uses its owned terminate/release lifecycle instead.
 
 Output is retained in a 2 MiB per-process ring with monotonically increasing
 string sequence numbers. `process/read` is authoritative; a cursor older than

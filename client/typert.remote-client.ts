@@ -55,11 +55,18 @@ interface WorkspaceAnchor {
   createdAt: number;
 }
 
+export interface RemoteWorkspaceInfo {
+  alias: string;
+  remotePath: string;
+  uri: string;
+}
+
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespaceMap {
     sshRemote: {
       config: () => Promise<RemoteResult<ConfigResult>>;
       statuses: () => Promise<RemoteResult<Record<string, HelperStatus>>>;
+      workspaceInfo: (path: string) => Promise<RemoteResult<RemoteWorkspaceInfo | null>>;
       browse: (alias: string, path: string) => Promise<RemoteResult<DirectoryListing>>;
       createDirectory: (alias: string, parent: string, name: string) => Promise<RemoteResult<string>>;
       materializeWorkspace: (alias: string, path: string) => Promise<RemoteResult<WorkspaceAnchor>>;
@@ -153,6 +160,16 @@ const workspaceAnchorSchema = {
     return value;
   },
 };
+const workspaceInfoSchema = {
+  parse(value: unknown) {
+    if (value === null) return value;
+    const info = object(value, 'remote workspace');
+    for (const key of ['alias', 'remotePath', 'uri']) {
+      if (typeof info[key] !== 'string') throw new Error(`remote workspace.${key} must be a string`);
+    }
+    return value;
+  },
+};
 const diagnosticsSchema = {
   parse(value: unknown) {
     helperStatusSchema.parse(value);
@@ -186,6 +203,7 @@ export const TYPERT_REMOTE = {
   descriptors: [
     invocation('config', [], configSchema, 'dsh-ssh-remote#SshConfig'),
     invocation('statuses', [], statusesSchema, 'dsh-ssh-remote#HelperHostStatuses'),
+    invocation('workspaceInfo', [parameter('path')], workspaceInfoSchema, 'dsh-ssh-remote#RemoteWorkspaceInfo'),
     invocation('browse', [parameter('alias'), parameter('path')], directoryListingSchema, 'dsh-ssh-remote#RemoteDirectoryListing'),
     invocation('createDirectory', [parameter('alias'), parameter('parent'), parameter('name')], stringSchema, 'string'),
     invocation('materializeWorkspace', [parameter('alias'), parameter('remotePath')], workspaceAnchorSchema, 'dsh-ssh-remote#SshWorkspaceAnchor'),

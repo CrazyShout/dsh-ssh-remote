@@ -64,11 +64,17 @@ interface WorkspaceAnchor {
     title: string;
     createdAt: number;
 }
+export interface RemoteWorkspaceInfo {
+    alias: string;
+    remotePath: string;
+    uri: string;
+}
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap {
         sshRemote: {
             config: () => Promise<RemoteResult<ConfigResult>>;
             statuses: () => Promise<RemoteResult<Record<string, HelperStatus>>>;
+            workspaceInfo: (path: string) => Promise<RemoteResult<RemoteWorkspaceInfo | null>>;
             browse: (alias: string, path: string) => Promise<RemoteResult<DirectoryListing>>;
             createDirectory: (alias: string, parent: string, name: string) => Promise<RemoteResult<string>>;
             materializeWorkspace: (alias: string, path: string) => Promise<RemoteResult<WorkspaceAnchor>>;

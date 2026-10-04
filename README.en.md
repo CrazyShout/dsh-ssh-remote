@@ -7,6 +7,36 @@ hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
+## 0.5.0: native remote file and user-terminal panels
+
+Open an SSH workspace session and select **Remote files** or **Remote terminal**
+(currently labelled 远程文件 / 远程终端). Shortcuts appear above the input for an
+empty session and in the conversation header after chatting. No model prompt is
+required; both open DSH's native right sidebar.
+
+- Browse directories lazily and use native read-only file previews, including
+  Unicode/space paths. Each directory is bounded to 1,000 entries with explicit
+  truncation. Remote watches are unsupported; refresh after external edits.
+- A real remote PTY supports raw keyboard input, Tab, Ctrl-C, resizing, and
+  multiple tabs. The native TerminalController owns exclusive input attachments,
+  screen recovery, and session ownership; no local shell stands in for remote execution.
+- **Human terminals run with the SSH account's permissions**, like local human
+  terminals. They do not use model approval/sandbox policy. Model Shell/Terminal
+  sandbox enforcement is unchanged.
+- Agent-scoped execution environments isolate local and different remote
+  sessions. Resume reuses the same authenticated helper session; expired sessions
+  and output-buffer overflow fail explicitly instead of silently spawning anew.
+  Recovery requires the same DSH service process; quitting DSH does not promise
+  restoration of the original terminal.
+- Darwin PTYs reach real EOF with the command PID pinned until cleanup. The
+  controlling terminal hangs up normally when its leader exits; background
+  descendants are not promised continued ownership of that terminal.
+
+Native sidebar services must be present in the DSH composition. Missing sidebar
+services omit the shortcuts; missing individual tabs disable their buttons.
+Neither prevents plugin activation. The file panel is a previewer,
+not a save-capable remote editor. See [ADR-0005](docs/adr/0005-native-remote-panels.md).
+
 ## Reliability and interaction improvements in 0.4.0
 
 - Cancelled or expired queued RPCs are never dispatched; already-sent mutations
@@ -83,7 +113,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.4.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version 0.5.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`
@@ -99,15 +129,15 @@ connection. The public seams still impose these visible limits:
    immediate local PID. Direct consumers of that low-level seam keep the
    per-process system-SSH compatibility route; normal model shell and terminal
    surfaces use the helper.
-3. The current terminal tool has no resize verb. The helper and backend support
-   resize internally, but the model cannot request it until DSH exposes the
-   operation.
+3. The model terminal tool has no resize verb. The human terminal panel already
+   resizes automatically; the model cannot explicitly request this operation.
 4. DSH history, configuration, plugins, and the agent loop remain local. This
    plugin is a remote execution/filesystem plane, not a second Harness control
    plane.
 5. DSH `listDir()` has no paging contract. The standard FS surface fails
    honestly when a directory exceeds 1,000 entries; the workspace picker uses
-   a bounded directory-only scan so large source trees remain navigable.
+   a bounded directory-only scan. The native file panel has a separate
+   `truncated` contract and displays bounded results with an explicit warning.
 
 Removing the anchor and the last routing hooks requires an upstream first-class
 `{ hostId, remotePath, runtime }` workspace contract.

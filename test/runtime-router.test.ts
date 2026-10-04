@@ -66,6 +66,40 @@ describe('remote Workspace routing', () => {
     expect(service.resolveRemotePath('/anchors/project-other')).toBeUndefined();
   });
 
+  it('does not send a remote watch to the local provider', async () => {
+    const stop = vi.fn(async () => {});
+    const watch = vi.fn(async () => stop);
+    const fs = { ...fakeFileSystem(), watch };
+    const restore = installRemoteFileSystemRouter(fs as never, fakeConnections() as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined);
+    const changed = vi.fn();
+    const signal = new AbortController().signal;
+    const remote = await fs.resolve('/anchors/project');
+    await expect(fs.watch(remote, changed, signal)).rejects.toMatchObject({ code: 'FS_IO_ERROR' });
+    expect(watch).not.toHaveBeenCalled();
+    const local = await fs.resolve('/tmp/local');
+    expect(await fs.watch(local, changed, signal)).toBe(stop);
+    expect(watch).toHaveBeenCalledWith(local, changed, signal);
+    restore();
+    expect(fs.watch).toBe(watch);
+  });
+
+  it('publishes exact remote identity without opening SSH or guessing anchor names', async () => {
+    const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
+    Object.defineProperty(service, 'anchors', { value: new Map([['/anchors/project', {
+      anchorPath: '/anchors/project', uri: 'ssh://gpu/home/atlas/project',
+    }]]) });
+    await expect(service.workspaceInfo('/anchors/project')).resolves.toEqual({
+      alias: 'gpu', remotePath: '/home/atlas/project', uri: 'ssh://gpu/home/atlas/project',
+    });
+    await expect(service.workspaceInfo('/anchors/project/中文 space')).resolves.toMatchObject({ remotePath: '/home/atlas/project/中文 space' });
+    await expect(service.workspaceInfo('/anchors/project-other')).resolves.toBeNull();
+    await expect(service.workspaceInfo('/local/work · gpu')).resolves.toBeNull();
+    await expect(service.workspaceInfo('/anchors/project/../local')).resolves.toBeNull();
+    await expect(service.workspaceInfo('')).resolves.toBeNull();
+    await expect(service.workspaceInfo('bad\0path')).resolves.toBeNull();
+  });
+
   it('routes resolution by mapped cwd and restores the original provider', async () => {
     const fs = fakeFileSystem();
     const restore = installRemoteFileSystemRouter(

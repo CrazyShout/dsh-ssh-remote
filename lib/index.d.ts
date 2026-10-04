@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis';
 import { type LegacySshConfig } from './registry.js';
-export type { DiscoveredSshHost, HelperHostDiagnostics, HelperHostStatus, HelperHostStatuses, RemoteDirectoryEntry, RemoteDirectoryListing, SshConfig, SshHostEntry, SshWorkspaceAnchor, } from './registry.js';
+export type { DiscoveredSshHost, HelperHostDiagnostics, HelperHostStatus, HelperHostStatuses, RemoteDirectoryEntry, RemoteDirectoryListing, SshConfig, SshHostEntry, SshWorkspaceAnchor, RemoteWorkspaceInfo, } from './registry.js';
 export { LegacySsh2RemoteTerminalBackend, Ssh2RemoteTerminalBackend } from './terminal.js';
 export declare const name = "dsh-ssh-remote";
 export declare const inject: string[];

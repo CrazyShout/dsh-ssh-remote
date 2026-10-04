@@ -14,6 +14,7 @@ import pwd
 import queue
 import re
 import secrets
+import select
 import selectors
 import shutil
 import signal as signalmod
@@ -32,7 +33,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -67,7 +68,7 @@ def login_shell() -> str:
     except (KeyError, OSError): pass
     candidates.append("/bin/sh")
     for candidate in candidates:
-        if isinstance(candidate, str) and candidate.startswith("/") and "\0" not in candidate and os.access(candidate, os.X_OK):
+        if isinstance(candidate, str) and candidate.startswith("/") and "\0" not in candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return "/bin/sh"
 
@@ -153,11 +154,10 @@ def fail_os(exc: OSError) -> RpcError:
     return RpcError(code, exc.strerror or str(exc), code == "E_IO")
 
 
-def check_environment() -> Dict[str, Any]:
-    """Probe the same login-shell PATH as search, with bounded output/time."""
-    command = "p=$(command -v rg) || exit 127; printf '__DSH_RG_PATH__%s\\n' \"$p\"; rg --version 2>/dev/null | head -n 1"
+def capture_environment_probe(argv: List[str], env: Optional[Dict[str, str]] = None) -> Tuple[str, Optional[str]]:
+    """Bound diagnostic subprocess output and lifetime, without shell interpolation."""
     child = spawn_in_broker(lambda: subprocess.Popen(
-        ["sh", "-lc", command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
     ))
     assert child.stdout is not None
@@ -183,12 +183,53 @@ def check_environment() -> Dict[str, Any]:
             except OSError: pass
         try: child.wait(timeout=1)
         except subprocess.TimeoutExpired: pass
+    return output.decode("utf-8", "replace"), error
+
+
+def check_environment() -> Dict[str, Any]:
+    """Probe the same login-shell PATH as search, with bounded output/time."""
+    command = "p=$(command -v rg) || exit 127; printf '__DSH_RG_PATH__%s\\n' \"$p\"; rg --version 2>/dev/null | head -n 1"
+    output, error = capture_environment_probe(["sh", "-lc", command])
     if error is not None: return {"search": {"available": False, "error": error}}
-    lines = output.decode("utf-8", "replace").splitlines()
+    lines = output.splitlines()
     path = next((line[len("__DSH_RG_PATH__"):] for line in lines if line.startswith("__DSH_RG_PATH__")), None)
     version = next((line for line in lines if line.startswith("ripgrep ")), None)
     if not path or not version: return {"search": {"available": False, "error": "ripgrep is not available in the remote login-shell PATH"}}
     return {"search": {"available": True, "path": path[:1024], "version": version[:256]}}
+
+
+def process_environment(supplied: Any = None) -> Dict[str, str]:
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("DSH_") and SENSITIVE_ENV_PATTERN.search(key) is None}
+    if supplied is not None:
+        if not isinstance(supplied, dict): raise RpcError("E_INVALID_PARAMS", "env must be an object")
+        for key, value in supplied.items():
+            if not isinstance(key, str) or not isinstance(value, str) or "\0" in key + value or "=" in key:
+                raise RpcError("E_INVALID_PARAMS", "invalid environment entry")
+            env[key] = value
+    return env
+
+
+def resolve_executable(params: Dict[str, Any]) -> Dict[str, str]:
+    command = params.get("command")
+    if not isinstance(command, str) or not command or "\0" in command or len(command) > 4096:
+        raise RpcError("E_INVALID_PARAMS", "command must be a non-empty executable path or PATH name")
+    if not os.path.isabs(command) and "/" in command:
+        raise RpcError("E_INVALID_PARAMS", "relative executable paths have no resolution base")
+    env = process_environment(params.get("env"))
+    if params.get("login", False) and not os.path.isabs(command):
+        # The bundled-ripgrep seam executes through sh -lc. Keep this explicit
+        # lookup mode separate from the helper's direct-process environment.
+        script = "p=$(command -v \"$1\") || exit 127; printf '__DSH_EXECUTABLE__%s\\n' \"$p\""
+        output, error = capture_environment_probe(["sh", "-lc", script, "dsh-executable-lookup", command], env)
+        if error is not None: raise RpcError("E_ENVIRONMENT_PROBE", error, True)
+        candidates = [line[len("__DSH_EXECUTABLE__"):] for line in output.splitlines() if line.startswith("__DSH_EXECUTABLE__")]
+        candidate = os.path.expanduser(candidates[-1]) if candidates else None
+    else:
+        candidate = command if os.path.isabs(command) else shutil.which(command, path=env.get("PATH", os.defpath))
+    if candidate is None or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+        raise RpcError("E_EXECUTABLE_NOT_FOUND", "executable is not installed in the remote execution environment")
+    return {"path": os.path.realpath(candidate)}
 
 
 def frame(obj: Dict[str, Any]) -> bytes:
@@ -330,6 +371,7 @@ class Server:
         self.path_lock_refs: Dict[str, int] = {}
         self.operation_locks: Dict[str, threading.Lock] = {}
         self.resources_lock = threading.RLock()
+        self.cancelled_processes: Dict[str, float] = {}
         self.read_handles: Dict[str, Dict[str, Any]] = {}
         self.write_handles: Dict[str, Dict[str, Any]] = {}
         self.processes: Dict[str, "ProcessRecord"] = {}
@@ -353,7 +395,7 @@ class Server:
                         "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked"},
             "pty": {"supported": hasattr(os, "openpty"), "resize": True, "foregroundPgid": "verified"},
             "session": {"resume": self.resume_supported},
-            "environment": {"check": True},
+            "environment": {"check": True, "resolveExecutable": True},
         }
 
     def workspace(self, params: Dict[str, Any]) -> Workspace:
@@ -440,6 +482,7 @@ class Server:
         if not self.initialized: raise RpcError("E_NOT_INITIALIZED", "initialize must be called first")
         if method == "health/ping": return {"nonce": p.get("nonce"), "ok": True}
         if method == "environment/check": return check_environment()
+        if method == "environment/resolveExecutable": return resolve_executable(p)
         if method == "health/status": return {"ok": True, "home": os.path.realpath(os.path.expanduser("~")),
                 "uptimeMs": int((time.monotonic()-self.started)*1000), "workspaces": len(self.workspaces),
                 "processes": len(self.processes), "pathLocks": len(self.path_locks),
@@ -582,9 +625,26 @@ class Server:
         if method == "process/status": return self.process(p).status()
         if method == "process/inspectForeground": return self.process(p).inspect_foreground()
         if method == "process/signal": return self.guarded(p.get("operationId"), p, lambda: self.process(p).send_signal(p))
-        if method == "process/terminate": return self.guarded(p.get("operationId"), p, lambda: self.process(p).terminate(bool(p.get("force", False)), int(p.get("graceMs", 2000))))
+        if method == "process/terminate":
+            def terminate() -> Dict[str, Any]:
+                with self.resources_lock:
+                    process_id = valid_id(p.get("processId"), "processId")
+                    record = self.processes.get(process_id)
+                    if record is None or record is PROCESS_RESERVED:
+                        self.cancel_allocation(process_id)
+                        if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process; pending allocation identity cancelled")
+                        return {"running": True, "starting": True, "cancellationScheduled": True}
+                return self.process(p).terminate(bool(p.get("force", False)), int(p.get("graceMs", 2000)))
+            return self.guarded(p.get("operationId"), p, terminate)
         if method == "process/release":
             def release() -> Dict[str, Any]:
+                with self.resources_lock:
+                    process_id = valid_id(p.get("processId"), "processId")
+                    record = self.processes.get(process_id)
+                    if record is None or record is PROCESS_RESERVED:
+                        self.cancel_allocation(process_id)
+                        if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process; pending allocation identity cancelled")
+                        raise RpcError("E_PROCESS_STARTING", "cancelled process allocation is still starting", True)
                 record = self.process(p); result = record.release()
                 with self.resources_lock: self.processes.pop(record.process_id, None)
                 return result
@@ -777,6 +837,16 @@ class Server:
             except OSError: pass
         handle["fd"], handle["parent"] = -1, -1
 
+    def cancel_allocation(self, process_id: str) -> None:
+        # A cancel can reach a worker BEFORE start reserves its slot. Retain
+        # the caller-minted identity even for an unknown process, so a delayed
+        # start can never allocate after cleanup reported that identity absent.
+        now = time.monotonic(); ttl = max(self.retention_ms / 1000, 600)
+        self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < ttl}
+        if process_id not in self.cancelled_processes and len(self.cancelled_processes) >= MAX_OPERATIONS:
+            raise RpcError("E_RESOURCE_LIMIT", "cancelled process identity limit reached")
+        self.cancelled_processes[process_id] = now
+
     def process(self, p: Dict[str, Any]) -> "ProcessRecord":
         with self.resources_lock: record = self.processes.get(p.get("processId"))
         if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process")
@@ -812,6 +882,10 @@ class Server:
         if stdin_mode not in ("pipe", "closed"): raise RpcError("E_INVALID_PARAMS", "stdin must be pipe or closed")
         if isinstance(tty, dict) and stdin_mode != "pipe": raise RpcError("E_INVALID_PARAMS", "PTY stdin cannot start closed")
         with self.resources_lock:
+            now = time.monotonic()
+            self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < max(self.retention_ms / 1000, 600)}
+            if process_id in self.cancelled_processes: raise RpcError("E_PROCESS_CANCELLED", "process allocation was cancelled")
+            if len(self.cancelled_processes) >= MAX_OPERATIONS: raise RpcError("E_RESOURCE_LIMIT", "cancelled process identity limit reached")
             if len(self.processes) >= MAX_PROCESSES: raise RpcError("E_RESOURCE_LIMIT", "process limit reached")
             if process_id in self.processes: raise RpcError("E_EXISTS", "processId already exists")
             self.processes[process_id] = PROCESS_RESERVED
@@ -830,9 +904,17 @@ class Server:
                 try: os.close(inherited_fd)
                 except OSError: pass
         with self.resources_lock:
-            if self.processes.get(process_id) is not PROCESS_RESERVED:
-                record.release(); raise RpcError("E_SESSION_CLOSED", "session closed while process was starting")
-            self.processes[process_id] = record
+            session_closed = self.processes.get(process_id) is not PROCESS_RESERVED
+            cancelled = process_id in self.cancelled_processes
+            if not session_closed: self.processes[process_id] = record
+        if session_closed:
+            record.release(); raise RpcError("E_SESSION_CLOSED", "session closed while process was starting")
+        if cancelled:
+            # Retain a failed-cleanup record for a subsequent release retry.
+            record.release()
+            with self.resources_lock:
+                if self.processes.get(process_id) is record: self.processes.pop(process_id, None)
+            raise RpcError("E_PROCESS_CANCELLED", "process allocation was cancelled during startup")
         result = record.status(); result["access"] = ws.access
         result["stdin"] = stdin_mode
         result["sandbox"] = {"mode": ws.access, "enforcement": "full",
@@ -950,14 +1032,7 @@ class ProcessRecord:
         self.reader_threads: List[threading.Thread] = []
         self.stdin: Any = None; self.stdout_stream: Any = None; self.stderr_stream: Any = None
         self.readers = 1 if self.tty else 2
-        env = {key: value for key, value in os.environ.items()
-               if not key.startswith("DSH_") and SENSITIVE_ENV_PATTERN.search(key) is None}
-        if supplied_env is not None:
-            if not isinstance(supplied_env, dict): raise RpcError("E_INVALID_PARAMS", "env must be an object")
-            for key, value in supplied_env.items():
-                if not isinstance(key, str) or not isinstance(value, str) or "\0" in key + value or "=" in key:
-                    raise RpcError("E_INVALID_PARAMS", "invalid environment entry")
-                env[key] = value
+        env = process_environment(supplied_env)
         endpoint, remote_endpoint = socket.socketpair()
         self.control = SupervisorChannel(endpoint, self._supervisor_event)
         slave: Optional[int] = None
@@ -1163,7 +1238,8 @@ class ProcessRecord:
         return self.control.call("foreground")
 
     def send_signal(self, p: Dict[str, Any]) -> Dict[str, Any]:
-        return self.control.call("signal", {"signal": p.get("signal", "SIGTERM"), "target": p.get("target", "group")})
+        return self.control.call("signal", {"signal": p.get("signal", "SIGTERM"), "target": p.get("target", "group"),
+                                            "denyOwnShellKill": p.get("denyOwnShellKill") is True})
 
     def terminate(self, force: bool = False, grace_ms: int = 2000) -> Dict[str, Any]:
         if self.released: return {"running": False}
@@ -1528,8 +1604,9 @@ def returncode_for(status: int) -> int:
 class ProcessSupervisor:
     """Single-threaded, namespace-local owner of one pinned process group.
 
-    The guardian remains live or unreaped until the FINAL group signal. Unlike
-    checking killpg(pgid, 0), this prevents reuse rather than racing reuse.
+    The guardian remains live or unreaped until the FINAL group signal. Darwin
+    PTYs instead retain the real task's unreaped PID so its controlling session
+    can end normally. Both prevent reuse rather than racing killpg(pgid, 0).
     """
     def __init__(self, control_fd: int, tty_master_fd: Optional[int]):
         self.control = socket.socket(fileno=control_fd); self.tty = tty_master_fd is not None
@@ -1537,11 +1614,18 @@ class ProcessSupervisor:
         self.pid = 0; self.guardian = 0; self.guard_write = -1; self.code: Optional[int] = None
         self.group_owned = False; self.generation = 0; self.deadline: Optional[Tuple[int, float]] = None
         self.command_reaped = False; self.guardian_reaped = False
+        self.darwin_tty = self.tty and sys.platform == "darwin"
+        self.exit_queue: Any = None
 
     def send(self, message: Dict[str, Any]) -> None:
         self.control.sendall(json.dumps(message, separators=(",", ":")).encode() + b"\n")
 
     def start(self, argv: List[str]) -> None:
+        # Explicit SIG_IGN can survive exec and make children auto-reap.
+        # Both ownership strategies require children to remain waitable.
+        signalmod.signal(signalmod.SIGCHLD, signalmod.SIG_DFL)
+        if self.darwin_tty:
+            self.start_darwin_tty(argv); return
         os.setsid()
         for name in ("SIGHUP", "SIGTTIN", "SIGTTOU"): signalmod.signal(getattr(signalmod, name), signalmod.SIG_IGN)
         if self.tty: fcntl.ioctl(0, termios.TIOCSCTTY, 0)
@@ -1588,8 +1672,92 @@ class ProcessSupervisor:
         close_fds_except({self.control.fileno(), self.guard_write, self.tty_master_fd})
         self.send({"event": "ready", "pid": self.pid, "pgid": self.pid})
 
+    def start_darwin_tty(self, argv: List[str]) -> None:
+        # Darwin keeps /dev/tty's vnode open until the controlling session's
+        # leader exits (cttyopen in XNU tty_tty.c). A long-lived supervisor as
+        # that leader therefore prevents real PTY EOF, even with no slave FDs.
+        # Make the actual task the session leader. Observe its exit without
+        # reaping it; its owned zombie PID pins the group until the final KILL.
+        os.setsid()
+        for name in ("SIGHUP", "SIGTTIN", "SIGTTOU"):
+            signalmod.signal(getattr(signalmod, name), signalmod.SIG_IGN)
+        gate_read, gate_write = os.pipe(); error_read, error_write = os.pipe()
+        guard_read, self.guard_write = os.pipe(); ready_read, ready_write = os.pipe()
+        temporary = {gate_read, gate_write, error_read, error_write, guard_read, ready_read, ready_write}
+        try:
+            self.pid = os.fork()
+            if self.pid == 0:
+                try:
+                    os.setsid(); fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+                    guard_broker = os.fork()
+                    if guard_broker == 0:
+                        try:
+                            # Do not inject a hidden child into the exec'd
+                            # user's wait()/waitpid(-1) set. The short-lived
+                            # broker is reaped below; the orphan guardian only
+                            # supplies crash cleanup and never pins ownership.
+                            try: guardian_pid = os.fork()
+                            except OSError: os._exit(127)
+                            if guardian_pid != 0: os._exit(0)
+                            for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU"):
+                                signalmod.signal(getattr(signalmod, name), signalmod.SIG_IGN)
+                            close_fds_except({guard_read, ready_write})
+                            os.write(ready_write, b"1"); os.close(ready_write)
+                            while os.read(guard_read, 1): pass
+                            # This guardian is only crash protection. Group
+                            # ownership is pinned by the task's unreaped PID.
+                            os.killpg(os.getpgrp(), signalmod.SIGKILL)
+                        except OSError: pass
+                        finally: os._exit(0)
+                    _, guard_status = os.waitpid(guard_broker, 0)
+                    if guard_status != 0: raise OSError(errno.EIO, "process group guardian broker failed")
+                    close_fds_except({0, 1, 2, gate_read, error_write})
+                    if os.read(gate_read, 1) != b"1": os._exit(127)
+                    os.close(gate_read)
+                    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGPIPE"):
+                        signalmod.signal(getattr(signalmod, name), signalmod.SIG_DFL)
+                    os.execvpe(argv[0], argv, os.environ)
+                except OSError as exc:
+                    os.write(error_write, json.dumps({"errno": exc.errno, "message": exc.strerror}).encode())
+                finally: os._exit(127)
+            for fd in (gate_read, error_write, guard_read, ready_write):
+                os.close(fd); temporary.remove(fd)
+            self.exit_queue = select.kqueue()
+            # NOTE_EXITSTATUS is defined by Darwin sys/event.h but is not
+            # exported by Python 3.8/3.9 select. With NOTE_EXIT, event.data is
+            # the waitpid-format status, and retrieval does NOT reap the PID.
+            note_exitstatus = 0x04000000
+            event = select.kevent(self.pid, filter=select.KQ_FILTER_PROC,
+                                 flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_ONESHOT,
+                                 fflags=select.KQ_NOTE_EXIT | note_exitstatus)
+            self.exit_queue.control([event], 0, 0)
+            if os.read(ready_read, 1) != b"1":
+                # The task may still be waiting behind the launch gate and
+                # holding error_write. Unblock it before waiting for pipe EOF.
+                os.close(gate_write); temporary.remove(gate_write)
+                detail = os.read(error_read, 8192)
+                if detail:
+                    error = json.loads(detail); raise fail_os(OSError(error.get("errno", errno.EIO), error.get("message", "exec failed")))
+                raise RpcError("E_SUPERVISOR_START", "process group guardian did not start")
+            self.group_owned = True
+            os.write(gate_write, b"1"); os.close(gate_write); temporary.remove(gate_write)
+            error = os.read(error_read, 8192)
+            if error:
+                detail = json.loads(error); raise fail_os(OSError(detail.get("errno", errno.EIO), detail.get("message", "exec failed")))
+        finally:
+            for fd in temporary: os.close(fd)
+        close_fds_except({self.control.fileno(), self.guard_write, self.tty_master_fd, self.exit_queue.fileno()})
+        self.send({"event": "ready", "pid": self.pid, "pgid": self.pid})
+
     def collect_command(self) -> None:
         if self.command_reaped or self.pid <= 0: return
+        if self.darwin_tty:
+            if self.code is None and self.exit_queue is not None:
+                events = self.exit_queue.control(None, 1, 0)
+                if events:
+                    self.code = returncode_for(events[0].data)
+                    self.send({"event": "exit", "returncode": self.code})
+            return
         pid, status = os.waitpid(self.pid, os.WNOHANG)
         if pid:
             self.command_reaped = True; self.code = returncode_for(status)
@@ -1613,7 +1781,8 @@ class ProcessSupervisor:
             except OSError as exc:
                 if exc.errno not in (errno.ESRCH, errno.ENXIO, errno.EIO): raise
             except RpcError: pass
-        os.killpg(self.pid, sig)
+        try: os.killpg(self.pid, sig)
+        except ProcessLookupError: pass
         if sig == signalmod.SIGKILL:
             self.group_owned = False; self.generation += 1; self.deadline = None
         return True
@@ -1624,6 +1793,15 @@ class ProcessSupervisor:
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             self.collect_command()
+            if self.darwin_tty and not self.command_reaped and self.pid > 0:
+                # No group signal may follow this reap: signal_group(KILL)
+                # above invalidated ownership and all delayed escalation.
+                got, status = os.waitpid(self.pid, os.WNOHANG)
+                if got:
+                    self.command_reaped = True
+                    if self.code is None:
+                        self.code = returncode_for(status)
+                        self.send({"event": "exit", "returncode": self.code})
             if self.guardian and not self.guardian_reaped:
                 got, _ = os.waitpid(self.guardian, os.WNOHANG)
                 self.guardian_reaped = bool(got)
@@ -1649,11 +1827,16 @@ class ProcessSupervisor:
                 if target == "group": pgid = self.pid; delivered = self.signal_group(allowed[name])
                 elif target == "foreground":
                     if not self.group_owned: return {"delivered": False, "targetPgid": None, "verified": True}
-                    pgid = self.foreground(); os.killpg(pgid, allowed[name]); delivered = True
+                    pgid = self.foreground()
+                    # Check the exact group used for this delivery, not a
+                    # previous foreground inspection in another RPC.
+                    if params.get("denyOwnShellKill") is True and name == "SIGKILL" and pgid == self.pid:
+                        raise RpcError("E_PERMISSION_DENIED", "refusing to SIGKILL the terminal shell; close the terminal instead")
+                    os.killpg(pgid, allowed[name]); delivered = True
                     if pgid == self.pid and allowed[name] == signalmod.SIGKILL:
                         self.group_owned = False; self.generation += 1; self.deadline = None
                 elif target == "process":
-                    if not self.command_reaped: os.kill(self.pid, allowed[name]); delivered = True
+                    if self.code is None and not self.command_reaped: os.kill(self.pid, allowed[name]); delivered = True
                 else: raise RpcError("E_INVALID_PARAMS", "invalid signal target")
             except ProcessLookupError: pass
             return {"delivered": delivered, "targetPgid": pgid, "verified": target == "foreground"}
@@ -1705,6 +1888,7 @@ def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Opt
         if supervisor.guard_write >= 0:
             try: os.close(supervisor.guard_write)
             except OSError: pass
+        if supervisor.exit_queue is not None: supervisor.exit_queue.close()
         supervisor.control.close()
 
 

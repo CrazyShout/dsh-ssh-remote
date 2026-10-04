@@ -144,6 +144,17 @@ export function installRemoteFileSystemRouter(
         : originalReadByteRange.call(fs, ...args);
   }
 
+  // The native Files/Preview UI subscribes through ctx.fs.watch. Never hand
+  // an execution-world SSH target to the local watcher. The official feed
+  // translates this unsupported-provider error into its manual-refresh mode.
+  const originalWatch = (fs as unknown as Record<string, AnyFunction>).watch;
+  if (typeof originalWatch === 'function') {
+    originals.set('watch', originalWatch);
+    (fs as unknown as Record<string, AnyFunction>).watch = (...args: any[]) => isSshTarget(args[0])
+      ? Promise.reject(new FsError('Remote file watching is unavailable; use the file panel refresh control.', 'FS_IO_ERROR'))
+      : originalWatch.call(fs, ...args);
+  }
+
   const originalWriteText = remember('writeText');
   (fs as any).writeText = async (
     target: FsTarget,

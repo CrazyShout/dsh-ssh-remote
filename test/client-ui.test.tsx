@@ -3,6 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SshDirectoryFlow, SshRemotePanel } from '../client/index.js';
+import { BlankNativePanelActions, NativePanelActions } from '../client/native-panels.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: element } = await import('react');
@@ -328,5 +329,111 @@ describe('rendered SSH directory flow', () => {
     await act(async () => pending.resolve(ok(listing('/stuck'))));
     await click('刷新目录');
     expect(ssh.browse).toHaveBeenLastCalledWith('alpha', '/home/test');
+  });
+});
+
+describe('native remote workspace panel entry points', () => {
+  function panelProps(cwd: string | undefined = '/real-saved-anchor') {
+    return {
+      sessionId: 'session-a',
+      useSessions: (selector: any) => selector({ byId: { 'session-a': { cwd } } }),
+      workspaceInfo: vi.fn(async () => ok({ alias: 'gpu', remotePath: '/home/test/project', uri: 'ssh://gpu/home/test/project' })),
+      openPanel: vi.fn(),
+      availablePanels: () => 3,
+      subscribePanels: () => () => {},
+    };
+  }
+
+  it('offers native panels above the composer for a blank real Session without submitting a prompt', async () => {
+    const props = {
+      ...panelProps(),
+      session: { blank: true, running: false, promptAttempted: false },
+      useConversation: (selector: any) => selector({ activeTargets: new Set() }),
+    };
+    await render(BlankNativePanelActions, props);
+    await click('远程文件');
+    await click('远程终端');
+    expect(props.openPanel.mock.calls).toEqual([['files'], ['terminal']]);
+    expect(container.querySelector<HTMLElement>('[aria-label^="远程工作区"]')?.style.justifyContent).toBe('flex-end');
+  });
+
+  it.each([
+    { blank: false, running: false, promptAttempted: false, active: false },
+    { blank: true, running: true, promptAttempted: false, active: false },
+    { blank: true, running: false, promptAttempted: true, active: false },
+    { blank: true, running: false, promptAttempted: false, active: true },
+  ])('does not duplicate the header controls after blank chrome ends: %j', async state => {
+    const props = {
+      ...panelProps(),
+      session: state,
+      useConversation: (selector: any) => selector({ activeTargets: new Set(state.active ? ['active'] : []) }),
+    };
+    await render(BlankNativePanelActions, props);
+    expect(container.textContent).toBe('');
+    expect(props.workspaceInfo).not.toHaveBeenCalled();
+  });
+
+  it('opens the official tab kinds using verified workspace identity and explains terminal permissions', async () => {
+    const props = panelProps();
+    await render(NativePanelActions, props);
+    expect(props.workspaceInfo).toHaveBeenCalledWith('/real-saved-anchor');
+    expect(container.textContent).toContain('SSH · gpu');
+    expect(button('远程文件').title).toContain('gpu:/home/test/project');
+    expect(button('远程终端').title).toContain('使用 SSH 账号权限，不受模型沙箱限制');
+    await click('远程文件');
+    await click('远程终端');
+    expect(props.openPanel.mock.calls).toEqual([['files'], ['terminal']]);
+  });
+
+  it('never infers remote identity from an anchor-looking local path or title', async () => {
+    const props = panelProps('/home/test/.dsh/ssh-workspace-anchors/fake-gpu');
+    props.workspaceInfo.mockResolvedValue(ok(null) as any);
+    await render(NativePanelActions, props);
+    expect(container.textContent).toBe('');
+    expect(props.openPanel).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old identity response after switching to a local Session', async () => {
+    const previous = deferred();
+    const props = panelProps();
+    props.workspaceInfo.mockReturnValue(previous.promise);
+    await render(NativePanelActions, props);
+    const local = panelProps('/local/project');
+    local.workspaceInfo.mockResolvedValue(ok(null) as any);
+    await render(NativePanelActions, local);
+    await act(async () => previous.resolve(ok({ alias: 'old', remotePath: '/old', uri: 'ssh://old/old' })));
+    expect(container.textContent).toBe('');
+  });
+
+  it('reacts to optional tab availability and surfaces a navigation failure without breaking the header', async () => {
+    const props = panelProps();
+    let available = 0;
+    let changed = () => {};
+    props.availablePanels = () => available;
+    props.subscribePanels = (listener: () => void) => { changed = listener; return () => {}; };
+    await render(NativePanelActions, props);
+    expect(button('远程文件').disabled).toBe(true);
+    expect(button('远程终端').disabled).toBe(true);
+    expect(button('远程终端').title).toContain('尚未加载');
+    await act(async () => { available = 3; changed(); });
+    expect(button('远程终端').disabled).toBe(false);
+    props.openPanel.mockImplementation(() => { throw new Error('会话已切换'); });
+    await click('远程终端');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('会话已切换');
+  });
+
+  it('does not open a remote panel after a timed-out identity lookup or without a cwd', async () => {
+    vi.useFakeTimers();
+    const props = panelProps();
+    const pending = deferred();
+    props.workspaceInfo.mockReturnValue(pending.promise);
+    await render(NativePanelActions, props);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    await act(async () => pending.resolve(ok({ alias: 'late', remotePath: '/late', uri: 'ssh://late/late' })));
+    expect(container.textContent).toBe('');
+    const noCwd = panelProps('');
+    await render(NativePanelActions, noCwd);
+    expect(noCwd.workspaceInfo).not.toHaveBeenCalled();
+    expect(container.textContent).toBe('');
   });
 });

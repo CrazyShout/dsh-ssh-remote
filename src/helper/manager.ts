@@ -145,7 +145,7 @@ export class RemoteHelperManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 20_000;
     this.clientName = options.clientName ?? 'dsh-ssh-remote';
-    this.clientVersion = options.clientVersion ?? '0.4.0';
+    this.clientVersion = options.clientVersion ?? '0.5.0';
     this.retentionMs = options.retentionMs ?? 120_000;
     this.aliasValidator = options.aliasValidator;
     this.random = options.random ?? Math.random;
@@ -161,7 +161,9 @@ export class RemoteHelperManager {
     const alias = normalizeAlias(uriOrAlias);
     const entry = this.entry(alias);
     entry.wanted = true;
+    const generation = entry.generation;
     const raw = await this.rawClient(entry, signal);
+    this.assertCurrent(entry, generation, raw);
     const facade = entry.facade ??= new ManagedRemoteHelperFacade(
       alias,
       nextSignal => this.rawClient(entry, nextSignal),
@@ -173,17 +175,28 @@ export class RemoteHelperManager {
   }
 
   private async rawClient(entry: ManagedHelper, signal?: AbortSignal): Promise<RemoteHelperRpcClient> {
+    this.assertActive();
     signal?.throwIfAborted();
-    if (entry.client !== undefined && entry.client.closeReason === undefined) return entry.client;
-    if (entry.pending === undefined) {
-      this.clearRetry(entry);
-      const generation = entry.generation;
-      const pending = this.connect(entry, generation).finally(() => {
-        if (entry.pending === pending) entry.pending = undefined;
-      });
-      entry.pending = pending;
+    const generation = entry.generation;
+    this.assertCurrent(entry, generation);
+    // connect() installs entry.client before initialize/health/environment
+    // finish. Always join that pending attempt before publishing its raw
+    // transport to another reader, terminal, or resumed call.
+    let pending = entry.pending;
+    if (pending === undefined && entry.client !== undefined && entry.client.closeReason === undefined) {
+      return entry.client;
     }
-    return raceSignal(entry.pending, signal);
+    if (pending === undefined) {
+      this.clearRetry(entry);
+      const connection = this.connect(entry, generation).finally(() => {
+        if (entry.pending === connection) entry.pending = undefined;
+      });
+      entry.pending = pending = connection;
+    }
+    const client = await raceSignal(pending, signal);
+    this.assertCurrent(entry, generation, client);
+    if (client.closeReason !== undefined) throw client.closeReason;
+    return client;
   }
 
   status(uriOrAlias: string): RemoteHelperStatus {
@@ -228,7 +241,9 @@ export class RemoteHelperManager {
     this.clearHealth(entry);
     await this.retireTransport(entry, 'manual retry');
     entry.pending = undefined;
+    const generation = entry.generation;
     const raw = await this.rawClient(entry, signal);
+    this.assertCurrent(entry, generation, raw);
     const facade = entry.facade ??= new ManagedRemoteHelperFacade(
       alias,
       nextSignal => this.rawClient(entry, nextSignal),
@@ -460,24 +475,13 @@ export class RemoteHelperManager {
 
   private async resumeAfterDisconnect(
     entry: ManagedHelper,
-    previous: RemoteHelperRpcClient,
+    _previous: RemoteHelperRpcClient,
     signal?: AbortSignal,
   ): Promise<RemoteHelperRpcClient> {
     this.assertActive();
     signal?.throwIfAborted();
     if (!entry.wanted) throw new Error(`remote helper host ${entry.alias} is closed`);
-    if (entry.client !== undefined
-      && entry.client !== previous
-      && entry.client.closeReason === undefined) return entry.client;
-    this.clearRetry(entry);
-    if (entry.pending === undefined) {
-      const generation = entry.generation;
-      const pending = this.connect(entry, generation).finally(() => {
-        if (entry.pending === pending) entry.pending = undefined;
-      });
-      entry.pending = pending;
-    }
-    return raceSignal(entry.pending, signal);
+    return this.rawClient(entry, signal);
   }
 
   private scheduleReconnect(entry: ManagedHelper, generation: number): void {
@@ -768,6 +772,8 @@ class ManagedRemoteHelperFacade implements RemoteHelperClient {
 }
 
 const READ_ONLY_METHODS = new Set([
+  'environment/check',
+  'environment/resolveExecutable',
   'health/ping',
   'health/status',
   'fs/canonicalize',

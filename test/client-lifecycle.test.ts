@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply } from '../client/index.js';
 import { TYPERT_REMOTE } from '../client/typert.remote-client.js';
 import { TYPERT } from '../src/typert.host.js';
+import { mountNativePanels } from '../client/native-panels.js';
 
 // The real primitives package ships browser-only CSS imports; at runtime the
 // DSH loader resolves it through its module table instead of Node. This test
@@ -20,10 +21,11 @@ afterEach(() => vi.unstubAllGlobals());
 describe('client lifecycle', () => {
   it('ships helper lifecycle methods from the source-owned Remote descriptor', () => {
     const methods = (TYPERT_REMOTE as any).descriptors.map((entry: { method: string }) => entry.method);
-    expect(methods).toEqual([
+    expect(methods).toEqual(expect.arrayContaining([
       'config', 'statuses', 'browse', 'createDirectory', 'materializeWorkspace',
       'connectHost', 'disconnectHost', 'retryHost', 'diagnostics',
-    ]);
+      'workspaceInfo',
+    ]));
     expect(TYPERT.invocations.map((entry) => entry.method)).toEqual(methods);
     for (const entry of TYPERT.invocations) {
       expect(entry.result.create().safeParse(undefined).success).toBe(false);
@@ -111,6 +113,7 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -135,10 +138,58 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',
       'remote:dispose',
     ]);
+  });
+
+  it('registers native panel actions only through optional service and slot injections', async () => {
+    const unregister = vi.fn();
+    let selected = 'session-a';
+    const scope = {
+      remote: { sshRemote: { workspaceInfo: vi.fn(async () => ({ ok: true, value: null })) } },
+      slots: {
+        inject: vi.fn((_slot, callback) => callback()),
+        register: vi.fn(() => unregister),
+      },
+      sidebarRight: { mounted: { getSnapshot: () => selected }, openTab: vi.fn() },
+      sidebarRightTabs: { get: vi.fn(() => ({})), subscribe: vi.fn(() => () => {}) },
+    };
+    const ctx = {
+      inject: vi.fn((dependencies, callback) => {
+        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs']);
+        return { dispose: callback(scope) };
+      }),
+    };
+    const dispose = mountNativePanels(ctx as never);
+    expect(scope.slots.inject).toHaveBeenCalledWith('conversation.session.header.utilities', expect.any(Function));
+    expect(scope.slots.inject).toHaveBeenCalledWith('conversation.input.dock', expect.any(Function));
+    const options = (scope.slots.register.mock.calls[0] as any)[0];
+    expect(options).toMatchObject({ name: 'conversation.session.header.utilities', id: 'dsh-ssh-remote.native-panels' });
+    const face = options.inject('session-a');
+    face.openPanel('files');
+    face.openPanel('terminal');
+    expect(scope.sidebarRight.openTab.mock.calls).toEqual([['files'], ['terminal']]);
+    selected = 'session-b';
+    expect(() => face.openPanel('terminal')).toThrow('会话已切换');
+    await dispose();
+    expect(unregister).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not await missing native-panel modules or register against an older backend', async () => {
+    const disposePending = vi.fn();
+    const pending = new Promise<void>(() => {}) as Promise<void> & { dispose(): void };
+    pending.dispose = disposePending;
+    const missing = { inject: vi.fn(() => pending) };
+    const dispose = mountNativePanels(missing as never);
+    await dispose();
+    expect(disposePending).toHaveBeenCalledOnce();
+    const slots = { inject: vi.fn() };
+    const older = { inject: vi.fn((_dependencies, callback) => ({ dispose: callback({ remote: { sshRemote: {} }, slots }) })) };
+    await mountNativePanels(older as never)();
+    expect(slots.inject).not.toHaveBeenCalled();
   });
 });

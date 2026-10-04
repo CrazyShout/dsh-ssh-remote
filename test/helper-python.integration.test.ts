@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import nodeProcess from 'node:process';
@@ -82,6 +82,98 @@ afterEach(async () => {
 });
 
 describe('Python remote helper v1', () => {
+  it('ignores a directory-valued SHELL preference and reports an executable file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-shell-directory-')); temporary.push(root);
+    const rpc = new RpcClient({ extraEnv: { SHELL: root } }); clients.push(rpc);
+    const hello = await rpc.hello as { platform: { shell: string } };
+    expect(hello.platform.shell).not.toBe(root);
+    expect((await stat(hello.platform.shell)).isFile()).toBe(true);
+  });
+
+  it('resolves executables in the helper execution environment without local PATH guesses', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-helper-executable-')); temporary.push(root);
+    const executable = join(root, 'fixture-shell');
+    await writeFile(executable, '#!/bin/sh\nexit 0\n'); await chmod(executable, 0o755);
+    await symlink(executable, join(root, 'shell-alias'));
+    const rpc = new RpcClient(); clients.push(rpc); await rpc.hello;
+    const initialized = await rpc.request('initialize', { clientId: 'executable-lookup' });
+    expect(initialized.capabilities.environment.resolveExecutable).toBe(true);
+    await expect(rpc.request('environment/resolveExecutable', { command: 'fixture-shell', env: { PATH: root } }))
+      .resolves.toEqual({ path: await realpath(executable) });
+    await expect(rpc.request('environment/resolveExecutable', { command: join(root, 'shell-alias') }))
+      .resolves.toEqual({ path: await realpath(executable) });
+    await expect(rpc.request('environment/resolveExecutable', { command: 'definitely-not-a-shell', env: { PATH: root } }))
+      .rejects.toMatchObject({ code: 'E_EXECUTABLE_NOT_FOUND' });
+    await expect(rpc.request('environment/resolveExecutable', { command: './fixture-shell', env: { PATH: root } }))
+      .rejects.toMatchObject({ code: 'E_INVALID_PARAMS' });
+    await chmod(executable, 0o644);
+    await expect(rpc.request('environment/resolveExecutable', { command: executable }))
+      .rejects.toMatchObject({ code: 'E_EXECUTABLE_NOT_FOUND' });
+    await expect(rpc.request('environment/resolveExecutable', { command: '/bin/sh', env: { PATH: 1 } }))
+      .rejects.toMatchObject({ code: 'E_INVALID_PARAMS' });
+  }, integrationTimeout);
+
+  it('resolves login-only search executables without confusing direct-process PATH', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-login-executable-')); temporary.push(root);
+    const loginBin = join(root, 'login-bin'); const wrapperBin = join(root, 'wrapper-bin');
+    await mkdir(loginBin); await mkdir(wrapperBin);
+    const command = 'login-only-fixture-executable';
+    await writeFile(join(loginBin, command), '#!/bin/sh\nexit 0\n'); await chmod(join(loginBin, command), 0o755);
+    await writeFile(join(wrapperBin, 'sh'), '#!/bin/sh\n[ "$1" = "-lc" ] || exit 99\nPATH="$LOGIN_FIXTURE_BIN:/bin:/usr/bin"; export PATH\nexec /bin/sh -c "$2" "$3" "$4"\n');
+    await chmod(join(wrapperBin, 'sh'), 0o755);
+    const rpc = new RpcClient(); clients.push(rpc); await rpc.hello;
+    await rpc.request('initialize', { clientId: 'login-path-lookup' });
+    const env = { PATH: `${wrapperBin}:/bin:/usr/bin`, LOGIN_FIXTURE_BIN: loginBin };
+    await expect(rpc.request('environment/resolveExecutable', { command, env }))
+      .rejects.toMatchObject({ code: 'E_EXECUTABLE_NOT_FOUND' });
+    await expect(rpc.request('environment/resolveExecutable', { command, env, login: true }))
+      .resolves.toEqual({ path: await realpath(join(loginBin, command)) });
+  }, integrationTimeout);
+
+  it('cancels RESERVED process allocations before they can publish a late live terminal', () => {
+    const program = String.raw`
+import importlib.util,json,threading,tempfile,sys
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+server=m.Server();server.dispatch('initialize',{'clientId':'reserved-test'})
+entered=threading.Event();proceed=threading.Event();real=m.ProcessRecord;outcomes=[];created=[]
+def delayed(*args,**kwargs):
+ entered.set();assert proceed.wait(3)
+ record=real(*args,**kwargs);created.append(record);return record
+m.ProcessRecord=delayed
+with tempfile.TemporaryDirectory() as root:
+ server.dispatch('workspace/open',{'path':root,'access':'danger-full-access','workspaceId':'w','operationId':'w'})
+ for method in ('process/terminate','process/release'):
+  early='before-reserve-'+method.split('/')[1]
+  try:server.dispatch(method,{'processId':early,'operationId':'cancel-'+early,'force':True})
+  except m.RpcError as e:assert e.code=='E_UNKNOWN_PROCESS'
+  try:server.dispatch('process/start',{'workspaceId':'w','processId':early,'operationId':'start-'+early,'argv':['/bin/sleep','20'],'stdin':'closed'});raise AssertionError('late pre-reservation start published')
+  except m.RpcError as e:assert e.code=='E_PROCESS_CANCELLED'
+ assert not created
+ request={'workspaceId':'w','processId':'late','operationId':'start','argv':['/bin/sleep','20'],'stdin':'closed'}
+ def start():
+  try:server.dispatch('process/start',request);outcomes.append('published')
+  except m.RpcError as e:outcomes.append(e.code)
+ worker=threading.Thread(target=start);worker.start();assert entered.wait(3)
+ result=server.dispatch('process/terminate',{'processId':'late','operationId':'cancel','force':True})
+ assert result['cancellationScheduled']
+ try:server.dispatch('process/release',{'processId':'late','operationId':'release'})
+ except m.RpcError as e:assert e.code=='E_PROCESS_STARTING'
+ proceed.set();worker.join(5);assert not worker.is_alive()
+ assert outcomes==['E_PROCESS_CANCELLED'],outcomes
+ assert created[0].released and server.dispatch('health/status',{})['processes']==0
+ try:server.dispatch('process/start',dict(request,operationId='retry-start'));raise AssertionError('restarted cancelled identity')
+ except m.RpcError as e:assert e.code=='E_PROCESS_CANCELLED'
+ server.close()
+print(json.dumps({'cancelled':True,'lateProcessReleased':created[0].released}))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ cancelled: true, lateProcessReleased: true });
+  }, integrationTimeout);
+
   it('drains every retained output page before reporting process EOF', async () => {
     const rpc = new RpcClient(); clients.push(rpc); await rpc.hello;
     await rpc.request('initialize', { clientId: 'output-drain' });
@@ -122,17 +214,30 @@ describe('Python remote helper v1', () => {
 
   it('pins the task group after leader exit and escalates TERM for surviving descendants', () => {
     const program = String.raw`
-import importlib.util,json,time
+import importlib.util,json,time,sys,base64,subprocess,os,signal
 spec=importlib.util.spec_from_file_location('helper',__import__('sys').argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 results=[]
 for tty in (None,{'rows':24,'cols':80}):
- r=m.ProcessRecord('descendant',['/bin/sh','-c',"trap '' TERM; sleep 20 & printf child-started; exit 7"],'/tmp',{},tty,'pipe')
+ r=m.ProcessRecord('descendant',['/bin/sh','-c',"trap '' TERM HUP; sleep 20 & printf 'child-started:%s\\n' \"$!\"; exit 7"],'/tmp',{},tty,'pipe')
  try:
   deadline=time.monotonic()+3
   while r.returncode is None and time.monotonic()<deadline:time.sleep(.01)
   assert r.returncode==7,r.status()
-  assert not r.read({'afterSeq':'0'})['exited']
+  deadline=time.monotonic()+3
+  while time.monotonic()<deadline:
+   first=r.read({'afterSeq':'0','waitMs':100})
+   output=b''.join(base64.b64decode(c['data']) for c in first['chunks'])
+   if b'\n' in output:break
+  # Darwin revokes a controlling PTY when its real task/session leader exits.
+  # That is kernel EOF, not a proxy for process exit. Pipes and Linux retain
+  # their existing descendant-held-output behavior.
+  if tty is None or sys.platform!='darwin':assert not first['exited']
+  descendant=int(output.split(b'child-started:')[1].strip())
+  os.kill(descendant,0)
+  if tty is not None and sys.platform=='darwin':
+   state=subprocess.check_output(['/bin/ps','-o','stat=','-p',str(r.pid)],text=True).strip()
+   assert state.startswith('Z'),state # kqueue has reported exit without reaping our PID pin.
   r.terminate(False,100)
   deadline=time.monotonic()+3
   while time.monotonic()<deadline:
@@ -140,6 +245,12 @@ for tty in (None,{'rows':24,'cols':80}):
    if data['exited']:break
   assert data['exited'],data
   assert data['exitCode']==7,data
+  deadline=time.monotonic()+2
+  while time.monotonic()<deadline:
+   check=subprocess.run(['ps','-o','stat=','-p',str(descendant)],stdout=subprocess.PIPE,text=True)
+   if not check.stdout.strip() or check.stdout.strip().startswith('Z'):break
+   time.sleep(.01)
+  assert not check.stdout.strip() or check.stdout.strip().startswith('Z'),check.stdout
   started=time.monotonic();r.release();elapsed=time.monotonic()-started
   assert elapsed<3,elapsed
   assert r.release()=={'released':False}
@@ -155,6 +266,113 @@ print(json.dumps(results))
     expect(JSON.parse(result.stdout)).toEqual([
       { tty: false, exitCode: 7, readers: 0 }, { tty: true, exitCode: 7, readers: 0 },
     ]);
+  }, integrationTimeout);
+
+  it.runIf(process.platform === 'darwin')('pins Darwin PTY task exits even with an inherited ignored SIGCHLD', () => {
+    const program = String.raw`
+import importlib.util,json,time,sys,signal,subprocess
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+signal.signal(signal.SIGCHLD,signal.SIG_IGN)
+r=m.ProcessRecord('ignored-chld',['/bin/sh','-c','printf PINNED; exit 7'],'/tmp',{}, {'rows':24,'cols':80},'pipe')
+signal.signal(signal.SIGCHLD,signal.SIG_DFL)
+try:
+ deadline=time.monotonic()+3
+ while r.returncode is None and time.monotonic()<deadline:time.sleep(.01)
+ assert r.returncode==7,r.status()
+ state=subprocess.check_output(['/bin/ps','-o','stat=','-p',str(r.pid)],text=True).strip()
+ assert state.startswith('Z'),state
+ r.release()
+ check=subprocess.run(['/bin/ps','-o','stat=','-p',str(r.pid)],stdout=subprocess.PIPE,text=True)
+ assert not check.stdout.strip(),check.stdout
+ print(json.dumps({'pinned':True,'reaped':True}))
+finally:
+ if not r.released:r.release()
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 10_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ pinned: true, reaped: true });
+  }, integrationTimeout);
+
+  it('cleans the owned task group when its supervisor is abruptly killed', () => {
+    const program = String.raw`
+import importlib.util,json,time,sys,base64,subprocess
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+results=[]
+for tty in (None,{'rows':24,'cols':80}):
+ r=m.ProcessRecord('guardian-crash',['/bin/sh','-c',"trap '' HUP TERM; sleep 20 & printf 'CHILD:%s\\n' \"$!\"; wait"],'/tmp',{},tty,'pipe')
+ try:
+  deadline=time.monotonic()+3;output=b''
+  while time.monotonic()<deadline:
+   read=r.read({'afterSeq':'0','waitMs':100})
+   output=b''.join(base64.b64decode(c['data']) for c in read['chunks'])
+   if b'\n' in output:break
+  descendant=int(output.split(b'CHILD:')[1].strip())
+  r.child.kill();r.child.wait(timeout=2)
+  deadline=time.monotonic()+3
+  while time.monotonic()<deadline:
+   states=[subprocess.run(['ps','-o','stat=','-p',str(pid)],stdout=subprocess.PIPE,text=True).stdout.strip() for pid in (r.pid,descendant)]
+   if all(not state or state.startswith('Z') for state in states):break
+   time.sleep(.02)
+  assert all(not state or state.startswith('Z') for state in states),states
+  while not r.supervisor_closed and time.monotonic()<deadline:time.sleep(.01)
+  r.release();results.append({'tty':tty is not None,'cleaned':True})
+ finally:
+  if not r.released:r.release()
+print(json.dumps(results))
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([{ tty: false, cleaned: true }, { tty: true, cleaned: true }]);
+  }, integrationTimeout);
+
+  it.runIf(process.platform === 'darwin')('fails a Darwin guardian fork promptly without a launch-gate deadlock', () => {
+    const program = String.raw`
+import importlib.util,json,time,sys,socket,os,errno,signal
+spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+local,remote=socket.socketpair();master,slave=os.openpty()
+launcher=os.fork()
+if launcher==0:
+ local.close()
+ for target in (0,1,2):os.dup2(slave,target)
+ os.close(slave)
+ original_fork=os.fork;calls=[0]
+ def fail_guardian_fork():
+  calls[0]+=1
+  if calls[0]==3:raise OSError(errno.EAGAIN,'injected guardian fork failure')
+  return original_fork()
+ os.fork=fail_guardian_fork
+ os._exit(m.run_supervised(remote.fileno(),master,None,['/bin/true']))
+remote.close();os.close(slave);started=time.monotonic();local.settimeout(3)
+try:
+ buffered=b''
+ while b'\n' not in buffered:
+  chunk=local.recv(8192)
+  assert chunk,'closed without startup error'
+  buffered+=chunk
+ event=json.loads(buffered.split(b'\n',1)[0])
+ assert event['event']=='error',event
+ assert event['code']!='E_SUPERVISOR_TIMEOUT',event
+ assert time.monotonic()-started<3,event
+ print(json.dumps({'failedPromptly':True,'error':event['code']}))
+finally:
+ local.close();os.close(master)
+ # The launcher is our unreaped child, so this exact PID remains owned.
+ try:os.kill(launcher,signal.SIGKILL)
+ except ProcessLookupError:pass
+ os.waitpid(launcher,0)
+`;
+    const result = spawnSync('python3', ['-c', program, helper], {
+      encoding: 'utf8', timeout: 6_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ failedPromptly: true });
   }, integrationTimeout);
 
   it('keeps sandbox reaper stdio separate from task EOF with the inherited-FD bridge', () => {

@@ -20,6 +20,7 @@ import {
   type LocalAnchor,
 } from './local-browse.js';
 import TYPERT_REMOTE from './typert.remote-client.js';
+import { mountNativePanels } from './native-panels.js';
 
 export const name = 'dsh-ssh-remote-client';
 export const inject = ['remote'];
@@ -203,15 +204,18 @@ export async function apply(ctx: ClientContext) {
     };
   });
 
+  const disposePanels = mountNativePanels(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposePanels();
     await ui.dispose();
     await disposeMount();
     throw error;
   }
 
   return async () => {
+    await disposePanels();
     await ui.dispose();
     await disposeMount();
   };
