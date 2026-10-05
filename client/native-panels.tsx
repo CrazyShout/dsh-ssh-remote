@@ -130,6 +130,11 @@ export function NativePanelActions({
         title={(panels & 2) === 0 ? 'DSH 终端面板尚未加载。' : `在 ${identity} 打开交互终端；使用 SSH 账号权限，不受模型沙箱限制。`}
         onClick={() => open('terminal')}
       >远程终端</Button>
+      <span
+        aria-label="本机打开不支持远端文件"
+        title="DSH 的“在本机应用打开 / 在 Finder 中显示”及其快捷键不支持 SSH，可能打开本机同名路径或空目录。请使用远程文件预览和远程终端。"
+        style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' }}
+      >本机打开不支持远端</span>
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );

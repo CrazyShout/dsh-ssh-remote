@@ -7,7 +7,33 @@ hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
-## 0.5.0: native remote file and user-terminal panels
+## 0.5.1: reconnect, input and cleanup hardening
+
+- Human terminals wait through transient transport failures within the original
+  helper session's retention window, retaining their process and output cursor.
+  Explicit disconnect, permanent failures and expiry stop recovery; they do not
+  reactivate a closed connection or silently create a replacement terminal.
+  Stalled read/status responses can retire a blackholed transport and resume the
+  same session; an absolute recovery budget prevents endless retry.
+- Input and resize use separate acknowledged sequence lanes instead of filling
+  the shared 4,096-entry operation journal. Retry never duplicates the same input;
+  an unresolved sent mutation poisons its lane rather than claiming rollback.
+- Allocation reserves bounded cleanup capacity. Existing resources can still be
+  retired when the operation journal is full. Expiry sweeps run under continuous
+  connection traffic. Installer cancellation waits for SSH child closure, with a
+  bounded TERM-to-KILL escalation when necessary.
+- CI adds Darwin process/PTY regressions and mandatory positive Linux bubblewrap
+  execution, not merely tests that an unavailable sandbox fails closed.
+- Markdown file images are read through their document's owning session, including
+  relative Unicode/space paths, and use revocable Blob URLs. Limits are 4 MiB per
+  image, 16 MiB retained and 64 images per document cache. Failed/oversized images
+  show a notice and never fall back to the Host-only `/api/file` route. Local
+  documents retain their own session identity too.
+
+These changes do not constitute full remote editor integration. See the file
+identity boundaries below.
+
+## Native remote file and user-terminal panels (since 0.5.0)
 
 Open an SSH workspace session and select **Remote files** or **Remote terminal**
 (currently labelled 远程文件 / 远程终端). Shortcuts appear above the input for an
@@ -113,7 +139,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.5.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version 0.5.1 targets DSH `0.2.0-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`
@@ -138,6 +164,13 @@ connection. The public seams still impose these visible limits:
    honestly when a directory exceeds 1,000 entries; the workspace picker uses
    a bounded directory-only scan. The native file panel has a separate
    `truncated` contract and displays bounded results with an explicit warning.
+6. Native **Open in a local app / Reveal in Finder**, including the keyboard
+   shortcut, are local-only actions, not SSH editor integration. Their rc.2
+   contracts omit session identity and can open an empty anchor or an unrelated
+   same-named local path. Use in-app previews and the remote terminal for SSH
+   files, not those local-open actions. Hiding a button does not guard the
+   keyboard/menu path. A complete fix requires an upstream session-aware open
+   contract and shortcut guard; see [ADR-0006](docs/adr/0006-reliability-and-file-identity.md).
 
 Removing the anchor and the last routing hooks requires an upstream first-class
 `{ hostId, remotePath, runtime }` workspace contract.

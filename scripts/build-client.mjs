@@ -30,7 +30,7 @@ const CLIENT_EXTERNALS = [
 ];
 
 /** Wire/type layers with no shared runtime identity that may inline. */
-const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand)(\/|$)/;
+const INLINE_SAFE = /^@deepseek-ai\/dsh-(host-apiproxy|session|llm|tools|brand|util-workspace-path)(\/|$)/;
 /**
  * Generated descriptor/codec contribution with no shared runtime identity.
  * NOTE: this plugin is UNscoped (dsh-ssh-remote), so its own /remote export

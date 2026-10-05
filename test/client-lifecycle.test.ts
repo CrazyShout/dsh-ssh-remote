@@ -114,6 +114,7 @@ describe('client lifecycle', () => {
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
       'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:slots,locale,remote.workspaceFiles',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -139,6 +140,7 @@ describe('client lifecycle', () => {
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
       'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:slots,locale,remote.workspaceFiles',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',
