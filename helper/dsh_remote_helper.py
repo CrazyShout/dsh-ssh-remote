@@ -33,7 +33,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -45,10 +45,12 @@ MAX_PROCESSES = 32
 MAX_READ_HANDLES = 64
 MAX_WRITE_HANDLES = 16
 MAX_OPERATIONS = 4096
+MAX_CLEANUP_IDENTITIES = 4096
 MAX_OUTSTANDING = 128
 MAX_CONCURRENT = 32
 MAX_SESSIONS = 16
 MAX_CONNECTIONS = 64
+DAEMON_SWEEP_INTERVAL = 0.5
 MAX_LIST_SCAN = 100_000
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SENSITIVE_ENV_PATTERN = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
@@ -371,7 +373,10 @@ class Server:
         self.path_lock_refs: Dict[str, int] = {}
         self.operation_locks: Dict[str, threading.Lock] = {}
         self.resources_lock = threading.RLock()
+        self.cleanup_lock = threading.RLock()
+        self.closed_resources: Dict[Tuple[str, str], Tuple[Dict[str, Any], float]] = {}
         self.cancelled_processes: Dict[str, float] = {}
+        self.released_processes: Dict[str, Dict[str, Any]] = {}
         self.read_handles: Dict[str, Dict[str, Any]] = {}
         self.write_handles: Dict[str, Dict[str, Any]] = {}
         self.processes: Dict[str, "ProcessRecord"] = {}
@@ -392,8 +397,9 @@ class Server:
                                  "createNoReplace": True, "durableRename": True},
             },
             "process": {"supported": True, "sandbox": "bwrap" if bwrap_available() else "none",
-                        "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked"},
-            "pty": {"supported": hasattr(os, "openpty"), "resize": True, "foregroundPgid": "verified"},
+                        "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked", "sequencedWrite": True},
+            "pty": {"supported": hasattr(os, "openpty"), "resize": True, "foregroundPgid": "verified",
+                    "sequencedResize": True},
             "session": {"resume": self.resume_supported},
             "environment": {"check": True, "resolveExecutable": True},
         }
@@ -464,6 +470,34 @@ class Server:
             with self.resources_lock: self.operations[opid] = (digest, result, time.monotonic())
             return result
 
+    def prune_cleanup(self) -> None:
+        # Called with resources_lock. Live resources reserve their retirement
+        # slot at allocation; expiry only drops identities outside replay TTL.
+        now = time.monotonic(); ttl = max(self.retention_ms / 1000, 600)
+        self.closed_resources = {key: value for key, value in self.closed_resources.items() if now-value[1] < ttl}
+        self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < ttl}
+        self.released_processes = {key: value for key, value in self.released_processes.items() if key in self.cancelled_processes}
+
+    def reserve_cleanup(self, kind: str, identity: str) -> None:
+        self.prune_cleanup()
+        if (kind, identity) in self.closed_resources:
+            raise RpcError("E_RESOURCE_RETIRED", "resource identity is retained for cleanup replay; use a fresh ID")
+        if len(self.closed_resources) + len(self.workspaces) + len(self.read_handles) + len(self.write_handles) >= MAX_CLEANUP_IDENTITIES:
+            raise RpcError("E_RESOURCE_LIMIT", "cleanup identity capacity reached; new resource allocation refused")
+
+    def resource_cleanup(self, kind: str, identity: Any, opid: Any, action: Any) -> Dict[str, Any]:
+        identity = valid_id(identity, "resourceId"); valid_id(opid, "operationId")
+        # Cleanup is lifecycle-idempotent, not an unbounded operationId stream.
+        # Serializing closures does not acquire the stdin writer's lock.
+        with self.cleanup_lock:
+            with self.resources_lock:
+                self.prune_cleanup(); old = self.closed_resources.get((kind, identity))
+            if old is not None: return old[0]
+            result = action()
+            if result.get("closed") or result.get("aborted"):
+                with self.resources_lock: self.closed_resources[(kind, identity)] = (result, time.monotonic())
+            return result
+
     def dispatch(self, method: str, p: Dict[str, Any]) -> Dict[str, Any]:
         if method == "initialize":
             if self.initialized and not self.resume_next:
@@ -490,23 +524,26 @@ class Server:
         if method == "workspace/open":
             def open_workspace() -> Dict[str, Any]:
                 ws = Workspace(p.get("path"), p.get("access", "read-only")); wid = valid_id(p.get("workspaceId") or secrets.token_hex(16), "workspaceId")
-                with self.resources_lock:
+                with self.cleanup_lock, self.resources_lock:
                     if len(self.workspaces) >= MAX_WORKSPACES: ws.close(); raise RpcError("E_RESOURCE_LIMIT", "workspace limit reached")
                     if wid in self.workspaces: ws.close(); raise RpcError("E_EXISTS", "workspaceId already exists")
+                    try: self.reserve_cleanup("workspace", wid)
+                    except Exception: ws.close(); raise
                     self.workspaces[wid] = ws
                 return {"workspaceId": wid, "path": ws.path, "access": ws.access}
             return self.guarded(p.get("operationId"), p, open_workspace)
         if method == "workspace/close":
             def close_workspace() -> Dict[str, Any]:
                 with self.resources_lock:
-                    ws = self.workspaces.pop(p.get("workspaceId"), None)
+                    ws = self.workspaces.get(p.get("workspaceId"))
                     uploads = [handle for handle in self.write_handles.values() if handle.get("workspaceId") == p.get("workspaceId")]
-                    for handle in uploads: self.write_handles.pop(handle["id"], None)
                 if ws is None: return {"closed": False}
                 for handle in uploads:
-                    with handle["lock"]: self.cleanup_write_handle(handle)
-                ws.close(); return {"closed": True}
-            return self.guarded(p.get("operationId"), p, close_workspace)
+                    self.resource_cleanup("write", handle["id"], p.get("operationId"), lambda h=handle: self.abort_write({"handleId": h["id"]}))
+                ws.close()
+                with self.resources_lock: self.workspaces.pop(p.get("workspaceId"), None)
+                return {"closed": True}
+            return self.resource_cleanup("workspace", p.get("workspaceId"), p.get("operationId"), close_workspace)
         if method == "fs/canonicalize":
             ws = self.workspace(p); parent, name, parts = ws.parent(p.get("path", ""))
             try:
@@ -565,9 +602,11 @@ class Server:
                 ws = self.workspace(p); fd = ws.open_file(p.get("path", "")); st = os.fstat(fd)
                 if not statmod.S_ISREG(st.st_mode): os.close(fd); raise RpcError("E_NOT_FILE", "target is not a regular file")
                 hid = valid_id(p.get("handleId") or secrets.token_hex(16), "handleId")
-                with self.resources_lock:
+                with self.cleanup_lock, self.resources_lock:
                     if len(self.read_handles) >= MAX_READ_HANDLES: os.close(fd); raise RpcError("E_RESOURCE_LIMIT", "read handle limit reached")
                     if hid in self.read_handles: os.close(fd); raise RpcError("E_EXISTS", "read handle already exists")
+                    try: self.reserve_cleanup("read", hid)
+                    except Exception: os.close(fd); raise
                     self.read_handles[hid] = {"fd": fd, "before": st, "hash": hashlib.sha256(), "seq": 0,
                                               "done": False, "last": None, "lock": threading.Lock()}
                 return {"handleId": hid, "metadata": meta(st)}
@@ -592,14 +631,17 @@ class Server:
                 return result
         if method == "fs/close":
             def close_read() -> Dict[str, Any]:
-                with self.resources_lock: handle = self.read_handles.pop(p.get("handleId"), None)
+                with self.resources_lock: handle = self.read_handles.get(p.get("handleId"))
                 if handle is None: return {"closed": False}
-                os.close(handle["fd"]); return {"closed": True}
-            return self.guarded(p.get("operationId"), p, close_read)
+                with handle["lock"]:
+                    os.close(handle["fd"])
+                    with self.resources_lock: self.read_handles.pop(p.get("handleId"), None)
+                return {"closed": True}
+            return self.resource_cleanup("read", p.get("handleId"), p.get("operationId"), close_read)
         if method == "fs/writeOpen": return self.guarded(p.get("operationId"), p, lambda: self.open_write(p))
         if method == "fs/writeChunk": return self.guarded(p.get("operationId"), p, lambda: self.write_chunk(p))
         if method == "fs/writeCommit": return self.guarded(p.get("operationId"), p, lambda: self.commit_write(p))
-        if method == "fs/writeAbort": return self.guarded(p.get("operationId"), p, lambda: self.abort_write(p))
+        if method == "fs/writeAbort": return self.resource_cleanup("write", p.get("handleId"), p.get("operationId"), lambda: self.abort_write(p))
         if method == "fs/mkdir":
             ws = self.workspace(p)
             if ws.access == "read-only": raise RpcError("E_PERMISSION_DENIED", "workspace is read-only")
@@ -620,35 +662,45 @@ class Server:
         if method == "fs/write": return self.write(p)
         if method == "process/start": return self.guarded(p.get("operationId"), p, lambda: self.start_process(p))
         if method == "process/read": return self.process(p).read(p)
-        if method == "process/write": return self.guarded(p.get("operationId"), p, lambda: self.process(p).write(p))
-        if method == "process/resize": return self.guarded(p.get("operationId"), p, lambda: self.process(p).resize(p))
+        if method in ("process/write", "process/resize"):
+            if "afterSeq" in p:
+                record = self.process(p)
+                lane, action = (record.write_lane, record.write) if method == "process/write" else (record.resize_lane, record.resize)
+                return lane.apply(p, action)
+            return self.guarded(p.get("operationId"), p, lambda: getattr(self.process(p), method.split("/")[1])(p))
         if method == "process/status": return self.process(p).status()
         if method == "process/inspectForeground": return self.process(p).inspect_foreground()
         if method == "process/signal": return self.guarded(p.get("operationId"), p, lambda: self.process(p).send_signal(p))
         if method == "process/terminate":
-            def terminate() -> Dict[str, Any]:
-                with self.resources_lock:
-                    process_id = valid_id(p.get("processId"), "processId")
-                    record = self.processes.get(process_id)
-                    if record is None or record is PROCESS_RESERVED:
-                        self.cancel_allocation(process_id)
-                        if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process; pending allocation identity cancelled")
-                        return {"running": True, "starting": True, "cancellationScheduled": True}
-                return self.process(p).terminate(bool(p.get("force", False)), int(p.get("graceMs", 2000)))
-            return self.guarded(p.get("operationId"), p, terminate)
+            valid_id(p.get("operationId"), "operationId")
+            with self.resources_lock:
+                process_id = valid_id(p.get("processId"), "processId")
+                record = self.processes.get(process_id)
+                if record is None or record is PROCESS_RESERVED:
+                    self.prune_cleanup()
+                    if process_id in self.released_processes: return {"running": False}
+                    self.cancel_allocation(process_id)
+                    if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process; pending allocation identity cancelled")
+                    return {"running": True, "starting": True, "cancellationScheduled": True}
+            return record.terminate(bool(p.get("force", False)), int(p.get("graceMs", 2000)))
         if method == "process/release":
-            def release() -> Dict[str, Any]:
+            valid_id(p.get("operationId"), "operationId")
+            with self.cleanup_lock:
                 with self.resources_lock:
                     process_id = valid_id(p.get("processId"), "processId")
+                    self.prune_cleanup()
+                    if process_id in self.released_processes: return self.released_processes[process_id]
                     record = self.processes.get(process_id)
                     if record is None or record is PROCESS_RESERVED:
                         self.cancel_allocation(process_id)
                         if record is None: raise RpcError("E_UNKNOWN_PROCESS", "unknown process; pending allocation identity cancelled")
                         raise RpcError("E_PROCESS_STARTING", "cancelled process allocation is still starting", True)
-                record = self.process(p); result = record.release()
-                with self.resources_lock: self.processes.pop(record.process_id, None)
+                result = record.release()
+                with self.resources_lock:
+                    self.cancel_allocation(process_id)
+                    self.released_processes[process_id] = result
+                    self.processes.pop(process_id, None)
                 return result
-            return self.guarded(p.get("operationId"), p, release)
         raise RpcError("E_METHOD_NOT_FOUND", "unknown method")
 
     def write(self, p: Dict[str, Any]) -> Dict[str, Any]:
@@ -733,9 +785,12 @@ class Server:
                       "intent": dict(intent), "mode": requested_mode, "seq": 0, "total": 0,
                       "hash": hashlib.sha256(), "last": None, "lastDigest": None,
                       "lock": threading.Lock(), "closed": False}
-            with self.resources_lock:
+            with self.cleanup_lock, self.resources_lock:
+                if self.workspaces.get(p.get("workspaceId")) is not ws:
+                    raise RpcError("E_UNKNOWN_WORKSPACE", "workspace closed while upload was opening")
                 if len(self.write_handles) >= MAX_WRITE_HANDLES: raise RpcError("E_RESOURCE_LIMIT", "write handle limit reached")
                 if hid in self.write_handles: raise RpcError("E_EXISTS", "write handle already exists")
+                self.reserve_cleanup("write", hid)
                 self.write_handles[hid] = handle
             return {"handleId": hid, "seq": "0", "maxChunkBytes": MAX_WRITE_CHUNK, "maxBytes": MAX_WRITE}
         except Exception:
@@ -808,42 +863,64 @@ class Server:
                       "sha256": handle["hash"].hexdigest(), "version": version,
                       "statVersion": stat_version(final_st), "metadata": meta(final_st, version)}
         except (OSError, RpcError) as exc:
-            with self.resources_lock: self.write_handles.pop(handle["id"], None)
+            # Publishing may have happened before an fsync/version error. Once
+            # this upload is cleaned up its ID must still be retired: an old
+            # abort cannot be allowed to target a replacement with the same ID.
             self.cleanup_write_handle(handle)
+            with self.resources_lock:
+                self.write_handles.pop(handle["id"], None)
+                self.closed_resources[("write", handle["id"])] = ({"aborted": False, "commitOutcome": "unconfirmed"}, time.monotonic())
             if isinstance(exc, OSError): raise fail_os(exc)
             raise
         handle["closed"] = True
-        with self.resources_lock: self.write_handles.pop(handle["id"], None)
+        with self.resources_lock:
+            self.write_handles.pop(handle["id"], None)
+            self.closed_resources[("write", handle["id"])] = ({"aborted": False, "committed": True}, time.monotonic())
         os.close(parent); handle["parent"] = -1
         return result
 
     def abort_write(self, p: Dict[str, Any]) -> Dict[str, Any]:
         handle = self.write_handle(p)
         with handle["lock"]:
+            # Commit may have completed while this abort waited for the handle.
+            # Its terminal outcome must not become a fictitious successful abort.
+            with self.resources_lock: retired = self.closed_resources.get(("write", handle["id"]))
+            if retired is not None: return retired[0]
+            if handle.get("closed"):
+                if handle.get("cleanupError"): raise RpcError("E_CLEANUP_FAILED", handle["cleanupError"])
+                raise RpcError("E_UNKNOWN_HANDLE", "write handle closed without a retained abort outcome")
+            self.cleanup_write_handle(handle)
             with self.resources_lock: self.write_handles.pop(handle["id"], None)
-            self.cleanup_write_handle(handle); return {"aborted": True}
+            return {"aborted": True}
 
     @staticmethod
     def cleanup_write_handle(handle: Dict[str, Any]) -> None:
-        if handle.get("closed"): return
+        if handle.get("closed"):
+            if handle.get("cleanupError"): raise RpcError("E_CLEANUP_FAILED", handle["cleanupError"])
+            return
         handle["closed"] = True; fd, parent = handle.get("fd", -1), handle.get("parent", -1)
+        errors = []
         if fd >= 0:
             try: os.close(fd)
-            except OSError: pass
+            except OSError as exc: errors.append(exc)
         if parent >= 0:
             try: os.unlink(handle["temporary"], dir_fd=parent)
-            except OSError: pass
+            except FileNotFoundError: pass
+            except OSError as exc: errors.append(exc)
             try: os.close(parent)
-            except OSError: pass
+            except OSError as exc: errors.append(exc)
         handle["fd"], handle["parent"] = -1, -1
+        if errors:
+            handle["cleanupError"] = str(len(errors)) + " upload cleanup operations were not confirmed"
+            raise RpcError("E_CLEANUP_FAILED", handle["cleanupError"])
 
     def cancel_allocation(self, process_id: str) -> None:
         # A cancel can reach a worker BEFORE start reserves its slot. Retain
         # the caller-minted identity even for an unknown process, so a delayed
         # start can never allocate after cleanup reported that identity absent.
-        now = time.monotonic(); ttl = max(self.retention_ms / 1000, 600)
-        self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < ttl}
-        if process_id not in self.cancelled_processes and len(self.cancelled_processes) >= MAX_OPERATIONS:
+        self.prune_cleanup(); now = time.monotonic()
+        identities = self.cancelled_processes.keys() | self.processes.keys()
+        if process_id not in identities and len(identities) >= MAX_CLEANUP_IDENTITIES:
             raise RpcError("E_RESOURCE_LIMIT", "cancelled process identity limit reached")
         self.cancelled_processes[process_id] = now
 
@@ -882,10 +959,10 @@ class Server:
         if stdin_mode not in ("pipe", "closed"): raise RpcError("E_INVALID_PARAMS", "stdin must be pipe or closed")
         if isinstance(tty, dict) and stdin_mode != "pipe": raise RpcError("E_INVALID_PARAMS", "PTY stdin cannot start closed")
         with self.resources_lock:
-            now = time.monotonic()
-            self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < max(self.retention_ms / 1000, 600)}
+            self.prune_cleanup()
             if process_id in self.cancelled_processes: raise RpcError("E_PROCESS_CANCELLED", "process allocation was cancelled")
-            if len(self.cancelled_processes) >= MAX_OPERATIONS: raise RpcError("E_RESOURCE_LIMIT", "cancelled process identity limit reached")
+            if len(self.cancelled_processes.keys() | self.processes.keys()) >= MAX_CLEANUP_IDENTITIES:
+                raise RpcError("E_RESOURCE_LIMIT", "cleanup identity capacity reached; new process allocation refused")
             if len(self.processes) >= MAX_PROCESSES: raise RpcError("E_RESOURCE_LIMIT", "process limit reached")
             if process_id in self.processes: raise RpcError("E_EXISTS", "processId already exists")
             self.processes[process_id] = PROCESS_RESERVED
@@ -1019,16 +1096,59 @@ class SupervisorChannel:
         self.endpoint.close()
 
 
+class InputLane:
+    """One acknowledged input mutation in flight; no time-based replay eviction."""
+    def __init__(self):
+        self.lock = threading.Lock(); self.next_seq = 0
+        self.digest: Optional[str] = None; self.result: Optional[Dict[str, Any]] = None
+        self.error: Optional[Tuple[str, str, bool, Any]] = None
+
+    def apply(self, params: Dict[str, Any], action: Any) -> Dict[str, Any]:
+        valid_id(params.get("operationId"), "operationId")
+        cursor = params.get("afterSeq")
+        if not isinstance(cursor, str) or re.fullmatch(r"0|[1-9][0-9]{0,15}", cursor) is None or int(cursor) >= 2**53 - 1:
+            raise RpcError("E_INVALID_PARAMS", "afterSeq must be a canonical non-negative safe integer string")
+        seq = int(cursor)
+        digest = hashlib.sha256(json.dumps(params, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        with self.lock:
+            if seq == self.next_seq - 1:
+                if digest != self.digest: raise RpcError("E_OPERATION_CONFLICT", "input cursor was reused with different params")
+            elif seq == self.next_seq:
+                # The next cursor acknowledges the previous outcome. Replacing
+                # that single replay slot is safe: older cursors stay rejected.
+                self.digest = digest; self.result = None; self.error = None
+                try:
+                    self.result = dict(action(params), nextSeq=str(seq + 1))
+                except RpcError as exc:
+                    # A write may have reached stdin only partially. Even errors
+                    # must be retained; never execute the same cursor twice.
+                    self.error = (exc.code, exc.message, exc.retryable, exc.data)
+                except Exception:
+                    self.error = ("E_INTERNAL", "input mutation outcome failed; this cursor cannot be replayed", False, None)
+                self.next_seq += 1
+            else:
+                raise RpcError("E_CURSOR", "input cursor is stale or skips an unacknowledged mutation")
+            # Store values, never a raised exception/traceback that would retain
+            # an entire write payload (and grow on every replay of that error).
+            if self.error is not None: raise RpcError(*self.error)
+            assert self.result is not None
+            return self.result
+
+
 class ProcessRecord:
     def __init__(self, process_id: str, argv: List[str], cwd: str, supplied_env: Any, tty: Any,
                  stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False):
         self.process_id, self.tty = process_id, isinstance(tty, dict)
         self.lock, self.changed = threading.Lock(), threading.Condition(threading.Lock())
+        self.pty_lock = threading.Lock()
         self.chunks: Any = deque(); self.bytes = 0; self.seq = 0; self.earliest = 1
         self.returncode: Optional[int] = None; self.released = False; self.master: Optional[int] = None
         self.pid = 0; self.pgid = 0; self.ready = threading.Event(); self.start_error: Optional[RpcError] = None
         self.supervisor_closed = False; self.release_lock = threading.Lock()
+        self.release_error: Optional[str] = None
+        self.terminate_lock = threading.Lock(); self.terminate_results: Dict[bool, Dict[str, Any]] = {}
         self.io_stopping = threading.Event(); self.write_cancelled = threading.Event()
+        self.write_lane, self.resize_lane = InputLane(), InputLane()
         self.reader_threads: List[threading.Thread] = []
         self.stdin: Any = None; self.stdout_stream: Any = None; self.stderr_stream: Any = None
         self.readers = 1 if self.tty else 2
@@ -1201,6 +1321,7 @@ class ProcessRecord:
         try: data = base64.b64decode(p.get("data", ""), validate=True)
         except Exception as exc: raise RpcError("E_INVALID_PARAMS", "data is not valid base64") from exc
         with self.lock:
+            if self.released or self.write_cancelled.is_set(): raise RpcError("E_STDIN_CLOSED", "stdin is closed by process cleanup")
             if self.returncode is not None: raise RpcError("E_PROCESS_EXITED", "process has exited")
             try:
                 if self.tty:
@@ -1231,7 +1352,11 @@ class ProcessRecord:
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
     def resize(self, p: Dict[str, Any]) -> Dict[str, Any]:
-        self._resize(int(p.get("rows")), int(p.get("cols"))); return {"resized": True}
+        # Pin the master FD against release without waiting on a blocked stdin
+        # write. The per-lane lock orders replay, not descriptor lifetime.
+        with self.pty_lock:
+            if self.released: raise RpcError("E_PROCESS_EXITED", "process has been released")
+            self._resize(int(p.get("rows")), int(p.get("cols"))); return {"resized": True}
 
     def inspect_foreground(self) -> Dict[str, Any]:
         if self.master is None: raise RpcError("E_NOT_PTY", "process has no PTY")
@@ -1242,14 +1367,23 @@ class ProcessRecord:
                                             "denyOwnShellKill": p.get("denyOwnShellKill") is True})
 
     def terminate(self, force: bool = False, grace_ms: int = 2000) -> Dict[str, Any]:
-        if self.released: return {"running": False}
-        self.write_cancelled.set()
-        return self.control.call("terminate", {"force": force, "graceMs": min(max(grace_ms, 0), 30000)})
+        with self.terminate_lock:
+            if self.released:
+                if self.release_error is not None: raise RpcError("E_CLEANUP_FAILED", self.release_error)
+                return {"running": False}
+            if not force and True in self.terminate_results: return {"running": False}
+            if force in self.terminate_results: return self.terminate_results[force]
+            self.write_cancelled.set()
+            result = self.control.call("terminate", {"force": force, "graceMs": min(max(grace_ms, 0), 30000)})
+            self.terminate_results[force] = result
+            return result
 
     def release(self) -> Dict[str, Any]:
         # Serialize releases separately from potentially blocked stdin writes.
         with self.release_lock:
-            if self.released: return {"released": False}
+            if self.released:
+                if self.release_error is not None: raise RpcError("E_CLEANUP_FAILED", self.release_error)
+                return {"released": False}
             self.write_cancelled.set()
             errors = []
             try:
@@ -1276,11 +1410,13 @@ class ProcessRecord:
                 acquired = self.lock.acquire(timeout=2)
                 if not acquired: errors.append(RpcError("E_CLEANUP_TIMEOUT", "remote stdin writer did not stop after cancellation"))
                 try:
-                    self.released = True; master, stdin = self.master, self.stdin
-                    self.master, self.stdin = None, None
-                    if master is not None and readers_stopped:
-                        try: os.close(master)
-                        except OSError: pass
+                    with self.pty_lock:
+                        if errors: self.release_error = str(len(errors)) + " process cleanup operations were not confirmed"
+                        self.released = True; master, stdin = self.master, self.stdin
+                        self.master, self.stdin = None, None
+                        if master is not None and readers_stopped:
+                            try: os.close(master)
+                            except OSError: pass
                     if stdin is not None:
                         try: stdin.close()
                         except (OSError, ValueError): pass
@@ -1290,7 +1426,7 @@ class ProcessRecord:
                             except (OSError, ValueError): pass
                 finally:
                     if acquired: self.lock.release()
-            if errors: raise RpcError("E_CLEANUP_FAILED", str(len(errors)) + " process cleanup operations were not confirmed")
+            if self.release_error is not None: raise RpcError("E_CLEANUP_FAILED", self.release_error)
             return {"released": True}
 
 
@@ -1299,6 +1435,7 @@ class DaemonState:
         self.server_id = secrets.token_hex(16); self.sessions: Dict[str, Server] = {}
         self.lock = threading.Lock(); self.shutdown = threading.Event(); self.idle_timeout = idle_timeout
         self.last_activity = time.monotonic(); self.connections = 0
+        self.next_sweep = self.last_activity + DAEMON_SWEEP_INTERVAL
 
     def open_connection(self) -> bool:
         with self.lock:
@@ -1350,7 +1487,18 @@ class DaemonState:
         for _, server in expired:
             try: server.close()
             except RpcError: print("dsh remote helper: expired session cleanup was incomplete", file=sys.stderr)
-        if not self.sessions and now-self.last_activity >= self.idle_timeout: self.shutdown.set()
+        with self.lock:
+            if not self.sessions and not self.connections and time.monotonic()-self.last_activity >= self.idle_timeout:
+                self.shutdown.set()
+
+    def sweep_if_due(self) -> None:
+        # Called on every accept-loop iteration, including admission failures.
+        # A busy stream of new connections must not postpone detached-session GC.
+        now = time.monotonic()
+        with self.lock:
+            if now < self.next_sweep: return
+            self.next_sweep = now + DAEMON_SWEEP_INTERVAL
+        self.sweep()
 
 
 def hello(server_id: str, resume: bool) -> Dict[str, Any]:
@@ -1370,6 +1518,7 @@ def protocol_limits() -> Dict[str, int]:
             "maxWriteChunkBytes": MAX_WRITE_CHUNK, "maxWorkspaces": MAX_WORKSPACES,
             "maxProcesses": MAX_PROCESSES, "maxReadHandles": MAX_READ_HANDLES,
             "maxWriteHandles": MAX_WRITE_HANDLES,
+            "maxCleanupIdentities": MAX_CLEANUP_IDENTITIES,
             "maxOperations": MAX_OPERATIONS, "maxOutstanding": MAX_OUTSTANDING, "maxConcurrent": MAX_CONCURRENT,
             "maxSessions": MAX_SESSIONS, "maxConnections": MAX_CONNECTIONS,
             "maxProcessOutputBytes": OUTPUT_LIMIT, "maxListEntries": 1000, "maxListScan": MAX_LIST_SCAN}
@@ -1550,12 +1699,14 @@ def run_daemon(path: str, idle_timeout: float) -> int:
             raise RpcError("E_PERMISSION_DENIED", "refusing to replace unsafe socket path")
         os.unlink(path)
     except FileNotFoundError: pass
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); listener.bind(path); os.chmod(path, 0o600); listener.listen(32); listener.settimeout(0.5)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); listener.bind(path); os.chmod(path, 0o600); listener.listen(32); listener.settimeout(DAEMON_SWEEP_INTERVAL)
     state = DaemonState(idle_timeout)
     try:
         while not state.shutdown.is_set():
+            state.sweep_if_due()
+            if state.shutdown.is_set(): break
             try: conn, _ = listener.accept()
-            except socket.timeout: state.sweep(); continue
+            except socket.timeout: continue
             if not state.open_connection():
                 try: conn.sendall(frame({"dshRpc": PROTOCOL, "id": None, "error": {
                     "code": "E_RESOURCE_LIMIT", "message": "daemon connection limit reached", "retryable": True}}))

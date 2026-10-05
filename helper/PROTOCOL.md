@@ -84,14 +84,40 @@ Client-supplied `clientId`, `workspaceId`, `processId`, and `operationId` use:
 [A-Za-z0-9._:-]{1,128}
 ```
 
-Mutating methods require `operationId`. Replaying the same ID with the same
-parameters returns the stored result; different parameters return
-`E_OPERATION_CONFLICT`. This applies to workspace open/close, file write/mkdir,
-and process start/write/resize/signal/terminate/release.
+Mutating methods require `operationId`. Ordinary mutations replay the stored
+result for the same ID and parameters; different parameters return
+`E_OPERATION_CONFLICT`. The ordinary journal retains at most 4,096 operations
+for at least 600 seconds or the negotiated session retention, whichever is
+longer. Entries are not evicted early to admit new mutations. Sequenced process
+input and lifecycle cleanup use the bounded alternatives described below.
 
-`fs/readOpen` takes client-generated `handleId` and `operationId`; `fs/close`
-takes `operationId`. Both are journaled mutations. Unclosed handles are closed
-by session GC.
+Cleanup (`workspace/close`, `fs/close`, `fs/writeAbort`, `process/terminate`,
+`process/release`) is idempotent by **resource lifecycle**, independent of the
+ordinary operation journal. A successfully closed/released resource retains
+its outcome by resource ID, so retries with a new operation ID also return that
+outcome. Failed cleanup is not recorded as a successful release. Unknown
+process IDs still produce `E_UNKNOWN_PROCESS`, not a fictitious cleanup success.
+Termination retains at most one soft and one forced outcome per live process;
+the first soft termination establishes its grace period and subsequent soft
+requests do not restart or extend it. A force request may still escalate it.
+These lifecycle methods do not promise operation-ID conflict detection or the
+same status across the transition from live to released.
+
+Open/start admission reserves the eventual cleanup responsibility before
+publishing a resource. Each session has two bounded retirement pools of
+`limits.maxCleanupIdentities` (4,096): one shared by workspaces/read/upload
+handles and one for process identities, including pre-start cancellation.
+Live and retired identities both count. When a pool fills, **new allocation**
+fails; existing resources remain closable even when both retirement admission
+and the ordinary journal are saturated. Retired identities cannot be reused
+within the same retention window (at least 600 seconds); clients should always
+mint fresh IDs. Expiry restores allocation capacity, rather than imposing a
+permanent session-lifetime allocation quota. Scope every retry to the original
+session; never send a stale mutation into a newly initialized session.
+
+`fs/readOpen` takes client-generated `handleId` and `operationId` and is
+journaled. `fs/close` takes `operationId` and uses lifecycle cleanup. Unclosed
+handles are closed by session GC.
 
 ## Workspaces and paths
 
@@ -178,7 +204,13 @@ does not join the upload in memory. `afterSeq` follows the same replay rule as
 read cursors. Repeating the prior cursor with the same bytes returns the cached
 response; different bytes or another cursor return `E_CURSOR`. Commit performs
 the expected-version check, permission inheritance, fsync and atomic publish.
-Open, chunk, commit, and abort are protected by operationId replay journals.
+Open, chunk, and commit are protected by operationId replay journals. Abort uses
+the reserved lifecycle cleanup path; after a confirmed commit, abort reports
+`{aborted:false,committed:true}` rather than acting on a new upload.
+A failed terminal commit whose staging resources were cleaned up retains
+`{aborted:false,commitOutcome:"unconfirmed"}`: publication may have preceded the
+reported failure. That identity remains retired and cannot be replaced during
+the replay window. Unconfirmed staging cleanup itself remains an error.
 
 ## Processes and PTYs
 
@@ -213,9 +245,9 @@ requested mode was honored; `backend` distinguishes `none` from `bwrap`.
 Methods:
 
 - `process/read {processId,afterSeq,maxBytes?,waitMs?}`
-- `process/write {processId,data,eof?,operationId}` (`eof` half-closes a
+- `process/write {processId,data,eof?,operationId,afterSeq?}` (`eof` half-closes a
   non-PTY pipe; PTY half-close is unsupported)
-- `process/resize {processId,rows,cols,operationId}`
+- `process/resize {processId,rows,cols,operationId,afterSeq?}`
 - `process/status`
 - `process/inspectForeground`
 - `process/signal {signal,target,operationId,denyOwnShellKill?}`
@@ -257,6 +289,44 @@ background descendants do not artificially prolong the controlling terminal.
 `process/write` loops until every decoded input byte is written and only then
 applies `eof`; clients keep individual writes within the 1 MiB frame budget
 (the TypeScript adapter uses 192 KiB chunks).
+
+High-frequency clients negotiate `capabilities.process.sequencedWrite:true`
+and `capabilities.pty.sequencedResize:true`. Each process has two independent
+sequence lanes, one for write and one for resize. Send `afterSeq:"0"` initially;
+a successful reply adds `nextSeq:"1"` (then `"2"`, etc.) to the ordinary result.
+The cursor is a canonical non-negative decimal string below 2^53-1. Only one
+mutation may be in flight per lane. Advance to `nextSeq` only after receiving
+the reply; sending it explicitly acknowledges the previous result. Serializing
+resizes permits clients to coalesce queued geometry changes before sending.
+
+Each lane stores only its latest request digest and outcome, not one journal
+entry per keystroke. Repeating that cursor with identical parameters, including
+`operationId`, returns the same outcome without repeating the side effect.
+Errors are cached too: a partial stdin write must never be re-executed after a
+lost error response. Different parameters at the retained cursor return
+`E_OPERATION_CONFLICT`; older or skipped cursors return `E_CURSOR`. Once a
+result is acknowledged, its old cursor stays invalid rather than becoming a
+new request. A client with an unresolved input outcome must retry the identical
+request in the original resumed session or fail its input lane; it must not
+invent a new cursor/payload. Missing `afterSeq` preserves the ordinary journal
+contract for existing model Shell/Terminal callers. Native human terminals
+require the sequence capabilities rather than silently falling back to a
+per-keystroke ordinary journal.
+
+The native host bounds queued input at both 1 MiB and 128 pending writes;
+empty input is an unqueued no-op. Resize requests (including their promises)
+are capped at eight. Excess requests are explicitly rejected as unsent and do
+not poison already accepted requests. Allocation, I/O, and cleanup are pinned
+to the original helper session before dispatch. Retained `process/status` and
+cursor-bearing `process/read` queries can recover a transport timeout even
+when SSH has not exited, but only when the read's requested long-poll wait is
+shorter than its RPC deadline. They retain the same cursor and a single,
+non-resetting retention budget across reconnects. Mutation timeouts and
+file-handle cursor timeouts are not automatically replayed by this recovery
+path. If a dispatched mutation becomes uncertain, a subsequent recovery-budget
+expiry or failed reacquisition preserves that uncertainty rather than implying
+that the mutation never ran.
+
 Supported signals include SIGINT, SIGTERM, SIGHUP, SIGKILL, SIGQUIT, and
 SIGTSTP. `target:"foreground"` obtains the foreground PGID at signal time.
 Native human terminals set `denyOwnShellKill:true` for foreground SIGKILL. The
@@ -275,6 +345,11 @@ helper shutdown kills the complete process group and releases resources.
 The daemon retains at most 16 sessions and accepts at most 64 simultaneous
 connectors. Each session owns at most 32 processes. These ceilings are reported
 in `server/hello.limits`; excess allocation fails with `E_RESOURCE_LIMIT`.
+Detached-session expiry is checked on a monotonic 500 ms accept-loop schedule,
+including iterations accepting or rejecting connections. Continuous connection
+traffic therefore cannot defer GC until a quiet `accept()` timeout. Expired
+sessions are removed under the daemon lock and their resources are closed
+outside it; idle shutdown is rechecked under the lock after cleanup.
 
 ## Security boundary
 
