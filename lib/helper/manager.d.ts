@@ -86,6 +86,8 @@ export declare class RemoteHelperManager {
     private connectedState;
     private onClientClosed;
     private resumeAfterDisconnect;
+    /** Acquisition retries do not replay an RPC or create a new process. */
+    private acquireSession;
     private scheduleReconnect;
     private scheduleHealth;
     private retireTransport;

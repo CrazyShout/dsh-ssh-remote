@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import type { SubprocessOutcome, SubprocessTerminalActivity, SubprocessTerminalForeground, SubprocessTerminalHandle, SubprocessTerminalSignal, SubprocessTerminalSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import type { RemoteHelperProvider } from './helper-fs.js';
+import type { RemoteHelperClient } from './helper/rpc-client.js';
 interface ProcessStatus {
     pid: number;
     processId: string;
@@ -13,6 +14,7 @@ interface Allocation {
     workspaceId: string;
     processId: string;
     sessionId: string;
+    client: RemoteHelperClient;
 }
 /** The router retains this retryable owner when unpublished cleanup fails. */
 export declare class RemoteUserTerminalAllocationError extends AggregateError {
@@ -37,11 +39,19 @@ export declare class RemoteUserTerminal implements SubprocessTerminalHandle {
     private readonly pumpLifetime;
     private readonly operationLifetime;
     private readonly statusLifetime;
+    private readonly recoveryLifetime;
     private readonly operations;
     private readonly pump;
     private readonly outcomeWatch;
     private inputTail;
+    private resizeTail;
+    private inputSeq;
+    private resizeSeq;
+    private inputFailure;
+    private resizeFailure;
     private queuedInputBytes;
+    private queuedWrites;
+    private queuedResizes;
     private cursor;
     private revision;
     private closing;

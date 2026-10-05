@@ -115,6 +115,7 @@ describe('Agent-scoped human subprocess routing', () => {
     let releases = 0; const processIds: string[] = [];
     const provider: RemoteHelperProvider = { client: async () => ({
       sessionId: 'owned-session',
+      capabilities: { process: { sequencedWrite: true }, pty: { sequencedResize: true } },
       call: async (method: string, params: Record<string, unknown>) => {
         if (method === 'process/start') {
           processIds.push(String(params.processId)); signal.abort(new Error('cancel unpublished fixture'));
@@ -135,5 +136,18 @@ describe('Agent-scoped human subprocess routing', () => {
     expect(releases).toBe(1);
     await router.dispose();
     expect(releases).toBe(2); expect(new Set(processIds).size).toBe(1);
+  });
+
+  it.each(['write', 'resize'])('refuses a helper without sequenced %s before allocating a native terminal', async missing => {
+    const fixture = setup(); const call = vi.fn();
+    const provider: RemoteHelperProvider = { client: async () => ({ sessionId: 'old-helper', call,
+      capabilities: { process: { sequencedWrite: missing !== 'write' }, pty: { sequencedResize: missing !== 'resize' } },
+    } as never) };
+    const router = installRemoteUserSubprocessRouter(fixture.ctx, fixture.ctx.get('subprocess')!, provider, fixture.resolver);
+    cleanup.push(() => router.dispose());
+    await expect(fixture.ctx.get('subprocess')!.spawnTerminal({
+      argv: ['/bin/sh'], cwd: '/anchor-a', cols: 80, rows: 24, terminalType: 'xterm', graceMs: 50,
+    })).rejects.toThrow('does not support sequenced terminal input and resize');
+    expect(call).not.toHaveBeenCalled();
   });
 });

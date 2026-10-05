@@ -28,6 +28,13 @@ export interface RemoteHelperCallOptions {
   mutation?: boolean;
 }
 
+export interface RemoteHelperSessionCallOptions extends RemoteHelperCallOptions {
+  /** Wait through a retained-session outage before dispatch; mutation replay stays bounded. */
+  waitForResume?: boolean;
+  /** Stop recovery waits without interrupting healthy final-output draining. */
+  recoverySignal?: AbortSignal;
+}
+
 export interface RemoteHelperClientOptions {
   readable: Readable;
   writable: Writable;
@@ -44,6 +51,8 @@ export interface RemoteHelperClient {
   readonly closed: Promise<void>;
   readonly closeReason: Error | undefined;
   call<T>(method: string, params?: Record<string, unknown>, options?: RemoteHelperCallOptions): Promise<T>;
+  /** Managed transports pin process ownership even if the host reconnects. */
+  callInSession?<T>(sessionId: string, method: string, params?: Record<string, unknown>, options?: RemoteHelperSessionCallOptions): Promise<T>;
   notify(method: string, params?: Record<string, unknown>): Promise<void>;
   notification(method: string, params?: Record<string, unknown>): Promise<void>;
   onNotification(listener: HelperNotificationListener): () => void;

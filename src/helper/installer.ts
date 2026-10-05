@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 export const HELPER_REMOTE_ROOT = '.local/share/dsh-remote-helper';
 export const HELPER_STDERR_MAX_BYTES = 16 * 1024;
+const UPLOAD_TERM_GRACE_MS = 500;
+const UPLOAD_KILL_WAIT_MS = 1_000;
 
 export interface HelperAsset {
   path: string;
@@ -198,11 +200,6 @@ export class RemoteHelperInstaller {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    if (child.stdin === null || child.stdout === null || child.stderr === null) {
-      child.kill();
-      throw new RemoteHelperInstallError('SSH installer did not expose piped stdio');
-    }
-
     const result = await runUploadProcess(
       child,
       this.asset.content,
@@ -248,35 +245,66 @@ function runUploadProcess(
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let stopping = false;
+    let failure: unknown;
     let stderr = '';
+    let termTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    const cleanupErrors: string[] = [];
     const finish = (run: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(termTimer);
+      clearTimeout(cleanupTimer);
       signal?.removeEventListener('abort', onAbort);
       run();
     };
-    const terminate = (): void => {
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    const sendSignal = (name: NodeJS.Signals): void => {
+      // killed only means a signal was sent, not that the child exited. Never
+      // signal an already-exited child while waiting for inherited stdio to close.
+      if (settled || child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+      try {
+        if (!child.kill(name)) cleanupErrors.push(`${name} was not delivered`);
+      } catch (error) {
+        cleanupErrors.push(`${name}: ${String(error)}`);
+      }
+    };
+    const terminate = (error: unknown): void => {
+      if (settled || stopping) return;
+      stopping = true;
+      failure = error;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      // Wait for close even after KILL: receiving a signal is not evidence that
+      // the owned SSH child has been reaped or its pipes have been closed.
+      termTimer = setTimeout(() => sendSignal('SIGKILL'), UPLOAD_TERM_GRACE_MS);
+      cleanupTimer = setTimeout(() => {
+        const reason = error instanceof Error ? error.message : String(error);
+        const diagnostics = cleanupErrors.length ? ` (${cleanupErrors.join('; ')})` : '';
+        finish(() => reject(new RemoteHelperInstallError(
+          `${reason}; SSH installer cleanup failed: child close was not observed after ${UPLOAD_TERM_GRACE_MS + UPLOAD_KILL_WAIT_MS}ms${diagnostics}`,
+          { stderr: boundedDiagnostic(stderr), exitCode: child.exitCode, signal: child.signalCode },
+          { cause: error },
+        )));
+      }, UPLOAD_TERM_GRACE_MS + UPLOAD_KILL_WAIT_MS);
+      sendSignal('SIGTERM');
     };
     // SSH may exit while the helper body is still being uploaded. The resulting
     // asynchronous EPIPE is emitted by stdin, not thrown by end(). Consume it at
     // the process boundary so a failed remote connection cannot terminate DSH.
     child.stdin?.on('error', (error) => {
-      terminate();
-      finish(() => reject(new RemoteHelperInstallError('failed to upload remote helper', {
+      terminate(new RemoteHelperInstallError('failed to upload remote helper', {
         stderr: boundedDiagnostic(stderr),
-      }, { cause: error })));
+      }, { cause: error }));
     });
     const onAbort = (): void => {
-      terminate();
-      finish(() => reject(signal?.reason ?? new Error('remote helper installation aborted')));
+      terminate(signal?.reason ?? new Error('remote helper installation aborted'));
     };
     const timer = setTimeout(() => {
-      terminate();
-      finish(() => reject(new RemoteHelperInstallError(`remote helper installation timed out after ${timeoutMs}ms`, {
+      terminate(new RemoteHelperInstallError(`remote helper installation timed out after ${timeoutMs}ms`, {
         stderr: boundedDiagnostic(stderr),
-      })));
+      }));
     }, timeoutMs);
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr = boundedDiagnostic(`${stderr}${String(chunk)}`);
@@ -284,28 +312,36 @@ function runUploadProcess(
     // The install script intentionally emits nothing, but a remote sshrc may.
     // Drain it so an untrusted banner cannot backpressure the upload process.
     child.stdout?.on('data', () => {});
-    child.once('error', (error) => finish(() => reject(new RemoteHelperInstallError(
-      `failed to start system SSH: ${error.message}`,
-      { stderr: boundedDiagnostic(stderr) },
-      { cause: error },
-    ))));
-    child.once('close', (code, childSignal) => finish(() => resolve({
-      code,
-      signal: childSignal,
-      stderr: boundedDiagnostic(stderr),
-    })));
+    child.on('error', (error) => {
+      if (stopping) {
+        cleanupErrors.push(error.message);
+      } else {
+        terminate(new RemoteHelperInstallError(
+          `failed to start system SSH: ${error.message}`,
+          { stderr: boundedDiagnostic(stderr) },
+          { cause: error },
+        ));
+      }
+    });
+    child.once('close', (code, childSignal) => finish(() => {
+      if (stopping) reject(failure);
+      else resolve({ code, signal: childSignal, stderr: boundedDiagnostic(stderr) });
+    }));
+    if (child.stdin === null || child.stdout === null || child.stderr === null) {
+      terminate(new RemoteHelperInstallError('SSH installer did not expose piped stdio'));
+      return;
+    }
     if (signal?.aborted) {
       onAbort();
       return;
     }
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      child.stdin?.end(content);
+      child.stdin.end(content);
     } catch (error) {
-      terminate();
-      finish(() => reject(new RemoteHelperInstallError('failed to upload remote helper', {
+      terminate(new RemoteHelperInstallError('failed to upload remote helper', {
         stderr: boundedDiagnostic(stderr),
-      }, { cause: error as Error })));
+      }, { cause: error as Error }));
     }
   });
 }

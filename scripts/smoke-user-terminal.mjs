@@ -2,7 +2,7 @@
 // Test data is confined to a fresh remote /tmp fixture; never opens a user project.
 // The normal user-local versioned helper may also be installed and started.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { Context } from '@deepseek-ai/cordis';
 import { createScope } from '@deepseek-ai/dsh-scope';
 import { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
@@ -21,7 +21,23 @@ assert.match(root, /^\/tmp\/dsh-user-terminal-smoke\.[a-zA-Z0-9]{8}$/);
 const uri = `ssh://${alias}${root}`;
 const anchor = '/dsh-user-terminal-smoke-anchor';
 const resolve = path => path === anchor ? uri : undefined;
-const manager = new RemoteHelperManager({ aliasValidator: candidate => candidate === alias, healthIntervalMs: 0 });
+let inducedFailures = 0;
+let remainingFailures = 0;
+const manager = new RemoteHelperManager({
+  aliasValidator: candidate => candidate === alias, healthIntervalMs: 0,
+  reconnectBaseMs: 300, reconnectMaxMs: 1_000,
+  spawnProcess: (command, args, options) => {
+    // A deterministic outage of this test manager only. No firewall, shared
+    // connection or host setting changes: its first two reconnect attempts fail
+    // before SSH, then real SSH resumes the retained remote process.
+    if (remainingFailures > 0) {
+      remainingFailures -= 1; inducedFailures += 1;
+      return spawn(process.execPath, ['-e',
+        'process.stdin.resume(); process.stderr.write("ssh: connect to host test: Connection refused\\n"); setTimeout(() => process.exit(255), 200);'], options);
+    }
+    return spawn(command, args, options);
+  },
+});
 const report = { alias, startedAt: new Date().toISOString(), checks: {} };
 const ctx = new Context();
 class MustRouteRemotely extends SubprocessRuntime {
@@ -95,12 +111,15 @@ try {
   const originalPid = (await client.call('health/status')).processes;
   assert.equal(originalPid, 1);
   // Only this test manager's connector is terminated; no user SSH process.
+  remainingFailures = 2;
   entry.child.kill('SIGTERM'); await old.closed;
   await controller.write(agent, id, a, "printf '%s%s\\n' SSH_RESUME_ OK\r");
   await waitFor(() => output.includes('SSH_RESUME_OK'), 'PTY did not resume after SSH transport loss', 30_000);
   assert.equal(client.sessionId, sessionId); assert.equal(client.session.resumed, true);
   assert.equal((await client.call('health/status')).processes, 1);
+  assert.equal(inducedFailures, 2);
   report.checks.sshTransportResumeWithoutRespawn = true;
+  report.checks.multipleTransientFailuresRetainTerminal = true;
 
   secondFollower = controller.follow(agent, id, b, secondLifetime.signal)[Symbol.asyncIterator]();
   const baseline = await secondFollower.next();

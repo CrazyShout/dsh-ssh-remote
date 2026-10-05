@@ -10,10 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RemoteHelperRpcClient } from '../src/helper/rpc-client.js';
+import { RemoteHelperRpcClient, type RemoteHelperClient } from '../src/helper/rpc-client.js';
 import type { RemoteHelperProvider } from '../src/helper-fs.js';
 import { installRemoteUserSubprocessRouter } from '../src/user-subprocess.js';
-import { openRemoteUserTerminal } from '../src/user-pty.js';
+import { openRemoteUserTerminal, RemoteUserTerminalAllocationError } from '../src/user-pty.js';
 
 const helperPath = fileURLToPath(new URL('../helper/dsh_remote_helper.py', import.meta.url));
 const disposers: Array<() => Promise<void>> = [];
@@ -81,6 +81,158 @@ const config: TerminalConfig = {
 };
 
 describe('real helper user-terminal primitive', () => {
+  it.each(['workspace/open', 'process/start', 'workspace/close'] as const)('pins allocation %s to the original session before its first dispatch', async replaceAt => {
+    let sessionId = 'original-session';
+    const sent: Array<{ method: string; sessionId: string }> = [];
+    const pins: string[] = [];
+    const client = {
+      get sessionId() { return sessionId; },
+      capabilities: { process: { sequencedWrite: true }, pty: { sequencedResize: true } },
+      async call(method: string, params: Record<string, unknown> = {}) {
+        if (method === replaceAt) sessionId = 'replacement-session';
+        sent.push({ method, sessionId });
+        if (method === 'process/start') return { processId: params.processId, pid: 321, running: true, exitCode: null, signal: null };
+        return {};
+      },
+      async callInSession(expected: string, method: string, params: Record<string, unknown>) {
+        pins.push(expected);
+        if (method === replaceAt) sessionId = 'replacement-session';
+        if (expected !== sessionId) throw new Error('remote helper session expired during allocation fixture');
+        return this.call(method, params);
+      },
+    } as unknown as RemoteHelperClient;
+    const helpers: RemoteHelperProvider = { client: async () => client };
+    await expect(openRemoteUserTerminal('ssh://fixture/tmp', specification(), helpers))
+      .rejects.toBeInstanceOf(RemoteUserTerminalAllocationError);
+    expect(pins.length).toBeGreaterThan(0);
+    expect(pins.every(value => value === 'original-session')).toBe(true);
+    expect(sent.every(call => call.sessionId === 'original-session')).toBe(true);
+    expect(sent.find(call => call.method === replaceAt)).toBeUndefined();
+  });
+
+  it('keeps more than 4096 input and resize events outside the shared mutation journal', async () => {
+    const f = await fixture();
+    const events = 4105;
+    const script = `import os,tty,time\ntty.setraw(0)\nos.write(1,b'INPUT_READY')\nreceived=0\nwhile received<${events}:received+=len(os.read(0,${events}-received))\nos.write(1,b'INPUT_TOTAL_${events}')\ntime.sleep(30)`;
+    const terminal = await openRemoteUserTerminal(f.uri, specification({ argv: ['python3', '-c', script] }), f.helper);
+    disposers.push(() => terminal.terminate());
+    let output = ''; terminal.output.on('data', chunk => { output += Buffer.from(chunk).toString(); });
+    await vi.waitFor(() => expect(output).toContain('INPUT_READY'));
+    for (let i = 0; i < events; i += 1) await Promise.all([terminal.write('x'), terminal.resize(80 + i % 2, 24)]);
+    await vi.waitFor(() => expect(output).toContain(`INPUT_TOTAL_${events}`));
+    for (const method of ['process/write', 'process/resize']) {
+      const calls = f.helper.calls.filter(call => call.method === method);
+      expect(calls).toHaveLength(events);
+      expect(calls.map(call => call.params.afterSeq)).toEqual(Array.from({ length: events }, (_, i) => String(i)));
+    }
+    await terminal.terminate();
+    await expect(f.helper.raw.call('health/status')).resolves.toMatchObject({ processes: 0, workspaces: 0 });
+  }, 30_000);
+
+  it('does not reuse an unresolved input cursor with a different payload', async () => {
+    const f = await fixture();
+    const call = f.helper.raw.call.bind(f.helper.raw);
+    let writes = 0;
+    f.helper.raw.call = async (method, params = {}, options = {}) => {
+      if (method === 'process/write') { writes += 1; throw new Error('fixture ambiguous input outcome'); }
+      return call(method, params, options);
+    };
+    const terminal = await openRemoteUserTerminal(f.uri, specification(), f.helper);
+    terminal.output.resume(); disposers.push(() => terminal.terminate());
+    await expect(terminal.write('first')).rejects.toThrow('ambiguous input outcome');
+    await expect(terminal.write('different')).rejects.toThrow('input outcome is unresolved');
+    expect(writes).toBe(1);
+    await terminal.terminate();
+  });
+
+  it('bounds pending resize promises, reports rejected geometry honestly, and cancels the queue on terminate', async () => {
+    const f = await fixture();
+    const call = f.helper.raw.call.bind(f.helper.raw);
+    let release!: () => void;
+    let gate = new Promise<void>(resolve => { release = resolve; });
+    let entered = 0;
+    f.helper.raw.call = async (method, params = {}, options = {}) => {
+      if (method === 'process/resize') {
+        entered += 1;
+        await new Promise<void>((resolve, reject) => {
+          const signal = options.signal;
+          const abort = (): void => { signal?.removeEventListener('abort', abort); reject(signal?.reason); };
+          if (signal?.aborted) { abort(); return; }
+          signal?.addEventListener('abort', abort, { once: true });
+          void gate.then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+        });
+      }
+      return call(method, params, options);
+    };
+    const terminal = await openRemoteUserTerminal(f.uri, specification(), f.helper);
+    terminal.output.resume(); disposers.push(() => terminal.terminate());
+    const accepted = Array.from({ length: 8 }, (_, i) => terminal.resize(90 + i, 30));
+    const acceptedResults = Promise.allSettled(accepted);
+    await vi.waitFor(() => expect(entered).toBe(1));
+    const overflow = await Promise.allSettled(Array.from({ length: 1000 }, () => terminal.resize(150, 40)));
+    expect(overflow.every(result => result.status === 'rejected'
+      && String(result.reason).includes('resize queue exceeds 8'))).toBe(true);
+    expect(entered).toBe(1);
+    release();
+    expect((await acceptedResults).every(result => result.status === 'fulfilled')).toBe(true);
+    expect(f.helper.calls.filter(item => item.method === 'process/resize').map(item => item.params.cols))
+      .toEqual(Array.from({ length: 8 }, (_, i) => 90 + i));
+    await terminal.resize(150, 40); // Admission failure must not poison this lane.
+    gate = new Promise<void>(() => {});
+    const cancelled = Promise.allSettled(Array.from({ length: 8 }, () => terminal.resize(160, 50)));
+    await vi.waitFor(() => expect(entered).toBe(10));
+    const started = Date.now();
+    await terminal.terminate();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect((await cancelled).every(result => result.status === 'rejected')).toBe(true);
+    expect(entered).toBe(10);
+    expect(f.helper.calls.filter(item => item.method === 'process/resize')).toHaveLength(9);
+    await expect(f.helper.raw.call('health/status')).resolves.toMatchObject({ processes: 0, workspaces: 0 });
+  }, 15_000);
+
+  it('bounds queued input by request count as well as bytes and treats empty writes as unqueued no-ops', async () => {
+    const f = await fixture();
+    const call = f.helper.raw.call.bind(f.helper.raw);
+    let release!: () => void;
+    let gate = new Promise<void>(resolve => { release = resolve; });
+    let entered = 0;
+    f.helper.raw.call = async (method, params = {}, options = {}) => {
+      if (method === 'process/write') {
+        entered += 1;
+        await new Promise<void>((resolve, reject) => {
+          const signal = options.signal;
+          const abort = (): void => { signal?.removeEventListener('abort', abort); reject(signal?.reason); };
+          if (signal?.aborted) { abort(); return; }
+          signal?.addEventListener('abort', abort, { once: true });
+          void gate.then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+        });
+      }
+      return call(method, params, options);
+    };
+    const terminal = await openRemoteUserTerminal(f.uri, specification(), f.helper);
+    terminal.output.resume(); disposers.push(() => terminal.terminate());
+    const accepted = Promise.allSettled(Array.from({ length: 128 }, () => terminal.write('x')));
+    await vi.waitFor(() => expect(entered).toBe(1));
+    await Promise.all(Array.from({ length: 2000 }, () => terminal.write('')));
+    const overflow = await Promise.allSettled(Array.from({ length: 1000 }, () => terminal.write('y')));
+    expect(overflow.every(result => result.status === 'rejected'
+      && String(result.reason).includes('128 pending writes'))).toBe(true);
+    expect(entered).toBe(1);
+    release();
+    expect((await accepted).every(result => result.status === 'fulfilled')).toBe(true);
+    await terminal.write('z'); // Rejected unsent writes do not poison accepted input.
+    expect(f.helper.calls.filter(item => item.method === 'process/write')).toHaveLength(129);
+    gate = new Promise<void>(() => {});
+    const cancelled = Promise.allSettled(Array.from({ length: 128 }, () => terminal.write('x')));
+    await vi.waitFor(() => expect(entered).toBe(130));
+    const started = Date.now();
+    await terminal.terminate();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect((await cancelled).every(result => result.status === 'rejected')).toBe(true);
+    expect(entered).toBe(130);
+    await expect(f.helper.raw.call('health/status')).resolves.toMatchObject({ processes: 0, workspaces: 0 });
+  }, 15_000);
+
   it('provides raw PTY bytes, size, foreground facts and allocation-only cancellation', async () => {
     const f = await fixture();
     const allocation = new AbortController();

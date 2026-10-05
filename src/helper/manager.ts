@@ -17,6 +17,7 @@ import {
   RemoteHelperRpcClient,
   RemoteHelperRpcError,
   type RemoteHelperCallOptions,
+  type RemoteHelperSessionCallOptions,
   type RemoteHelperClient,
 } from './rpc-client.js';
 import type {
@@ -111,6 +112,7 @@ interface ManagedHelper {
   failure?: ConnectionFailure;
   environment?: RemoteEnvironment;
   environmentEpoch?: number;
+  resumeDeadline?: number;
 }
 
 /** Host-scoped, single-flight controller for managed helper SSH sessions. */
@@ -145,7 +147,7 @@ export class RemoteHelperManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 20_000;
     this.clientName = options.clientName ?? 'dsh-ssh-remote';
-    this.clientVersion = options.clientVersion ?? '0.5.0';
+    this.clientVersion = options.clientVersion ?? '0.5.1';
     this.retentionMs = options.retentionMs ?? 120_000;
     this.aliasValidator = options.aliasValidator;
     this.random = options.random ?? Math.random;
@@ -168,6 +170,7 @@ export class RemoteHelperManager {
       alias,
       nextSignal => this.rawClient(entry, nextSignal),
       (previous, nextSignal) => this.resumeAfterDisconnect(entry, previous, nextSignal),
+      (sessionId, options) => this.acquireSession(entry, sessionId, options),
       () => { void this.close(alias); },
     );
     facade.bind(raw);
@@ -232,22 +235,30 @@ export class RemoteHelperManager {
   /** Force one fresh install/connection attempt, preserving the resume token. */
   async retry(uriOrAlias: string, signal?: AbortSignal): Promise<RemoteHelperClient> {
     this.assertActive();
+    signal?.throwIfAborted();
     const alias = normalizeAlias(uriOrAlias);
     const entry = this.entry(alias);
     entry.wanted = true;
     entry.generation += 1;
+    if (entry.client?.session) entry.resumeDeadline ??= this.now() + entry.client.session.retentionMs;
     entry.connectController?.abort();
     this.clearRetry(entry);
     this.clearHealth(entry);
-    await this.retireTransport(entry, 'manual retry');
-    entry.pending = undefined;
     const generation = entry.generation;
-    const raw = await this.rawClient(entry, signal);
+    // Publish retirement and reconnection as one acquisition. A retained
+    // terminal must not start a competing connector in the retirement gap.
+    const connection = this.retireTransport(entry, 'manual retry').then(() => {
+      this.assertCurrent(entry, generation);
+      return this.connect(entry, generation);
+    }).finally(() => { if (entry.pending === connection) entry.pending = undefined; });
+    entry.pending = connection;
+    const raw = await raceSignal(connection, signal);
     this.assertCurrent(entry, generation, raw);
     const facade = entry.facade ??= new ManagedRemoteHelperFacade(
       alias,
       nextSignal => this.rawClient(entry, nextSignal),
       (previous, nextSignal) => this.resumeAfterDisconnect(entry, previous, nextSignal),
+      (sessionId, options) => this.acquireSession(entry, sessionId, options),
       () => { void this.close(alias); },
     );
     facade.bind(raw);
@@ -260,15 +271,16 @@ export class RemoteHelperManager {
     if (entry === undefined) return;
     entry.wanted = false;
     entry.generation += 1;
+    entry.facade?.markClosed(new Error('remote helper host closed'));
     entry.connectController?.abort();
     this.clearRetry(entry);
     this.clearHealth(entry);
     await this.closeRemoteSessionBestEffort(entry);
-    entry.facade?.markClosed(new Error('remote helper host closed'));
     entry.facade = undefined;
     await this.retireTransport(entry, 'closed');
     entry.clientId = randomUUID();
     entry.resumeToken = undefined;
+    entry.resumeDeadline = undefined;
     entry.sessionId = undefined;
     entry.pending = undefined;
     entry.attempt = 0;
@@ -282,11 +294,11 @@ export class RemoteHelperManager {
     await Promise.allSettled([...this.entries.values()].map(async (entry) => {
       entry.wanted = false;
       entry.generation += 1;
+      entry.facade?.markClosed(new Error('remote helper manager disposed'));
       entry.connectController?.abort();
       this.clearRetry(entry);
       this.clearHealth(entry);
       await this.closeRemoteSessionBestEffort(entry);
-      entry.facade?.markClosed(new Error('remote helper manager disposed'));
       entry.facade = undefined;
       await this.retireTransport(entry, 'manager disposed');
     }));
@@ -368,6 +380,7 @@ export class RemoteHelperManager {
       entry.lastError = undefined;
       entry.failure = undefined;
       entry.lastConnectedAt = this.now();
+      entry.resumeDeadline = undefined;
       entry.lastHealthAt = this.now();
       entry.nextRetryAt = undefined;
       entry.attempt = 0;
@@ -462,6 +475,7 @@ export class RemoteHelperManager {
     // Setup failures are classified once by connect(), with final stderr.
     if (entry.connectController !== undefined) return;
     this.clearHealth(entry);
+    entry.resumeDeadline ??= this.now() + client.session.retentionMs;
     const child = entry.child;
     entry.client = undefined;
     entry.child = undefined;
@@ -482,6 +496,60 @@ export class RemoteHelperManager {
     signal?.throwIfAborted();
     if (!entry.wanted) throw new Error(`remote helper host ${entry.alias} is closed`);
     return this.rawClient(entry, signal);
+  }
+
+  /** Acquisition retries do not replay an RPC or create a new process. */
+  private async acquireSession(
+    entry: ManagedHelper,
+    sessionId: string,
+    options: RemoteHelperSessionCallOptions,
+  ): Promise<RemoteHelperRpcClient> {
+    for (;;) {
+      this.assertActive();
+      options.signal?.throwIfAborted();
+      if (!entry.wanted) throw new Error(`remote helper host ${entry.alias} is closed`);
+      if (entry.sessionId !== sessionId) throw sessionExpired();
+      if (entry.pending === undefined && entry.client !== undefined && entry.client.closeReason === undefined) {
+        return entry.client;
+      }
+      if (entry.failure?.retryable === false) throw new Error(entry.lastError ?? 'remote helper connection cannot be resumed');
+      if (options.waitForResume !== true) {
+        const deadline = options.timeoutMs === undefined ? undefined : AbortSignal.timeout(Math.max(1, options.timeoutMs));
+        const signal = deadline === undefined ? options.signal
+          : options.signal === undefined ? deadline : AbortSignal.any([options.signal, deadline]);
+        const raw = await this.rawClient(entry, signal);
+        if (raw.sessionId !== sessionId || raw.session.resumed !== true) throw sessionExpired();
+        return raw;
+      }
+      options.recoverySignal?.throwIfAborted();
+      const remaining = (entry.resumeDeadline ?? this.now()) - this.now();
+      if (remaining <= 0) throw sessionExpired();
+      const deadline = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
+      const signal = AbortSignal.any([deadline, ...[options.signal, options.recoverySignal].filter((value): value is AbortSignal => value !== undefined)]);
+      const generation = entry.generation;
+      try {
+        const raw = await this.rawClient(entry, signal);
+        if (raw.sessionId !== sessionId || raw.session.resumed !== true) throw sessionExpired();
+        return raw;
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        options.recoverySignal?.throwIfAborted();
+        this.assertActive();
+        if (!entry.wanted) throw new Error(`remote helper host ${entry.alias} is closed`);
+        if (deadline.aborted || entry.sessionId !== sessionId) throw sessionExpired();
+        if (error instanceof RemoteHelperRpcError && error.code === 'E_SESSION_EXPIRED') throw error;
+        if (entry.generation !== generation) continue;
+        if (entry.failure?.retryable !== true) throw error;
+        // Respect the manager's backoff and join its next single-flight attempt.
+        try { await waitForRetry(Math.max(1, (entry.nextRetryAt ?? this.now()) - this.now()), signal); }
+        catch (waitError) {
+          options.signal?.throwIfAborted();
+          options.recoverySignal?.throwIfAborted();
+          if (deadline.aborted) throw sessionExpired();
+          throw waitError;
+        }
+      }
+    }
   }
 
   private scheduleReconnect(entry: ManagedHelper, generation: number): void {
@@ -637,6 +705,7 @@ class ManagedRemoteHelperFacade implements RemoteHelperClient {
   private detachNotification?: () => void;
   private readonly notificationListeners = new Set<HelperNotificationListener>();
   private readonly closeListeners = new Set<(reason: Error) => void>();
+  private readonly lifetime = new AbortController();
   private closeReasonValue?: Error;
   private resolveClosed!: () => void;
 
@@ -647,6 +716,7 @@ class ManagedRemoteHelperFacade implements RemoteHelperClient {
       previous: RemoteHelperRpcClient,
       signal?: AbortSignal,
     ) => Promise<RemoteHelperRpcClient>,
+    private readonly acquireSession: (sessionId: string, options: RemoteHelperSessionCallOptions) => Promise<RemoteHelperRpcClient>,
     private readonly closeHost: () => void,
   ) {
     this.closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
@@ -730,6 +800,60 @@ class ManagedRemoteHelperFacade implements RemoteHelperClient {
     return client.notify(method, params);
   }
 
+  async callInSession<T>(
+    sessionId: string,
+    method: string,
+    params: Record<string, unknown> = {},
+    options: RemoteHelperSessionCallOptions = {},
+  ): Promise<T> {
+    if (this.closeReasonValue !== undefined) throw this.closeReasonValue;
+    const mutation = options.mutation === true || !READ_ONLY_METHODS.has(method);
+    const recoveryBudget = new AbortController();
+    // One absolute budget belongs to this operation, not to each successful
+    // handshake. A transport that resumes but keeps blackholing reads must not
+    // reset retention forever. Clear the timer when the actual query completes.
+    const budgetTimer = options.waitForResume === true
+      ? setTimeout(() => recoveryBudget.abort(sessionExpired()), Math.max(1, this.expectCurrent().session.retentionMs))
+      : undefined;
+    const signal = AbortSignal.any([this.lifetime.signal, recoveryBudget.signal,
+      ...[options.signal].filter((value): value is AbortSignal => value !== undefined)]);
+    const effective = { ...options, signal, mutation, waitForResume: options.waitForResume === true };
+    let replayed = false;
+    let uncertainMutation: RemoteHelperCallInterruptedError | undefined;
+    try {
+      for (;;) {
+        const raw = await this.acquireSession(sessionId, effective);
+        this.bind(raw);
+        try { return await raw.call<T>(method, params, effective); }
+        catch (error) {
+          if (mutation && error instanceof RemoteHelperCallInterruptedError && error.mutationMayHaveStarted) {
+            uncertainMutation ??= error;
+          }
+          if (recoveryBudget.signal.aborted) throw recoveryBudget.signal.reason;
+          if (!(error instanceof RemoteHelperCallInterruptedError) || signal.aborted) throw error;
+          if (error.kind === 'timeout' && !mutation && effective.waitForResume
+            && isRetainedProcessQuery(method, params, effective)) {
+            // The PTY read long-poll has a shorter waitMs than its RPC deadline;
+            // a slow user command is not a stalled RPC. Retire this suspect
+            // transport so acquisition verifies resume before retrying its
+            // unchanged output cursor. Mutation timeouts never enter this path.
+            raw.transportClosed(new Error(`retained ${method} timed out; transport health is unconfirmed`));
+          } else if (error.kind !== 'disconnect') throw error;
+          if (mutation && (replayed || typeof params.operationId !== 'string' || !params.operationId.trim())) throw error;
+          if (!mutation && effective.waitForResume !== true && replayed) throw error;
+          replayed = true;
+        }
+      }
+    } catch (error) {
+      // Failure to reacquire (or a budget abort just after dispatch) does not
+      // prove that the earlier mutation never ran. Keep that original fact.
+      if (uncertainMutation !== undefined) throw uncertainMutation;
+      throw error;
+    } finally {
+      if (budgetTimer !== undefined) clearTimeout(budgetTimer);
+    }
+  }
+
   notification(method: string, params: Record<string, unknown> = {}): Promise<void> {
     return this.notify(method, params);
   }
@@ -755,6 +879,7 @@ class ManagedRemoteHelperFacade implements RemoteHelperClient {
   markClosed(reason: Error): void {
     if (this.closeReasonValue !== undefined) return;
     this.closeReasonValue = reason;
+    this.lifetime.abort(reason);
     this.detachNotification?.();
     this.detachNotification = undefined;
     for (const listener of this.closeListeners) {
@@ -890,4 +1015,26 @@ function raceSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> 
 
 function messageOf(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function sessionExpired(): RemoteHelperRpcError {
+  return new RemoteHelperRpcError({ code: 'E_SESSION_EXPIRED', message: 'remote helper session expired; this terminal cannot be silently recreated', retryable: false });
+}
+
+function isRetainedProcessQuery(method: string, params: Record<string, unknown>, options: RemoteHelperCallOptions): boolean {
+  if (method === 'process/status') return true;
+  const waitMs = params.waitMs ?? 0;
+  return method === 'process/read' && typeof params.afterSeq === 'string'
+    && typeof waitMs === 'number' && Number.isFinite(waitMs) && waitMs >= 0
+    && Number.isFinite(options.timeoutMs ?? 30_000) && waitMs < (options.timeoutMs ?? 30_000);
+}
+
+function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const finish = (): void => { signal.removeEventListener('abort', abort); resolve(); };
+    const timer = setTimeout(finish, ms);
+    const abort = (): void => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }

@@ -9,12 +9,14 @@ import type {
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess';
 import type { RemoteHelperProvider } from './helper-fs.js';
-import type { RemoteHelperClient, RemoteHelperCallOptions } from './helper/rpc-client.js';
+import type { RemoteHelperClient, RemoteHelperSessionCallOptions } from './helper/rpc-client.js';
 import { parseSshUri } from './types.js';
 
 const READ_BYTES = 64 * 1024;
 const INPUT_CHUNK_BYTES = 64 * 1024;
 const MAX_QUEUED_INPUT = 1024 * 1024;
+const MAX_QUEUED_WRITES = 128;
+const MAX_QUEUED_RESIZES = 8;
 const READ_WAIT_MS = 500;
 
 interface ProcessStatus {
@@ -39,6 +41,7 @@ interface Allocation {
   workspaceId: string;
   processId: string;
   sessionId: string;
+  client: RemoteHelperClient;
 }
 
 /** The router retains this retryable owner when unpublished cleanup fails. */
@@ -60,16 +63,19 @@ export async function openRemoteUserTerminal(
   spec.signal?.throwIfAborted();
   const parsed = parseSshUri(uri);
   const client = await helpers.client(uri, spec.signal);
-  const allocation: Allocation = { uri, workspaceId: randomUUID(), processId: randomUUID(), sessionId: client.sessionId };
+  if (!supports(client, 'process', 'sequencedWrite') || !supports(client, 'pty', 'sequencedResize')) {
+    throw new Error('remote helper does not support sequenced terminal input and resize; reconnect with the current plugin');
+  }
+  const allocation: Allocation = { uri, workspaceId: randomUUID(), processId: randomUUID(), sessionId: client.sessionId, client };
   let attempted = false;
   try {
     attempted = true;
-    await client.call('workspace/open', {
+    await allocationCall(allocation, 'workspace/open', {
       path: '/', access: 'danger-full-access', workspaceId: allocation.workspaceId,
       operationId: allocation.workspaceId,
     }, { signal: spec.signal, timeoutMs: 20_000, mutation: true });
     spec.signal?.throwIfAborted();
-    const started = await client.call<ProcessStatus>('process/start', {
+    const started = await allocationCall<ProcessStatus>(allocation, 'process/start', {
       workspaceId: allocation.workspaceId, processId: allocation.processId, operationId: allocation.processId,
       cwd: parsed.path.replace(/^\/+/, ''), argv: [...spec.argv],
       env: { ...spec.env, TERM: spec.terminalType }, stdin: 'pipe',
@@ -79,7 +85,9 @@ export async function openRemoteUserTerminal(
       throw new Error('remote helper returned an invalid user terminal process');
     }
     spec.signal?.throwIfAborted();
-    await closeWorkspace(client, allocation.workspaceId);
+    await allocationCall(allocation, 'workspace/close', {
+      workspaceId: allocation.workspaceId, operationId: `close:${allocation.workspaceId}`,
+    }, { timeoutMs: 5_000, mutation: true });
     spec.signal?.throwIfAborted();
     return new RemoteUserTerminal(helpers, allocation, started, spec.graceMs, onClosed);
   } catch (error) {
@@ -102,11 +110,19 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
   private readonly pumpLifetime = new AbortController();
   private readonly operationLifetime = new AbortController();
   private readonly statusLifetime = new AbortController();
+  private readonly recoveryLifetime = new AbortController();
   private readonly operations = new Set<Promise<unknown>>();
   private readonly pump: Promise<void>;
   private readonly outcomeWatch: Promise<void>;
   private inputTail: Promise<unknown> = Promise.resolve();
+  private resizeTail: Promise<unknown> = Promise.resolve();
+  private inputSeq = '0';
+  private resizeSeq = '0';
+  private inputFailure: Error | undefined;
+  private resizeFailure: Error | undefined;
   private queuedInputBytes = 0;
+  private queuedWrites = 0;
+  private queuedResizes = 0;
   private cursor = '0';
   private revision = 0;
   private closing = false;
@@ -138,32 +154,60 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     this.assertOpen();
     if (typeof data !== 'string') return Promise.reject(new TypeError('terminal input must be text'));
     const bytes = Buffer.byteLength(data, 'utf8');
+    if (bytes === 0) return Promise.resolve();
+    if (this.queuedWrites >= MAX_QUEUED_WRITES) {
+      return Promise.reject(new Error('remote terminal input queue exceeds 128 pending writes'));
+    }
     if (bytes + this.queuedInputBytes > MAX_QUEUED_INPUT) {
       return Promise.reject(new Error('remote terminal queued input exceeds 1 MiB'));
     }
-    this.queuedInputBytes += bytes; this.revision += 1;
+    this.queuedInputBytes += bytes; this.queuedWrites += 1; this.revision += 1;
     const operation = this.inputTail.catch(() => {}).then(async () => {
       this.assertOpen();
+      if (this.inputFailure !== undefined) throw this.inputFailure;
       const buffer = Buffer.from(data, 'utf8');
       for (let offset = 0; offset < buffer.length; offset += INPUT_CHUNK_BYTES) {
         this.assertOpen();
         const chunk = buffer.subarray(offset, offset + INPUT_CHUNK_BYTES);
-        const result = await this.call<{ written: number }>('process/write', {
+        const result = await this.call<{ written: number; nextSeq?: string }>('process/write', {
           processId: this.allocation.processId, operationId: randomUUID(), encoding: 'base64', data: chunk.toString('base64'),
-        }, { mutation: true, signal: this.operationLifetime.signal, timeoutMs: 10_000 });
+          afterSeq: this.inputSeq,
+        }, { mutation: true, signal: this.operationLifetime.signal, timeoutMs: 10_000, waitForResume: true });
         if (result.written !== chunk.length) throw new Error('remote helper accepted incomplete terminal input');
+        this.inputSeq = advanceSequence(this.inputSeq, result.nextSeq);
       }
-    }).finally(() => { this.queuedInputBytes -= bytes; });
+    }).catch(error => {
+      this.inputFailure ??= new Error('remote terminal input outcome is unresolved; close this terminal before sending more input', { cause: error });
+      throw error;
+    }).finally(() => { this.queuedInputBytes -= bytes; this.queuedWrites -= 1; });
     this.inputTail = operation;
     return this.track(operation);
   }
 
   resize(cols: number, rows: number): Promise<void> {
     this.assertOpen();
-    validateDimensions(cols, rows); this.revision += 1;
-    return this.track(this.call('process/resize', {
-      processId: this.allocation.processId, operationId: randomUUID(), cols, rows,
-    }, { mutation: true, signal: this.operationLifetime.signal, timeoutMs: 5_000 }).then(() => {}));
+    validateDimensions(cols, rows);
+    // A disconnected lane may wait for the full session retention period.
+    // Bound promises as well as wire concurrency; rejected sizes were not
+    // applied and callers may retry their latest geometry after recovery.
+    if (this.queuedResizes >= MAX_QUEUED_RESIZES) {
+      return Promise.reject(new Error('remote terminal resize queue exceeds 8 pending requests; retry the latest size'));
+    }
+    this.queuedResizes += 1; this.revision += 1;
+    const operation = this.resizeTail.catch(() => {}).then(async () => {
+      this.assertOpen();
+      if (this.resizeFailure !== undefined) throw this.resizeFailure;
+      const result = await this.call<{ nextSeq?: string }>('process/resize', {
+        processId: this.allocation.processId, operationId: randomUUID(), cols, rows,
+        afterSeq: this.resizeSeq,
+      }, { mutation: true, signal: this.operationLifetime.signal, timeoutMs: 5_000, waitForResume: true });
+      this.resizeSeq = advanceSequence(this.resizeSeq, result.nextSeq);
+    }).catch(error => {
+      this.resizeFailure ??= new Error('remote terminal resize outcome is unresolved', { cause: error });
+      throw error;
+    }).finally(() => { this.queuedResizes -= 1; });
+    this.resizeTail = operation;
+    return this.track(operation);
   }
 
   inspectForeground(): Promise<SubprocessTerminalForeground | undefined> {
@@ -200,6 +244,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     if (this.cleanup !== undefined) return this.cleanup;
     this.closing = true;
     this.operationLifetime.abort(new Error('remote user terminal is closing'));
+    this.recoveryLifetime.abort(new Error('remote user terminal recovery cancelled'));
     const cleanup = this.cleanupOnce().catch(error => {
       if (this.cleanup === cleanup) this.cleanup = undefined;
       this.failOutcome(error); this.output.destroy(asError(error));
@@ -251,8 +296,9 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
       this.pumpLifetime.abort(new Error('remote terminal process no longer exists'));
       await this.pump;
     }
-    const client = await this.client();
-    await closeWorkspace(client, this.allocation.workspaceId);
+    await this.call('workspace/close', {
+      workspaceId: this.allocation.workspaceId, operationId: `close:${this.allocation.workspaceId}`,
+    }, { timeoutMs: 5_000, mutation: true });
     if (!this.outcomeSettled) this.failOutcome(new Error('remote terminal ended without a confirmed process outcome'));
     await this.outcomeWatch;
     this.quiescent = true; this.revision += 1;
@@ -266,7 +312,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
         this.pumpLifetime.signal.throwIfAborted();
         const result = await this.call<ProcessRead>('process/read', {
           processId: this.allocation.processId, afterSeq: this.cursor, maxBytes: READ_BYTES, waitMs: READ_WAIT_MS,
-        }, { signal: this.pumpLifetime.signal, timeoutMs: 6_000 });
+        }, { signal: this.pumpLifetime.signal, timeoutMs: 6_000, waitForResume: true, recoverySignal: this.recoveryLifetime.signal });
         if (result.truncated) throw new Error('remote terminal output buffer overflowed during disconnection; reopen this terminal');
         if (!Array.isArray(result.chunks) || typeof result.nextSeq !== 'string') throw new Error('invalid remote terminal output');
         this.cursor = result.nextSeq;
@@ -289,7 +335,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
         }
       }
     } catch (error) {
-      if (this.pumpLifetime.signal.aborted && this.closing) return;
+      if (this.closing && (this.pumpLifetime.signal.aborted || this.recoveryLifetime.signal.aborted)) return;
       this.failOutcome(error); this.output.destroy(asError(error));
       queueMicrotask(() => { void this.terminate().catch(() => {}); });
     }
@@ -300,13 +346,13 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     try {
       while (!this.outcomeSettled) {
         const status = await this.call<ProcessStatus>('process/status', { processId: this.allocation.processId }, {
-          signal: this.statusLifetime.signal, timeoutMs: 3_000,
+          signal: this.statusLifetime.signal, timeoutMs: 3_000, waitForResume: true, recoverySignal: this.recoveryLifetime.signal,
         });
         if (!status.running) { this.observeOutcome(status); return; }
         await abortableDelay(250, this.statusLifetime.signal);
       }
     } catch (error) {
-      if (this.outcomeSettled || this.statusLifetime.signal.aborted) return;
+      if (this.outcomeSettled || this.statusLifetime.signal.aborted || (this.closing && this.recoveryLifetime.signal.aborted)) return;
       this.failOutcome(error); this.output.destroy(asError(error));
       queueMicrotask(() => { void this.terminate().catch(() => {}); });
     }
@@ -320,7 +366,10 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     return client;
   }
 
-  private async call<T>(method: string, params: Record<string, unknown>, options: RemoteHelperCallOptions = {}): Promise<T> {
+  private async call<T>(method: string, params: Record<string, unknown>, options: RemoteHelperSessionCallOptions = {}): Promise<T> {
+    if (this.allocation.client.callInSession !== undefined) {
+      return this.allocation.client.callInSession<T>(this.allocation.sessionId, method, params, options);
+    }
     const client = await this.client(options.signal);
     return client.call<T>(method, params, options);
   }
@@ -350,8 +399,11 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
 }
 
 async function rollback(helpers: RemoteHelperProvider, allocation: Allocation): Promise<void> {
-  const client = await helpers.client(allocation.uri);
+  const client = allocation.client.callInSession === undefined ? await helpers.client(allocation.uri) : allocation.client;
   if (client.sessionId !== allocation.sessionId) throw new Error('cannot confirm cleanup after remote helper session replacement');
+  const call = (method: string, params: Record<string, unknown>, options: RemoteHelperSessionCallOptions) =>
+    client.callInSession === undefined ? client.call(method, params, options)
+      : client.callInSession(allocation.sessionId, method, params, options);
   const failures: unknown[] = [];
   for (const [method, operationId] of [
     ['process/terminate', `rollback-terminate:${allocation.processId}`],
@@ -360,7 +412,7 @@ async function rollback(helpers: RemoteHelperProvider, allocation: Allocation): 
     const deadline = Date.now() + 20_000;
     for (;;) {
       try {
-        await client.call(method, { processId: allocation.processId, operationId, force: true }, { timeoutMs: 8_000, mutation: true });
+        await call(method, { processId: allocation.processId, operationId, force: true }, { timeoutMs: 8_000, mutation: true });
         break;
       } catch (error) {
         if (isUnknownProcess(error)) break;
@@ -369,12 +421,17 @@ async function rollback(helpers: RemoteHelperProvider, allocation: Allocation): 
       }
     }
   }
-  try { await closeWorkspace(client, allocation.workspaceId); } catch (error) { failures.push(error); }
+  try {
+    await call('workspace/close', { workspaceId: allocation.workspaceId, operationId: `close:${allocation.workspaceId}` }, { timeoutMs: 5_000, mutation: true });
+  } catch (error) { failures.push(error); }
   if (failures.length) throw new AggregateError(failures, 'remote terminal rollback was not confirmed');
 }
 
-async function closeWorkspace(client: RemoteHelperClient, workspaceId: string): Promise<void> {
-  await client.call('workspace/close', { workspaceId, operationId: `close:${workspaceId}` }, { timeoutMs: 5_000, mutation: true });
+function allocationCall<T>(allocation: Allocation, method: string, params: Record<string, unknown>, options: RemoteHelperSessionCallOptions): Promise<T> {
+  const client = allocation.client;
+  if (client.callInSession !== undefined) return client.callInSession<T>(allocation.sessionId, method, params, options);
+  if (client.sessionId !== allocation.sessionId) return Promise.reject(new Error('remote helper session expired during terminal allocation'));
+  return client.call<T>(method, params, options);
 }
 
 function validateSpawn(spec: SubprocessTerminalSpawnSpec): void {
@@ -409,6 +466,15 @@ function isStartingProcess(error: unknown): boolean {
 }
 
 function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
+function supports(client: RemoteHelperClient, capability: string, feature: string): boolean {
+  const value = client.capabilities?.[capability];
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && value[feature] === true;
+}
+function advanceSequence(previous: string, next: string | undefined): string {
+  const expected = (BigInt(previous) + 1n).toString();
+  if (next !== expected) throw new Error('remote helper returned an invalid terminal mutation sequence');
+  return expected;
+}
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {

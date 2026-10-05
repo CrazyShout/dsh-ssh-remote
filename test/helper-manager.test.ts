@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { spawn } from 'node:child_process';
 import { DshRpcLineDecoder, encodeDshRpcFrame } from '../src/helper/framing.js';
 import { RemoteHelperManager } from '../src/helper/manager.js';
+import type { RemoteHelperSessionCallOptions } from '../src/helper/rpc-client.js';
 import type { DshRpcFrame } from '../src/helper/protocol.js';
+import { openRemoteUserTerminal } from '../src/user-pty.js';
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -64,6 +66,8 @@ function helperPeer(
   child: FakeChild,
   options: {
     resumed?: boolean;
+    retentionMs?: number;
+    sessionId?: string;
     capabilities?: Record<string, unknown>;
     onRequest?: (frame: Extract<DshRpcFrame, { method: string }>, child: FakeChild) => boolean;
   } = {},
@@ -79,8 +83,8 @@ function helperPeer(
           dshRpc: '1', id: frame.id, result: {
             protocol: 1,
             session: {
-              sessionId: 'session-1', clientId, resumeToken: 'resume-1', resumed: options.resumed === true,
-              retentionMs: 120_000, serverEpoch: 1,
+              sessionId: options.sessionId ?? 'session-1', clientId, resumeToken: 'resume-1', resumed: options.resumed === true,
+              retentionMs: options.retentionMs ?? 120_000, serverEpoch: 1,
             },
             capabilities: options.capabilities ?? completeCapabilities,
             limits: { maxFrameBytes: 1_048_576 },
@@ -99,6 +103,297 @@ function helperPeer(
 }
 
 describe('RemoteHelperManager', () => {
+  async function retainedTerminalFixture(options: {
+    failures?: number; permanent?: boolean; retentionMs?: number; replace?: boolean; dropWrite?: boolean; holdFirstResume?: boolean;
+    blackhole?: 'process/read' | 'process/status' | 'process/write'; blackholeEveryTransport?: boolean;
+  } = {}) {
+    const transports: FakeChild[] = [];
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    let running = true; let processId = ''; let resumeAttempts = 0; let droppedWrite = false;
+    let releaseResume: (() => void) | undefined;
+    const capabilities = { ...completeCapabilities, process: { ...completeCapabilities.process, sequencedWrite: true },
+      pty: { ...completeCapabilities.pty, sequencedResize: true } };
+    const spawnProcess = vi.fn((_command: string, args: readonly string[]) => {
+      const child = new FakeChild();
+      if (!String(args.at(-1)).includes('connect --stdio')) {
+        child.stdin.once('finish', () => { child.exitCode = 0; queueMicrotask(() => child.emit('close', 0, null)); });
+      } else {
+        const ordinal = transports.push(child);
+        helperPeer(child, { resumed: ordinal > 1, retentionMs: options.retentionMs, capabilities,
+          sessionId: options.replace && ordinal > 1 ? 'replacement-session' : 'session-1',
+          onRequest(frame, peer) {
+            if (ordinal > 1 && frame.method === 'initialize') {
+              resumeAttempts += 1;
+              if (options.holdFirstResume && resumeAttempts === 1) {
+                releaseResume = () => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result: {
+                  protocol: 1, session: { sessionId: 'session-1', clientId: String(frame.params?.clientId), resumeToken: 'resume-1',
+                    resumed: true, retentionMs: options.retentionMs ?? 120_000, serverEpoch: 1 }, capabilities, limits: {},
+                } }));
+                return true;
+              }
+              if (options.permanent || resumeAttempts <= (options.failures ?? 0)) {
+                peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, error: {
+                  code: options.permanent ? 'E_DENIED' : 'E_BUSY', message: options.permanent ? 'permanent fixture denial' : 'temporary fixture outage',
+                  retryable: !options.permanent,
+                } }));
+                return true;
+              }
+            }
+            if (!frame.method.startsWith('process/') && !frame.method.startsWith('workspace/')) return false;
+            calls.push({ method: frame.method, params: frame.params ?? {} });
+            if (frame.method === options.blackhole && (ordinal === 1 || options.blackholeEveryTransport)) return true;
+            const reply = (result: Record<string, unknown>) => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result }));
+            if (frame.method === 'process/start') processId = String(frame.params?.processId);
+            if (frame.method === 'process/terminate') running = false;
+            if (frame.method === 'process/start' || frame.method === 'process/status') {
+              reply({ processId, pid: 321, running, exitCode: running ? null : 0, signal: null });
+            } else if (frame.method === 'process/read') {
+              const seq = ordinal > 1 ? '2' : '1';
+              const chunks = Number(frame.params?.afterSeq) < Number(seq)
+                ? [{ seq, stream: 'pty', data: Buffer.from(ordinal > 1 ? 'AFTER_RESUME' : 'BEFORE_OUTAGE').toString('base64') }] : [];
+              setTimeout(() => reply({ chunks, nextSeq: seq, truncated: false, exited: !running,
+                exitCode: running ? null : 0, signal: null }), 5);
+            } else if (frame.method === 'process/write') {
+              if (options.dropWrite && !droppedWrite) {
+                droppedWrite = true; peer.exitCode = 255; queueMicrotask(() => peer.emit('close', 255, null));
+              } else reply({ written: Buffer.from(String(frame.params?.data), 'base64').length,
+                nextSeq: (BigInt(String(frame.params?.afterSeq ?? '0')) + 1n).toString() });
+            }
+            else reply({});
+            return true;
+          },
+        });
+      }
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const manager = new RemoteHelperManager({ assetPath: await helperAsset(), spawnProcess: spawnProcess as never,
+      capabilities: { sessionTypeSupported: true }, healthIntervalMs: 0, reconnectBaseMs: 20, reconnectMaxMs: 20, random: () => 0.9 });
+    const disconnect = () => { const first = transports[0]; first.exitCode = 255; first.emit('close', 255, null); };
+    return { manager, calls, transports, disconnect, resumeAttempts: () => resumeAttempts, releaseResume: () => releaseResume?.() };
+  }
+
+  it('retains a terminal and its cursor through multiple failed reconnect attempts without cleanup or respawn', async () => {
+    const f = await retainedTerminalFixture({ failures: 2 });
+    const terminal = await openRemoteUserTerminal('ssh://gpu/tmp', {
+      argv: ['/bin/sh'], cwd: '/tmp', rows: 24, cols: 80, terminalType: 'xterm', graceMs: 1,
+    }, f.manager);
+    let output = ''; terminal.output.on('data', data => { output += String(data); });
+    let settled = false; void terminal.done.finally(() => { settled = true; }).catch(() => {});
+    try {
+      await vi.waitFor(() => expect(output).toContain('BEFORE_OUTAGE'));
+      f.disconnect();
+      await terminal.write('queued during outage');
+      await vi.waitFor(() => expect(output).toContain('AFTER_RESUME'));
+      expect(f.resumeAttempts()).toBe(3);
+      expect(settled).toBe(false); expect(terminal.output.destroyed).toBe(false); expect(terminal.pid).toBe(321);
+      expect(f.calls.filter(call => call.method === 'process/start')).toHaveLength(1);
+      expect(f.calls.filter(call => call.method === 'process/terminate')).toHaveLength(0);
+      expect(f.calls.filter(call => call.method === 'process/write')).toHaveLength(1);
+      expect(output.match(/BEFORE_OUTAGE/gu)).toHaveLength(1); expect(output.match(/AFTER_RESUME/gu)).toHaveLength(1);
+      await terminal.write('still attached');
+      expect(f.calls.filter(call => call.method === 'process/write').map(call => call.params.afterSeq)).toEqual(['0', '1']);
+      await terminal.terminate();
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('discards unsent terminal input on explicit host disconnect without reviving the host', async () => {
+    const f = await retainedTerminalFixture({ failures: 100 });
+    const terminal = await openRemoteUserTerminal('ssh://gpu/tmp', {
+      argv: ['/bin/sh'], cwd: '/tmp', rows: 24, cols: 80, terminalType: 'xterm', graceMs: 1,
+    }, f.manager);
+    terminal.output.resume();
+    try {
+      f.disconnect();
+      const queued = Promise.allSettled([terminal.write('unsent one'), terminal.write('unsent two')]);
+      await vi.waitFor(() => expect(f.resumeAttempts()).toBeGreaterThan(0));
+      await f.manager.close('gpu');
+      expect((await queued).map(result => result.status)).toEqual(['rejected', 'rejected']);
+      await expect(terminal.terminate()).rejects.toThrow('host closed');
+      const connections = f.transports.length;
+      await new Promise(resolve => setTimeout(resolve, 40));
+      expect(f.transports).toHaveLength(connections);
+      expect(f.calls.filter(call => call.method === 'process/write')).toHaveLength(0);
+      expect(f.manager.status('gpu').state).toBe('disconnected');
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('joins manual retry of an in-flight reconnect without failing the retained terminal', async () => {
+    const f = await retainedTerminalFixture({ holdFirstResume: true });
+    const terminal = await openRemoteUserTerminal('ssh://gpu/tmp', {
+      argv: ['/bin/sh'], cwd: '/tmp', rows: 24, cols: 80, terminalType: 'xterm', graceMs: 1,
+    }, f.manager);
+    terminal.output.resume();
+    try {
+      f.disconnect();
+      const input = terminal.write('queued across manual retry');
+      const accepted = expect(input).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(f.resumeAttempts()).toBe(1));
+      await f.manager.retry('gpu');
+      await accepted;
+      expect(f.transports).toHaveLength(3);
+      expect(f.calls.filter(call => call.method === 'process/start')).toHaveLength(1);
+      expect(f.calls.filter(call => call.method === 'process/terminate')).toHaveLength(0);
+      expect(f.calls.filter(call => call.method === 'process/write')).toHaveLength(1);
+      expect(terminal.output.destroyed).toBe(false);
+      await terminal.terminate();
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('replays lost input acknowledgement with identical sequence and operation id, then advances only after success', async () => {
+    const f = await retainedTerminalFixture({ dropWrite: true });
+    const terminal = await openRemoteUserTerminal('ssh://gpu/tmp', {
+      argv: ['/bin/sh'], cwd: '/tmp', rows: 24, cols: 80, terminalType: 'xterm', graceMs: 1,
+    }, f.manager);
+    terminal.output.resume();
+    try {
+      await terminal.write('first'); await terminal.write('second');
+      const writes = f.calls.filter(call => call.method === 'process/write');
+      expect(writes).toHaveLength(3);
+      expect(writes[0].params).toEqual(writes[1].params);
+      expect(writes.map(call => call.params.afterSeq)).toEqual(['0', '0', '1']);
+      expect(writes[2].params.operationId).not.toBe(writes[1].params.operationId);
+      await terminal.terminate();
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('never replays an unjournaled session-bound mutation after disconnect', async () => {
+    const f = await retainedTerminalFixture({ dropWrite: true });
+    try {
+      const facade = await f.manager.client('gpu');
+      await expect(facade.callInSession!('session-1', 'process/write', { processId: 'retained', data: 'eA==' }, { mutation: true }))
+        .rejects.toMatchObject({ kind: 'disconnect', mutationMayHaveStarted: true });
+      expect(f.calls.filter(call => call.method === 'process/write')).toHaveLength(1);
+    } finally { await f.manager.dispose(); }
+  });
+
+  it.each(['process/read', 'process/status'] as const)('recovers a blackholed %s deadline without SSH exit and preserves the session', async method => {
+    const f = await retainedTerminalFixture({ blackhole: method, failures: 2, retentionMs: 1_000 });
+    try {
+      const facade = await f.manager.client('gpu');
+      const result = await facade.callInSession!<Record<string, unknown>>('session-1', method, {
+        processId: 'retained', afterSeq: '1', waitMs: 0,
+      }, { timeoutMs: 20, waitForResume: true });
+      expect(result).toMatchObject(method === 'process/read' ? { nextSeq: '2' } : { running: true });
+      expect(f.resumeAttempts()).toBe(3);
+      expect(f.transports[0].killed).toBe(true);
+      const reads = f.calls.filter(call => call.method === method);
+      expect(reads).toHaveLength(2); expect(reads[0].params).toEqual(reads[1].params);
+      expect(f.calls.filter(call => call.method === 'process/start' || call.method === 'process/terminate')).toHaveLength(0);
+      expect(facade.sessionId).toBe('session-1');
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('keeps a native terminal alive while its read RPC blackholes but SSH and status remain open', async () => {
+    const f = await retainedTerminalFixture({ blackhole: 'process/read', failures: 2, retentionMs: 1_000 });
+    try {
+      const facade = await f.manager.client('gpu');
+      const call = facade.callInSession!.bind(facade);
+      // Shorten both long-poll and RPC deadline without changing their ordering.
+      facade.callInSession = <T>(sessionId: string, method: string, params: Record<string, unknown> = {}, options: RemoteHelperSessionCallOptions = {}) =>
+        call<T>(sessionId, method, method === 'process/read' ? { ...params, waitMs: 0 } : params,
+          method === 'process/read' ? { ...options, timeoutMs: 20 } : options);
+      const terminal = await openRemoteUserTerminal('ssh://gpu/tmp', {
+        argv: ['/bin/sh'], cwd: '/tmp', rows: 24, cols: 80, terminalType: 'xterm', graceMs: 1,
+      }, f.manager);
+      let output = ''; let settled = false;
+      terminal.output.on('data', data => { output += String(data); });
+      void terminal.done.finally(() => { settled = true; }).catch(() => {});
+      await vi.waitFor(() => expect(output).toContain('AFTER_RESUME'));
+      expect(settled).toBe(false); expect(terminal.output.destroyed).toBe(false);
+      expect(f.resumeAttempts()).toBe(3);
+      expect(f.calls.filter(item => item.method === 'process/start')).toHaveLength(1);
+      expect(f.calls.filter(item => item.method === 'process/terminate')).toHaveLength(0);
+      await terminal.write('still alive after blackhole');
+      await terminal.terminate();
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('does not reset a blackholed query retention budget after each successful resumed handshake', async () => {
+    const f = await retainedTerminalFixture({ blackhole: 'process/status', blackholeEveryTransport: true, retentionMs: 90 });
+    try {
+      const facade = await f.manager.client('gpu');
+      const started = Date.now();
+      await expect(facade.callInSession!('session-1', 'process/status', { processId: 'retained' }, {
+        timeoutMs: 15, waitForResume: true,
+      })).rejects.toThrow('session expired');
+      expect(Date.now() - started).toBeLessThan(600);
+      expect(f.resumeAttempts()).toBeGreaterThan(1);
+      expect(f.calls.filter(call => call.method === 'process/start')).toHaveLength(0);
+    } finally { await f.manager.dispose(); }
+  });
+
+  it('preserves mutation uncertainty when a late dispatch crosses the recovery budget', async () => {
+    const f = await retainedTerminalFixture({ holdFirstResume: true, retentionMs: 180,
+      blackhole: 'process/write', blackholeEveryTransport: true });
+    try {
+      const facade = await f.manager.client('gpu');
+      f.disconnect();
+      const write = facade.callInSession!('session-1', 'process/write', {
+        processId: 'retained', operationId: 'late-write', afterSeq: '0', data: 'eA==',
+      }, { timeoutMs: 1_000, mutation: true, waitForResume: true });
+      const assertion = expect(write).rejects.toMatchObject({ kind: 'abort', mutationMayHaveStarted: true });
+      await vi.waitFor(() => expect(f.resumeAttempts()).toBe(1), { interval: 1 });
+      await new Promise(resolve => setTimeout(resolve, 120));
+      f.releaseResume();
+      await assertion;
+      expect(f.calls.filter(item => item.method === 'process/write')).toHaveLength(1);
+    } finally { await f.manager.dispose(); }
+  });
+
+  it.each(['permanent', 'expire'] as const)('preserves a dispatched mutation outcome when resume later fails with %s', async mode => {
+    const f = await retainedTerminalFixture({ dropWrite: true, permanent: mode === 'permanent',
+      failures: mode === 'expire' ? 100 : 0, retentionMs: 90 });
+    try {
+      const facade = await f.manager.client('gpu');
+      await expect(facade.callInSession!('session-1', 'process/write', {
+        processId: 'retained', operationId: 'uncertain-write', afterSeq: '0', data: 'eA==',
+      }, { timeoutMs: 1_000, mutation: true, waitForResume: true }))
+        .rejects.toMatchObject({ kind: 'disconnect', mutationMayHaveStarted: true });
+      expect(f.calls.filter(item => item.method === 'process/write')).toHaveLength(1);
+    } finally { await f.manager.dispose(); }
+  });
+
+  it.each(['mutation', 'long-poll', 'file-cursor'] as const)('does not reinterpret %s timeouts as safe retained-query replay', async mode => {
+    const method = mode === 'mutation' ? 'process/write' : mode === 'long-poll' ? 'process/read' : 'fs/readNext';
+    const f = await retainedTerminalFixture({ blackhole: mode === 'mutation' ? 'process/write' : 'process/read' });
+    try {
+      const facade = await f.manager.client('gpu');
+      await expect(facade.callInSession!('session-1', method, {
+        processId: 'retained', handleId: 'handle', operationId: 'same-operation', afterSeq: '0', data: 'eA==', waitMs: 100,
+      }, { timeoutMs: 15, waitForResume: true, mutation: mode === 'mutation' })).rejects.toMatchObject({ kind: 'timeout' });
+      expect(f.transports).toHaveLength(1); expect(f.transports[0].killed).toBe(false);
+      expect(f.resumeAttempts()).toBe(0);
+    } finally { await f.manager.dispose(); }
+  });
+
+  it.each(['cancel', 'close', 'permanent', 'expire', 'replace'] as const)('stops retained-session recovery on %s without recreating a process', async mode => {
+    const f = await retainedTerminalFixture({ failures: mode === 'replace' ? 0 : 100,
+      permanent: mode === 'permanent', retentionMs: mode === 'expire' ? 35 : 120_000, replace: mode === 'replace' });
+    try {
+      const facade = await f.manager.client('gpu');
+      f.disconnect();
+      const controller = new AbortController();
+      const read = facade.callInSession!('session-1', 'process/status', { processId: 'retained' }, {
+        waitForResume: true, signal: controller.signal,
+      });
+      const expected = mode === 'cancel' ? 'cancel retained fixture' : mode === 'close' ? 'host closed'
+        : mode === 'permanent' ? 'permanent fixture denial' : 'session expired';
+      const assertion = expect(read).rejects.toThrow(expected);
+      if (mode === 'cancel' || mode === 'close') await vi.waitFor(() => expect(f.resumeAttempts()).toBeGreaterThan(0));
+      if (mode === 'cancel') controller.abort(new Error('cancel retained fixture'));
+      if (mode === 'close') await f.manager.close('gpu');
+      await assertion;
+      if (mode === 'close') {
+        const connections = f.transports.length;
+        await expect(facade.callInSession!('session-1', 'process/terminate', { processId: 'retained', operationId: 'cleanup' }, { mutation: true }))
+          .rejects.toThrow('host closed');
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(f.transports).toHaveLength(connections); expect(f.manager.status('gpu').state).toBe('disconnected');
+      }
+      expect(f.calls.filter(call => call.method === 'process/start')).toHaveLength(0);
+    } finally { await f.manager.dispose(); }
+  });
+
   it.each(['initialize', 'environment/check'] as const)('does not expose a raw client before pending %s completes', async (stage) => {
     const capabilities = { ...completeCapabilities, environment: { check: true } };
     let release: (() => void) | undefined;
