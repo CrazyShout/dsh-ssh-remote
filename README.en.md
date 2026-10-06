@@ -7,6 +7,10 @@ hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
+See the [development roadmap](docs/ROADMAP.md) (Chinese) for planned remote editing,
+file completion/quick open, forwarding and human file transfers, with acceptance
+criteria. These are future goals, not features already available in this release.
+
 ## 0.5.1: reconnect, input and cleanup hardening
 
 - Human terminals wait through transient transport failures within the original
@@ -171,6 +175,8 @@ connection. The public seams still impose these visible limits:
    files, not those local-open actions. Hiding a button does not guard the
    keyboard/menu path. A complete fix requires an upstream session-aware open
    contract and shortcut guard; see [ADR-0006](docs/adr/0006-reliability-and-file-identity.md).
+   A separate, explicitly labelled VS Code Remote-SSH action can be explored
+   independently; it need not wait for full replacement of the native actions.
 
 Removing the anchor and the last routing hooks requires an upstream first-class
 `{ hostId, remotePath, runtime }` workspace contract.

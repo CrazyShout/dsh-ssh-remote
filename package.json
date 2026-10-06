@@ -23,6 +23,7 @@
     "lib",
     "helper",
     "docs/adr",
+    "docs/ROADMAP.md",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",

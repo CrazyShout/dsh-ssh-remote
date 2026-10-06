@@ -84,6 +84,12 @@ in-app read-only previews and the SSH terminal until an upstream session-aware
 open contract plus shortcut guard (or supported composition-level replacement)
 is available. The limitation is documented, not marked fixed.
 
+This boundary concerns the existing native actions, including keyboard/menu
+dispatch. It does not preclude a separate, explicitly labelled VS Code
+Remote-SSH action that carries a verified SSH alias and remote path. That
+independent feature is planned in the [development roadmap](../ROADMAP.md), not
+implemented by 0.5.1. A downloaded snapshot must not be presented as remote editing.
+
 ## Verification boundaries
 
 Protocol stress tests, real subprocess cleanup tests, actual helper socket
