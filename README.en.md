@@ -219,13 +219,27 @@ Web background connection; prepare the agent/session first.
 
 ## Install
 
-```sh
-# npm, after the release is published
-dsh plugin --profile web add dsh-ssh-remote
+Run `dsh --version` first: plugin `0.5.1` requires **DSH `0.2.0-rc.2` or a
+compatible newer `0.2.x` release**. DSH `0.1.x`, including `0.1.7-rc.2`, cannot
+use the current main branch. Do not bypass the compatibility check with
+`allow-version`. For Desktop, check the application's bundled engine, not the
+version of a separately installed CLI.
 
-# directly from GitHub
+```sh
+dsh --version
+
+# After confirming a compatible DSH version, install from GitHub
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
+
+Use the GitHub address above. The npm package named `dsh-ssh-remote` points to
+another repository, not this project; do not replace the command with
+`dsh plugin --profile web add dsh-ssh-remote`.
+The repository ships `lib/` and this plugin needs no install-time
+`prepare` script or rebuild.
+pnpm 11 may still require a decision for dependencies' optional native builds.
+If it reports `ERR_PNPM_IGNORED_BUILDS`, follow the package/version-specific
+checks below instead of blindly approving this plugin.
 
 Restart `dsh web`, open **Settings → Built-in Plugins → SSH Remote**, and connect or browse a host.
 The first connection installs the matching helper automatically.
@@ -234,10 +248,62 @@ The official Desktop uses the same Web client and Host plugin interfaces.
 Install `github:CrazyShout/dsh-ssh-remote` through the desktop application's
 plugin manager and restart the application to use SSH Remote settings and the
 remote directory workspace picker. Its bundled engine must be a compatible DSH
-`0.2.x` release, starting at `0.2.0-rc.2`; DSH `0.1.x` users should keep plugin
-`0.3.1` (Git commit `1432649`). Desktop distributions may use a different
+`0.2.x` release, starting at `0.2.0-rc.2`. Desktop distributions may use a different
 profile, so the CLI's `--profile web` command is not a substitute for the
 desktop application's own plugin manager.
+
+### Older DSH versions and installation failures
+
+If you must keep DSH `0.1.x`, preserve your existing working combination first.
+Plugin `0.3.1` is a legacy candidate with declared support for
+`>=0.1.1-rc.2 <0.2.0`, not a claim that every `0.1.x` release has been tested.
+Back up the profile before trying it and pin the commit instead of installing
+the current main branch:
+
+```sh
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#1432649a3227b78bc1309100333ec4887bb571e2'
+```
+
+On failure, open `pnpm.log` at the **diagnostics path printed by DSH** and find
+the first actual error:
+
+- `installation rejected` / `incompatible with dsh`: resolve the DSH/plugin
+  version mismatch first. Approving build scripts cannot fix API incompatibility.
+- `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` or `ERR_PNPM_IGNORED_BUILDS`: check the
+  exact package and version named in the log; it may be another dependency.
+  Review that package's scripts before granting an exact approval, never a
+  blanket approval.
+- Git, network, registry, or permission errors: address that error rather than
+  changing build permissions.
+
+If the actual error is `Ignored build scripts: cpu-features@0.0.10, ssh2@1.17.0`,
+**merge** these settings into that profile's `pnpm-workspace.yaml`, then retry
+the original Git install command:
+
+```yaml
+allowBuilds:
+  'cpu-features@0.0.10': false
+  'ssh2@1.17.0': false
+```
+
+Keep unrelated fields and other packages' decisions; do not duplicate the
+`allowBuilds` key or replace the whole file. The default Web path is
+`~/.dsh/profiles/web/pnpm-workspace.yaml`; with a custom `DSH_HOME`, use the
+profile containing the reported diagnostics instead. `false` **denies** these
+builds, not approves them. These versions only build optional native features;
+`ssh2` can use its JavaScript/Node crypto implementation, and the default system
+OpenSSH helper does not depend on these native modules. This policy was tested
+in an isolated pnpm `11.22.0` / DSH `0.2.0-rc.2` profile. Reassess other
+dependency versions instead of copying version numbers blindly. Do not disable
+script checks globally or skip all builds needed by other plugins in the same
+profile.
+
+DSH `0.1.7-rc.2` and `0.2.0-rc.2` append a generic “git-hosted plugins …
+prepare … allowBuilds” hint after failed Git installs. **That hint alone does
+not identify the cause** or prove this plugin has a `prepare` script. When
+filing an issue, include the original command, component versions, and the log
+around the first error. Redact tokens, credentials, and private paths before
+sharing it.
 
 ## Security model
 

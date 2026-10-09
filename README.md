@@ -170,13 +170,23 @@ MFA 提示；请先准备好 agent/登录会话。
 
 ## 安装与使用
 
-```sh
-# npm 发布后
-dsh plugin --profile web add dsh-ssh-remote
+先运行 `dsh --version`：当前插件 `0.5.1` 要求 DSH **`0.2.0-rc.2` 或兼容的更新
+`0.2.x`**。DSH `0.1.7-rc.2` 等 `0.1.x` 不能安装当前主分支；不要用
+`allow-version` 绕过兼容性检查。Desktop 要核对应用自身的引擎版本，不能用另装的 CLI
+版本代替。
 
-# 直接从 GitHub 安装
+```sh
+dsh --version
+
+# 确认 DSH 版本兼容后，从 GitHub 安装
 dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 ```
+
+请使用上面的 GitHub 安装地址。npm 上的同名 `dsh-ssh-remote` 包指向另一个仓库，
+不是本项目；不要改成 `dsh plugin --profile web add dsh-ssh-remote`。
+仓库已提交 `lib/`，本插件不需要在安装时执行 `prepare` 或重新构建。
+pnpm 11 仍可能要求处理依赖的可选原生构建；遇到 `ERR_PNPM_IGNORED_BUILDS` 时，
+按下方的精确包名与版本排查，不要给本插件盲目添加构建授权。
 
 重启 `dsh web`，打开「设置 → 内置插件 → SSH Remote」，可以先连接，也可以直接在「添加工作区」
 中选择主机。首次连接会自动安装匹配版本的 helper。
@@ -184,9 +194,49 @@ dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
 官方 Desktop 复用同一套 Web 客户端和 Host 插件接口。在桌面应用的插件管理页面中安装
 `github:CrazyShout/dsh-ssh-remote`，然后重启应用，即可使用「SSH Remote」设置和远程
 目录工作区选择器。请确认桌面应用内置的是兼容的 DSH `0.2.x` 引擎，最低版本为
-`0.2.0-rc.2`；旧 `0.1.x` 引擎应继续使用插件 `0.3.1`（Git commit `1432649`）。
+`0.2.0-rc.2`。
 不同桌面发行版的 profile 可能不同，CLI 的 `--profile web` 安装命令不应代替桌面应用
 自己的插件管理入口。
+
+### 旧 DSH 与安装失败排查
+
+仍需保留 DSH `0.1.x` 时，先保留原有可用组合。插件 `0.3.1` 是旧版候选，其声明范围为
+`>=0.1.1-rc.2 <0.2.0`；这不等于每个 `0.1.x` 版本都已实测。需要试用时应先备份 profile，
+并固定提交，不要安装当前主分支：
+
+```sh
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#1432649a3227b78bc1309100333ec4887bb571e2'
+```
+
+安装失败时，从 DSH 输出的 **diagnostics 路径**查看 `pnpm.log` 中的首个实际错误：
+
+- `installation rejected` / `incompatible with dsh`：先解决 DSH 与插件版本不匹配；
+  放行构建脚本不能解决 API 不兼容。
+- `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 或 `ERR_PNPM_IGNORED_BUILDS`：核对日志明确
+  指出的包名和版本，可能是其他依赖。仅在审查那个包的脚本后决定是否精确授权，不要全局放行。
+- Git、网络、registry 或权限错误：按对应错误处理；它们不是构建脚本问题。
+
+若实际错误是 `Ignored build scripts: cpu-features@0.0.10, ssh2@1.17.0`，可以在该
+profile 的 `pnpm-workspace.yaml` 中**合并**以下设置，然后重试原 Git 安装命令：
+
+```yaml
+allowBuilds:
+  'cpu-features@0.0.10': false
+  'ssh2@1.17.0': false
+```
+
+保留原文件的其他字段和其他包的决策，不要重复创建 `allowBuilds` 键或覆盖整个文件。
+默认 Web 路径是 `~/.dsh/profiles/web/pnpm-workspace.yaml`，设置了 `DSH_HOME` 时以
+实际 diagnostics 所属 profile 为准。这里的 `false` 是**明确禁用**，不是授权：这两个
+版本的脚本只构建可选原生能力，`ssh2` 可以使用 JavaScript/Node crypto 实现，默认
+system OpenSSH helper 路径不依赖这些原生模块。此策略已在 pnpm `11.22.0` 与 DSH
+`0.2.0-rc.2` 的隔离 profile 验证；不同依赖版本应重新检查，不要照搬版本号。
+不建议为此全局关闭脚本检查，也不要把同一 profile 中其他插件所需的构建全部跳过。
+
+DSH `0.1.7-rc.2` 和 `0.2.0-rc.2` 会在 Git 安装失败后附带通用的
+“git-hosted plugins … prepare … allowBuilds” 提示。**仅有这句话不能确定失败原因**，
+也不意味着本插件有 `prepare` 脚本。提交 Issue 时，请附上原始安装命令、各组件版本及
+首个错误附近的日志；分享前删除 token、凭据和不希望公开的路径。
 
 Harness 会把精确映射保存在 `$DSH_HOME/ssh-workspace-anchors.json`，anchor 目录位于
 `$DSH_HOME/ssh-workspace-anchors/`。其他本地路径继续使用原来的本机 provider。
