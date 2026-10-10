@@ -95,7 +95,7 @@ export function installRemoteShellRouter(
   const originalExecute = shell.execute;
 
   shell.execute = async function (spec: ShellExecSpec): Promise<ShellExecution> {
-    const uri = remoteUri(spec.workdir, resolveRemotePath);
+    const uri = remoteUri(spec.workdir, spec.sandboxPolicy, resolveRemotePath);
     if (uri === undefined) return originalExecute.call(shell, spec);
     const process = new RemoteShellProcess(uri, spec, helpers, resolveRemotePath);
     processes?.track(process);
@@ -607,8 +607,19 @@ class OutputOffsetReader {
   }
 }
 
-function remoteUri(path: string, resolveRemotePath: RemotePathResolver): string | undefined {
-  return path.startsWith('ssh://') ? path : resolveRemotePath(path);
+function remoteUri(
+  path: string,
+  policy: SandboxExecutionPolicy | undefined,
+  resolveRemotePath: RemotePathResolver,
+): string | undefined {
+  if (path.startsWith('ssh://')) return path;
+  const mapped = resolveRemotePath(path);
+  if (mapped !== undefined) return mapped;
+  const root = policy?.workspaceRoot;
+  if (root === undefined || !posix.isAbsolute(path)) return undefined;
+  const remoteRoot = resolveRemotePath(root);
+  if (remoteRoot === undefined) return undefined;
+  return formatSshUri({ ...parseSshUri(remoteRoot), path });
 }
 
 function sameHost(left: SshUri, right: SshUri): boolean {
