@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 
 spec = importlib.util.spec_from_file_location("helper_under_test", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
@@ -165,11 +166,96 @@ def workspace_borrow():
             ws.close()
 
 
+def competing_writes(first_kind, second_kind, independent=False):
+    state = m.DaemonState(30)
+    first, second = (state.acquire({"clientId": name}) for name in ("writer-a", "writer-b"))
+    first.dispatch("initialize", {"clientId": "writer-a"})
+    second.dispatch("initialize", {"clientId": "writer-b"})
+    with tempfile.TemporaryDirectory() as root:
+        project = os.path.join(root, "project")
+        os.mkdir(project)
+        for name in ("shared", "independent"):
+            with open(os.path.join(project, name), "wb") as stream:
+                stream.write(b"seed")
+        workspace(first, project)
+        workspace(second, root)
+
+        def prepare(value, kind, path, tag):
+            version = value.dispatch("fs/read", {"workspaceId": "w", "path": path})["version"]
+            params = {"workspaceId": "w", "path": path, "intent": {"kind": "replace-if-version", "version": version}}
+            data = base64.b64encode(tag.encode()).decode()
+            if kind == "inline":
+                return lambda: value.dispatch("fs/write", dict(params, data=data, operationId="commit-" + tag))
+            value.dispatch("fs/writeOpen", dict(params, handleId=tag, operationId="upload-" + tag))
+            value.dispatch("fs/writeChunk", {"handleId": tag, "data": data, "operationId": "chunk-" + tag})
+            return lambda: value.dispatch("fs/writeCommit", {"handleId": tag, "operationId": "commit-" + tag})
+
+        commit_a = prepare(first, first_kind, "shared", "A")
+        commit_b = prepare(second, second_kind, "project/" + ("independent" if independent else "shared"), "B")
+        entered, proceed, attempted, completed = (threading.Event() for _ in range(4))
+        real_replace, real_lock = m.os.replace, second.locked_path
+
+        def delayed_replace(*args, **kwargs):
+            if threading.current_thread().name == "commit-a":
+                entered.set()
+                assert proceed.wait(5)
+            return real_replace(*args, **kwargs)
+
+        @contextmanager
+        def observed_lock(key):
+            attempted.set()
+            with real_lock(key):
+                yield
+
+        def run_second():
+            try:
+                return commit_b()
+            finally:
+                completed.set()
+
+        m.os.replace = delayed_replace
+        second.locked_path = observed_lock
+        a, result_a = launch("commit-a", commit_a)
+        b = None
+        try:
+            assert entered.wait(3)
+            b, result_b = launch("commit-b", run_second)
+            assert attempted.wait(3)
+            if independent:
+                assert completed.wait(3), "unrelated files were globally serialized"
+            else:
+                completed.wait(.2)  # Second client either blocks on the lock or exposes the old race.
+            proceed.set()
+            join(a)
+            join(b)
+            assert "value" in result_a, result_a
+            if independent:
+                assert "value" in result_b, result_b
+            else:
+                assert getattr(result_b.get("error"), "code", None) == "E_STALE_VERSION", result_b
+            assert first.capabilities()["filesystem"]["guardedWrite"]["coordinationScope"] == "daemon"
+            assert first.dispatch("health/status", {})["pathLocks"] == 0
+            assert second.dispatch("health/status", {})["pathLocks"] == 0
+        finally:
+            proceed.set()
+            join(a)
+            if b:
+                join(b)
+            m.os.replace = real_replace
+            first.close()
+            second.close()
+
+
 case = sys.argv[2]
 if case.startswith("read-close-"):
     read_close(case[len("read-close-"):])
 elif case == "workspace-borrow":
     workspace_borrow()
+elif case.startswith("write-"):
+    _, first_kind, second_kind = case.split("-")
+    competing_writes(first_kind, second_kind)
+elif case == "independent-writes":
+    competing_writes("inline", "chunk", independent=True)
 else:
     raise AssertionError("unknown scenario: " + case)
 print(json.dumps({"case": case, "passed": True}))

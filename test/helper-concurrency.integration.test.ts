@@ -8,6 +8,8 @@ const probe = fileURLToPath(new URL('./fixtures/helper_concurrency.py', import.m
 describe('helper concurrent resource lifetimes', () => {
   it.each([
     'read-close-explicit', 'read-close-session', 'read-close-cached', 'workspace-borrow',
+    'write-inline-inline', 'write-inline-chunk', 'write-chunk-inline', 'write-chunk-chunk',
+    'independent-writes',
   ])('%s', scenario => {
     const result = spawnSync('python3', [probe, helper, scenario], {
       encoding: 'utf8', timeout: 15_000,

@@ -374,12 +374,41 @@ class Workspace:
         finally: os.close(parent)
 
 
+class PathLockCoordinator:
+    """Reference-counted publication locks shared by every daemon session."""
+    def __init__(self, scope: str = "session"):
+        self.scope = scope
+        self.lock = threading.Lock()
+        self.paths: Dict[str, threading.Lock] = {}
+        self.references: Dict[str, int] = {}
+
+    def count(self) -> int:
+        with self.lock: return len(self.paths)
+
+    @contextmanager
+    def locked(self, key: str):
+        with self.lock:
+            lock = self.paths.setdefault(key, threading.Lock())
+            self.references[key] = self.references.get(key, 0) + 1
+        acquired = False
+        try:
+            lock.acquire(); acquired = True
+            yield
+        finally:
+            if acquired: lock.release()
+            with self.lock:
+                refs = self.references[key] - 1
+                if refs == 0:
+                    del self.paths[key]; del self.references[key]
+                else: self.references[key] = refs
+
+
 class Server:
-    def __init__(self, server_id: Optional[str] = None, resume_supported: bool = False):
+    def __init__(self, server_id: Optional[str] = None, resume_supported: bool = False,
+                 write_coordinator: Optional[PathLockCoordinator] = None):
         self.workspaces: Dict[str, Workspace] = {}
         self.operations: Dict[str, Tuple[str, Dict[str, Any], float]] = {}
-        self.path_locks: Dict[str, threading.Lock] = {}
-        self.path_lock_refs: Dict[str, int] = {}
+        self.write_coordinator = write_coordinator or PathLockCoordinator()
         self.operation_locks: Dict[str, threading.Lock] = {}
         self.resources_lock = threading.RLock()
         self.cleanup_lock = threading.RLock()
@@ -403,7 +432,8 @@ class Server:
                 "strongVersion": "sha256-stat-v1",
                 "chunkedWrite": {"supported": True, "maxBytes": MAX_WRITE, "maxChunkBytes": MAX_WRITE_CHUNK},
                 "guardedWrite": {"helperLinearizable": True, "externalWriterRaceFree": False,
-                                 "createNoReplace": True, "durableRename": True},
+                                 "createNoReplace": True, "durableRename": True,
+                                 "coordinationScope": self.write_coordinator.scope},
             },
             "process": {"supported": True, "sandbox": "bwrap" if bwrap_available() else "none",
                         "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked", "sequencedWrite": True},
@@ -422,18 +452,7 @@ class Server:
 
     @contextmanager
     def locked_path(self, key: str):
-        with self.resources_lock:
-            lock = self.path_locks.setdefault(key, threading.Lock())
-            self.path_lock_refs[key] = self.path_lock_refs.get(key, 0) + 1
-        lock.acquire()
-        try: yield
-        finally:
-            lock.release()
-            with self.resources_lock:
-                refs = self.path_lock_refs.get(key, 1) - 1
-                if refs <= 0 and self.path_locks.get(key) is lock:
-                    self.path_locks.pop(key, None); self.path_lock_refs.pop(key, None)
-                else: self.path_lock_refs[key] = refs
+        with self.write_coordinator.locked(key): yield
 
     def read_bytes(self, ws: Workspace, path: Any, maximum: Any) -> Tuple[bytes, os.stat_result, str]:
         limit = MAX_READ if maximum is None else int(maximum)
@@ -528,7 +547,7 @@ class Server:
         if method == "environment/resolveExecutable": return resolve_executable(p)
         if method == "health/status": return {"ok": True, "home": os.path.realpath(os.path.expanduser("~")),
                 "uptimeMs": int((time.monotonic()-self.started)*1000), "workspaces": len(self.workspaces),
-                "processes": len(self.processes), "pathLocks": len(self.path_locks),
+                "processes": len(self.processes), "pathLocks": self.write_coordinator.count(),
                 "readHandles": len(self.read_handles), "writeHandles": len(self.write_handles)}
         if method == "workspace/open":
             def open_workspace() -> Dict[str, Any]:
@@ -1461,6 +1480,7 @@ class ProcessRecord:
 class DaemonState:
     def __init__(self, idle_timeout: float):
         self.server_id = secrets.token_hex(16); self.sessions: Dict[str, Server] = {}
+        self.write_coordinator = PathLockCoordinator("daemon")
         self.lock = threading.Lock(); self.shutdown = threading.Event(); self.idle_timeout = idle_timeout
         self.last_activity = time.monotonic(); self.connections = 0
         self.next_sweep = self.last_activity + DAEMON_SWEEP_INTERVAL
@@ -1483,7 +1503,7 @@ class DaemonState:
                 if params.get("resumeToken") not in (None, ""):
                     raise RpcError("E_RESUME_DENIED", "session does not exist")
                 if len(self.sessions) >= MAX_SESSIONS: raise RpcError("E_RESOURCE_LIMIT", "daemon session limit reached", True)
-                server = Server(self.server_id, True); server.client_id = client_id
+                server = Server(self.server_id, True, self.write_coordinator); server.client_id = client_id
                 requested = int(params.get("retentionMs", 600000))
                 server.retention_ms = max(30000, min(requested, 3600000)); self.sessions[client_id] = server
             else:
@@ -1530,7 +1550,7 @@ class DaemonState:
 
 
 def hello(server_id: str, resume: bool) -> Dict[str, Any]:
-    probe = Server(server_id, resume)
+    probe = Server(server_id, resume, PathLockCoordinator("daemon") if resume else None)
     return {"dshRpc": PROTOCOL, "method": "server/hello", "params": {
         "protocol": {"min": 1, "max": 1}, "helperVersion": VERSION, "buildId": build_id(),
         "serverInstanceId": server_id, "serverEpoch": server_id,

@@ -952,6 +952,45 @@ print(json.dumps(observed))
     }
   }, integrationTimeout);
 
+  it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('coordinates guarded commits from two real daemon clients', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-helper-writers-'));
+    const runtimeDir = await mkdtemp(join(tmpdir(), 'dsh-helper-writer-runtime-'));
+    temporary.push(root, runtimeDir);
+    await mkdir(join(root, 'project'));
+    await writeFile(join(root, 'project', 'shared.txt'), 'seed');
+    const first = new RpcClient({ direct: false, runtimeDir });
+    const second = new RpcClient({ direct: false, runtimeDir });
+    clients.push(first, second);
+    await Promise.all([first.hello, second.hello]);
+    const [a, b] = await Promise.all([
+      first.request('initialize', { clientId: 'writer-a' }),
+      second.request('initialize', { clientId: 'writer-b' }),
+    ]);
+    try {
+      expect(a.session.serverEpoch).toBe(b.session.serverEpoch);
+      expect(a.session.sessionId).not.toBe(b.session.sessionId);
+      expect(a.capabilities.filesystem.guardedWrite).toMatchObject({ coordinationScope: 'daemon', externalWriterRaceFree: false });
+      await Promise.all([
+        first.request('workspace/open', { path: join(root, 'project'), workspaceId: 'w', operationId: 'w', access: 'workspace-write' }),
+        second.request('workspace/open', { path: root, workspaceId: 'w', operationId: 'w', access: 'workspace-write' }),
+      ]);
+      for (let index = 0; index < 8; index += 1) {
+        const { version } = await first.request('fs/read', { workspaceId: 'w', path: 'shared.txt' });
+        const results = await Promise.allSettled([
+          first.request('fs/write', { workspaceId: 'w', path: 'shared.txt', operationId: `write-${index}`,
+            intent: { kind: 'replace-if-version', version }, data: Buffer.from(`a-${index}`).toString('base64') }),
+          second.request('fs/write', { workspaceId: 'w', path: 'project/shared.txt', operationId: `write-${index}`,
+            intent: { kind: 'replace-if-version', version }, data: Buffer.from(`b-${index}`).toString('base64') }),
+        ]);
+        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+        expect(results.filter(result => result.status === 'rejected').map(result => result.reason.code)).toEqual(['E_STALE_VERSION']);
+      }
+      expect(await first.request('health/status')).toMatchObject({ pathLocks: 0 });
+    } finally {
+      await first.request('admin/shutdown');
+    }
+  }, integrationTimeout);
+
   it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('keeps a process in the per-user daemon and resumes it by clientId and token', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-helper-resume-root-'));
     const runtimeDir = await mkdtemp(join(tmpdir(), 'dsh-helper-runtime-'));
