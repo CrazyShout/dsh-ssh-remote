@@ -337,13 +337,22 @@ class Workspace:
         self.path = os.path.realpath(path)
         try: self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc: raise fail_os(exc)
-        self.access = access
+        self.access = access; self.lock = threading.Lock()
 
     def close(self) -> None:
-        if self.fd >= 0: os.close(self.fd); self.fd = -1
+        with self.lock:
+            fd, self.fd = self.fd, -1
+            if fd >= 0: os.close(fd)
+
+    def dup_root(self) -> int:
+        # Borrow an independent FD while the root's identity is still pinned.
+        with self.lock:
+            if self.fd < 0: raise RpcError("E_UNKNOWN_WORKSPACE", "workspace is closed")
+            try: return os.dup(self.fd)
+            except OSError as exc: raise fail_os(exc)
 
     def dirfd(self, parts: List[str]) -> int:
-        fd = os.dup(self.fd)
+        fd = self.dup_root()
         try:
             for part in parts:
                 nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -599,22 +608,25 @@ class Server:
                     "version": version, "statVersion": stat_version(st)}
         if method == "fs/readOpen":
             def open_read() -> Dict[str, Any]:
+                hid = valid_id(p.get("handleId") or secrets.token_hex(16), "handleId")
                 ws = self.workspace(p); fd = ws.open_file(p.get("path", "")); st = os.fstat(fd)
                 if not statmod.S_ISREG(st.st_mode): os.close(fd); raise RpcError("E_NOT_FILE", "target is not a regular file")
-                hid = valid_id(p.get("handleId") or secrets.token_hex(16), "handleId")
                 with self.cleanup_lock, self.resources_lock:
                     if len(self.read_handles) >= MAX_READ_HANDLES: os.close(fd); raise RpcError("E_RESOURCE_LIMIT", "read handle limit reached")
                     if hid in self.read_handles: os.close(fd); raise RpcError("E_EXISTS", "read handle already exists")
                     try: self.reserve_cleanup("read", hid)
                     except Exception: os.close(fd); raise
                     self.read_handles[hid] = {"fd": fd, "before": st, "hash": hashlib.sha256(), "seq": 0,
-                                              "done": False, "last": None, "lock": threading.Lock()}
+                                              "done": False, "last": None, "closed": False, "lock": threading.Lock()}
                 return {"handleId": hid, "metadata": meta(st)}
             return self.guarded(p.get("operationId"), p, open_read)
         if method == "fs/readNext":
             with self.resources_lock: handle = self.read_handles.get(p.get("handleId"))
             if handle is None: raise RpcError("E_UNKNOWN_HANDLE", "unknown read handle")
             with handle["lock"]:
+                with self.resources_lock:
+                    if handle["closed"] or self.read_handles.get(p.get("handleId")) is not handle:
+                        raise RpcError("E_UNKNOWN_HANDLE", "read handle is closed")
                 try: after = handle["seq"] if p.get("afterSeq") is None else int(p.get("afterSeq"))
                 except (TypeError, ValueError) as exc: raise RpcError("E_INVALID_PARAMS", "afterSeq must be an integer string") from exc
                 if after == handle["seq"] - 1 and handle["last"] is not None: return dict(handle["last"])
@@ -633,9 +645,8 @@ class Server:
             def close_read() -> Dict[str, Any]:
                 with self.resources_lock: handle = self.read_handles.get(p.get("handleId"))
                 if handle is None: return {"closed": False}
-                with handle["lock"]:
-                    os.close(handle["fd"])
-                    with self.resources_lock: self.read_handles.pop(p.get("handleId"), None)
+                self.close_read_handle(handle)
+                with self.resources_lock: self.read_handles.pop(p.get("handleId"), None)
                 return {"closed": True}
             return self.resource_cleanup("read", p.get("handleId"), p.get("operationId"), close_read)
         if method == "fs/writeOpen": return self.guarded(p.get("operationId"), p, lambda: self.open_write(p))
@@ -646,7 +657,7 @@ class Server:
             ws = self.workspace(p)
             if ws.access == "read-only": raise RpcError("E_PERMISSION_DENIED", "workspace is read-only")
             def make() -> Dict[str, Any]:
-                parts = path_parts(p.get("path", "")); fd = os.dup(ws.fd)
+                parts = path_parts(p.get("path", "")); fd = ws.dup_root()
                 try:
                     for i, part in enumerate(parts):
                         try: nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -968,7 +979,7 @@ class Server:
             self.processes[process_id] = PROCESS_RESERVED
         try:
             if workspace_under_tmp:
-                workspace_fd = os.dup(ws.fd); inherited_fds = (workspace_fd,)
+                workspace_fd = ws.dup_root(); inherited_fds = (workspace_fd,)
                 command = [str(workspace_fd) if value == "__DSH_WORKSPACE_FD__" else value for value in command]
             record = ProcessRecord(process_id, command, cwd, supplied, tty, stdin_mode, inherited_fds,
                                    inside_sandbox=ws.access != "danger-full-access")
@@ -998,6 +1009,22 @@ class Server:
                              "backend": "none" if ws.access == "danger-full-access" else "bwrap"}
         return result
 
+    @staticmethod
+    def close_read_handle(handle: Dict[str, Any]) -> None:
+        with handle["lock"]:
+            if handle["closed"]:
+                if handle.get("cleanupError"): raise RpcError("E_CLEANUP_FAILED", handle["cleanupError"])
+                return
+            handle["closed"] = True
+            fd, handle["fd"] = handle["fd"], -1
+            try:
+                if fd >= 0: os.close(fd)
+            except OSError as exc:
+                # close errors have ambiguous FD ownership on POSIX. Never
+                # retry the numeric descriptor after another open could reuse it.
+                handle["cleanupError"] = "read handle close was not confirmed"
+                raise fail_os(exc)
+
     def close(self) -> None:
         with self.resources_lock:
             handles = list(self.read_handles.values()); self.read_handles.clear()
@@ -1006,10 +1033,11 @@ class Server:
             workspaces = list(self.workspaces.values()); self.workspaces.clear()
         errors = []
         for handle in handles:
-            try: os.close(handle["fd"])
-            except OSError as exc: errors.append(exc)
+            try: self.close_read_handle(handle)
+            except Exception as exc: errors.append(exc)
         for handle in write_handles:
-            try: self.cleanup_write_handle(handle)
+            try:
+                with handle["lock"]: self.cleanup_write_handle(handle)
             except Exception as exc: errors.append(exc)
         for process in processes:
             try: process.release()
