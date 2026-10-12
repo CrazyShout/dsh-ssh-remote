@@ -119,6 +119,14 @@ session; never send a stale mutation into a newly initialized session.
 journaled. `fs/close` takes `operationId` and uses lifecycle cleanup. Unclosed
 handles are closed by session GC.
 
+Since 0.5.2, read/close and session GC share the read handle's lifecycle lock.
+After acquiring it, `fs/readNext` revalidates liveness before returning either
+bytes or a cached page. A closed handle returns `E_UNKNOWN_HANDLE`. A failed
+FD close is retained as unconfirmed cleanup; its numeric FD is not retried
+after potential reuse. Workspace root duplication is similarly protected;
+an already-borrowed independent FD may finish, but a closed root cannot be
+borrowed again. Session shutdown rejects subsequent calls with `E_SESSION_CLOSED`.
+
 ## Workspaces and paths
 
 ```text
@@ -128,6 +136,28 @@ workspace/open {
 }
 workspace/close { workspaceId, operationId }
 ```
+
+Workspace allocation reserves identity/capacity before opening its directory,
+then checks cancellation and session liveness before publication. Since 0.5.2,
+closing an unknown or still-opening ID returns `{closed:false,cancelled:true}`:
+it fences a late open, not a claim that an existing workspace was closed. An
+existing workspace still returns `{closed:true}`. Both receipts are retained
+by resource identity. A late open receives `E_RESOURCE_RETIRED` and releases any
+directory FD it acquired. Historical replay of a successful open may return
+its original receipt after close, but cannot recreate the resource.
+
+Unknown cancellations consume the same bounded workspace/read/upload retirement
+pool; exhaustion returns `E_RESOURCE_LIMIT` without claiming cancellation.
+Pending opens count toward the workspace limit and reserve retirement capacity.
+A cancelled pending open keeps its retirement record pinned until it unwinds,
+then starts a fresh retention interval. `health/status.openingWorkspaces` reports
+pending reservations separately from live `workspaces`. Cleanup of already
+admitted resources remains possible even at capacity.
+
+Clients must accept retirement only when `closed === true` or `cancelled === true`.
+Older helpers may return only `{closed:false}`; that is not proof that a pending
+open cannot publish. Lost or unconfirmed receipts require bounded, same-session
+cleanup retry, never replay into a new session.
 
 All subsequent filesystem and process `cwd` paths are relative POSIX paths.
 Absolute paths, NUL, and `..` are rejected. The root is retained as a directory
@@ -184,7 +214,18 @@ Writes use a same-directory temporary file, preserve ordinary permission bits,
 replace, and `fsync` the directory. The result includes `operation` (`create`
 or `update`), strong `version`, and `statVersion`.
 
-The guarded-write guarantee is linearizable among calls through this helper.
+Since 0.5.2, `filesystem.guardedWrite.coordinationScope` is `daemon` for the
+resumable daemon and `session` for `--direct`. Missing scope on older helpers
+must not be interpreted as a cross-client guarantee. The daemon shares its
+publication coordinator across all client sessions. Keys use the parent
+directory's device/inode and entry name, so overlapping workspace roots still
+coordinate the same file. Inline writes and chunked commits use the same locks;
+unrelated files remain concurrent. Locks include waiters in their reference
+count and are removed when idle. `health/status.pathLocks` counts keys in this
+coordinator, including other sessions when the scope is `daemon`.
+
+The guarded-write guarantee is linearizable among calls in that scope only.
+Other daemon processes, helper builds and external writers do not share it.
 `externalWriterRaceFree` is deliberately `false`: standard POSIX filesystems do
 not provide a general conditional rename against arbitrary writers that ignore
 the helper lock.

@@ -11,6 +11,22 @@ See the [development roadmap](docs/ROADMAP.md) (Chinese) for planned remote edit
 file completion/quick open, forwarding and human file transfers, with acceptance
 criteria. These are future goals, not features already available in this release.
 
+## 0.5.2: M0 concurrency and lifecycle fixes
+
+- Reads and retirement share a handle lifecycle lock. Closed handles return
+  neither cached data nor bytes from a reused FD. Workspace root duplication
+  also coordinates with close; already-borrowed FDs can finish their operation.
+- All clients of one helper daemon share publication locks for inline and
+  chunked writes. Competing saves with the same old version produce one success
+  and one `E_STALE_VERSION`; unrelated files remain concurrent. Other daemons,
+  other helper builds, and external editors are outside this guarantee.
+- Workspace allocation reserves its identity and capacity before opening a
+  directory. Bounded cancellation records prevent late publication, including
+  during session shutdown; pending allocations keep their cancellation pinned.
+- Human-terminal rollback requires an explicit close or cancellation receipt.
+  Unconfirmed cleanup remains retryable; timeouts and `closed: false` alone do
+  not mean an allocation was revoked. This release adds no remote editing UI.
+
 ## 0.5.1: reconnect, input and cleanup hardening
 
 - Human terminals wait through transient transport failures within the original
@@ -143,7 +159,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.5.1 targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version 0.5.2 targets DSH `0.2.0-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`
@@ -219,7 +235,7 @@ Web background connection; prepare the agent/session first.
 
 ## Install
 
-Run `dsh --version` first: plugin `0.5.1` requires **DSH `0.2.0-rc.2` or a
+Run `dsh --version` first: plugin `0.5.2` requires **DSH `0.2.0-rc.2` or a
 compatible newer `0.2.x` release**. DSH `0.1.x`, including `0.1.7-rc.2`, cannot
 use the current main branch. Do not bypass the compatibility check with
 `allow-version`. For Desktop, check the application's bundled engine, not the

@@ -33,7 +33,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
