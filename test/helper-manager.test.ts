@@ -145,6 +145,7 @@ describe('RemoteHelperManager', () => {
             const reply = (result: Record<string, unknown>) => peer.stdout.write(encodeDshRpcFrame({ dshRpc: '1', id: frame.id!, result }));
             if (frame.method === 'process/start') processId = String(frame.params?.processId);
             if (frame.method === 'process/terminate') running = false;
+            if (frame.method === 'workspace/close') { reply({ closed: true }); return true; }
             if (frame.method === 'process/start' || frame.method === 'process/status') {
               reply({ processId, pid: 321, running, exitCode: running ? null : 0, signal: null });
             } else if (frame.method === 'process/read') {

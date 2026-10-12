@@ -1,5 +1,6 @@
 """Deterministic helper lifecycle probes; only fresh temporary files are used."""
 import base64
+import errno
 import importlib.util
 import json
 import os
@@ -166,6 +167,146 @@ def workspace_borrow():
             ws.close()
 
 
+def close_failure(kind):
+    value = server()
+    real_close = m.os.close
+    with tempfile.TemporaryDirectory() as root:
+        with open(os.path.join(root, "file"), "wb") as stream:
+            stream.write(b"test")
+        workspace(value, root)
+        if kind == "read":
+            value.dispatch("fs/readOpen", {"workspaceId": "w", "path": "file", "handleId": "r", "operationId": "read"})
+            target = value.read_handles["r"]["fd"]
+            method, params = "fs/close", {"handleId": "r", "operationId": "close"}
+        else:
+            target = value.workspaces["w"].fd
+            method, params = "workspace/close", {"workspaceId": "w", "operationId": "close"}
+
+        def fail_close(fd):
+            if fd == target:
+                raise OSError(errno.EIO, "fixture close failure")
+            return real_close(fd)
+
+        try:
+            m.os.close = fail_close
+            try:
+                value.dispatch(method, params)
+                raise AssertionError("failed close was reported as successful")
+            except m.RpcError:
+                pass
+            m.os.close = real_close
+            try:
+                value.dispatch(method, dict(params, operationId="retry-close"))
+                raise AssertionError("uncertain close was converted to success")
+            except m.RpcError as error:
+                assert error.code == "E_CLEANUP_FAILED"
+            os.fstat(target)  # Retrying must not touch an ambiguously owned numeric FD.
+        finally:
+            m.os.close = real_close
+            real_close(target)
+            if kind == "read":
+                value.read_handles.pop("r")
+            else:
+                value.workspaces.pop("w")
+            value.close()
+
+
+def workspace_cancel(mode):
+    value = server()
+    real_workspace = m.Workspace
+    entered, proceed = threading.Event(), threading.Event()
+    created = []
+    clock = [1000.0]
+    m.time.monotonic = lambda: clock[0]
+
+    def delayed_workspace(*args):
+        ws = real_workspace(*args)
+        created.append((ws, ws.fd))
+        entered.set()
+        assert proceed.wait(5)
+        return ws
+
+    with tempfile.TemporaryDirectory() as root:
+        if mode == "before":
+            receipt = value.dispatch("workspace/close", {"workspaceId": "w", "operationId": "cancel"})
+            assert receipt == {"closed": False, "cancelled": True}, receipt
+            try:
+                workspace(value, root)
+                raise AssertionError("cancelled identity opened later")
+            except m.RpcError as error:
+                assert error.code == "E_RESOURCE_RETIRED"
+            value.close()
+            return
+        m.Workspace = delayed_workspace
+        thread, result = launch("opening", lambda: workspace(value, root))
+        try:
+            assert entered.wait(3)
+            if mode == "session":
+                value.close()
+            else:
+                receipt = value.dispatch("workspace/close", {"workspaceId": "w", "operationId": "cancel"})
+                assert receipt == {"closed": False, "cancelled": True}, receipt
+                clock[0] += 601
+                with value.resources_lock:
+                    value.prune_cleanup()
+                assert ("workspace", "w") in value.closed_resources, "expired a still-opening cancellation"
+                assert value.dispatch("workspace/close", {"workspaceId": "w", "operationId": "retry"}) == receipt
+            proceed.set()
+            join(thread)
+            expected = "E_SESSION_CLOSED" if mode == "session" else "E_RESOURCE_RETIRED"
+            assert getattr(result.get("error"), "code", None) == expected, result
+            assert not value.workspaces and not value.opening_workspaces
+            assert created[0][0].fd == -1, "late directory FD leaked"
+            if mode != "session":
+                clock[0] += 601
+                m.Workspace = real_workspace
+                workspace(value, root, "new")
+        finally:
+            proceed.set()
+            join(thread)
+            m.Workspace = real_workspace
+            value.close()
+
+
+def workspace_quota():
+    value = server()
+    clock = [1000.0]
+    m.time.monotonic = lambda: clock[0]
+    m.MAX_CLEANUP_IDENTITIES = 2
+    with tempfile.TemporaryDirectory() as root:
+        workspace(value, root)
+        assert value.dispatch("workspace/close", {"workspaceId": "cancelled", "operationId": "cancel"})["cancelled"]
+        try:
+            value.dispatch("workspace/close", {"workspaceId": "overflow", "operationId": "overflow"})
+            raise AssertionError("unknown cancellation bypassed capacity")
+        except m.RpcError as error:
+            assert error.code == "E_RESOURCE_LIMIT"
+        value.operations = {str(i): ("digest", {}, clock[0]) for i in range(m.MAX_OPERATIONS)}
+        value.operation_locks = {key: threading.Lock() for key in value.operations}
+        assert value.dispatch("workspace/close", {"workspaceId": "w", "operationId": "close-live"}) == {"closed": True}
+        assert len(value.closed_resources) == 2
+        clock[0] += 601
+        workspace(value, root, "fresh")
+        value.close()
+
+
+def workspace_failure():
+    value = server()
+    m.MAX_WORKSPACES = 1
+    with tempfile.TemporaryDirectory() as root:
+        try:
+            workspace(value, os.path.join(root, "missing"))
+            raise AssertionError("missing directory opened")
+        except m.RpcError:
+            pass
+        assert not value.opening_workspaces
+        result = workspace(value, root)
+        assert value.dispatch("workspace/close", {"workspaceId": "w", "operationId": "close"}) == {"closed": True}
+        assert workspace(value, root) == result  # Historical receipt, not a new live allocation.
+        assert not value.workspaces and not value.opening_workspaces
+        value.close()
+
+
 def competing_writes(first_kind, second_kind, independent=False):
     state = m.DaemonState(30)
     first, second = (state.acquire({"clientId": name}) for name in ("writer-a", "writer-b"))
@@ -251,6 +392,14 @@ if case.startswith("read-close-"):
     read_close(case[len("read-close-"):])
 elif case == "workspace-borrow":
     workspace_borrow()
+elif case.startswith("close-failure-"):
+    close_failure(case[len("close-failure-"):])
+elif case.startswith("workspace-cancel-"):
+    workspace_cancel(case[len("workspace-cancel-"):])
+elif case == "workspace-quota":
+    workspace_quota()
+elif case == "workspace-failure":
+    workspace_failure()
 elif case.startswith("write-"):
     _, first_kind, second_kind = case.split("-")
     competing_writes(first_kind, second_kind)

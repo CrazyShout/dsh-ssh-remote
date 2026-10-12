@@ -125,6 +125,7 @@ describe('Agent-scoped human subprocess routing', () => {
           releases += 1; processIds.push(String(params.processId));
           if (releases === 1) throw new RemoteHelperRpcError({ code: 'E_IO', message: 'fixture cleanup transport failed', retryable: true });
         }
+        if (method === 'workspace/close') return { closed: true };
         return {};
       },
     } as never) };

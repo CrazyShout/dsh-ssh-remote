@@ -10,6 +10,9 @@ describe('helper concurrent resource lifetimes', () => {
     'read-close-explicit', 'read-close-session', 'read-close-cached', 'workspace-borrow',
     'write-inline-inline', 'write-inline-chunk', 'write-chunk-inline', 'write-chunk-chunk',
     'independent-writes',
+    'workspace-cancel-before', 'workspace-cancel-pending', 'workspace-cancel-session',
+    'workspace-quota', 'workspace-failure',
+    'close-failure-read', 'close-failure-workspace',
   ])('%s', scenario => {
     const result = spawnSync('python3', [probe, helper, scenario], {
       encoding: 'utf8', timeout: 15_000,

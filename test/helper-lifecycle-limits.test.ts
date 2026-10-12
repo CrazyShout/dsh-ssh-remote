@@ -100,6 +100,7 @@ class Process:
   if self.fail:raise m.RpcError('E_CLEANUP_FAILED','not confirmed')
   return {'released':True}
  def terminate(self,*args):return {'running':False}
+server=m.Server();server.dispatch('initialize',{'clientId':'process-cleanup-budget'})
 record=Process();server.processes['p']=record
 server.operations={str(i):('digest',{},clock[0]) for i in range(m.MAX_OPERATIONS)}
 server.operation_locks={key:threading.Lock() for key in server.operations}

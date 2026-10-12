@@ -337,12 +337,17 @@ class Workspace:
         self.path = os.path.realpath(path)
         try: self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc: raise fail_os(exc)
-        self.access = access; self.lock = threading.Lock()
+        self.access = access; self.lock = threading.Lock(); self.cleanup_error: Optional[str] = None
 
     def close(self) -> None:
         with self.lock:
+            if self.cleanup_error: raise RpcError("E_CLEANUP_FAILED", self.cleanup_error)
             fd, self.fd = self.fd, -1
-            if fd >= 0: os.close(fd)
+            try:
+                if fd >= 0: os.close(fd)
+            except OSError as exc:
+                self.cleanup_error = "workspace root close was not confirmed"
+                raise fail_os(exc)
 
     def dup_root(self) -> int:
         # Borrow an independent FD while the root's identity is still pinned.
@@ -407,6 +412,8 @@ class Server:
     def __init__(self, server_id: Optional[str] = None, resume_supported: bool = False,
                  write_coordinator: Optional[PathLockCoordinator] = None):
         self.workspaces: Dict[str, Workspace] = {}
+        self.opening_workspaces: Dict[str, object] = {}
+        self.closed = False
         self.operations: Dict[str, Tuple[str, Dict[str, Any], float]] = {}
         self.write_coordinator = write_coordinator or PathLockCoordinator()
         self.operation_locks: Dict[str, threading.Lock] = {}
@@ -446,9 +453,14 @@ class Server:
     def workspace(self, params: Dict[str, Any]) -> Workspace:
         wid = params.get("workspaceId")
         with self.resources_lock:
+            self.ensure_open()
             if not isinstance(wid, str) or wid not in self.workspaces:
                 raise RpcError("E_UNKNOWN_WORKSPACE", "unknown workspace")
             return self.workspaces[wid]
+
+    def ensure_open(self) -> None:
+        # Caller holds resources_lock when checking an admission/publication.
+        if self.closed: raise RpcError("E_SESSION_CLOSED", "helper session is closed")
 
     @contextmanager
     def locked_path(self, key: str):
@@ -502,15 +514,19 @@ class Server:
         # Called with resources_lock. Live resources reserve their retirement
         # slot at allocation; expiry only drops identities outside replay TTL.
         now = time.monotonic(); ttl = max(self.retention_ms / 1000, 600)
-        self.closed_resources = {key: value for key, value in self.closed_resources.items() if now-value[1] < ttl}
+        self.closed_resources = {key: value for key, value in self.closed_resources.items()
+                                 if now-value[1] < ttl or (key[0] == "workspace" and key[1] in self.opening_workspaces)}
         self.cancelled_processes = {key: stamp for key, stamp in self.cancelled_processes.items() if now-stamp < ttl}
         self.released_processes = {key: value for key, value in self.released_processes.items() if key in self.cancelled_processes}
 
     def reserve_cleanup(self, kind: str, identity: str) -> None:
+        self.ensure_open()
         self.prune_cleanup()
         if (kind, identity) in self.closed_resources:
             raise RpcError("E_RESOURCE_RETIRED", "resource identity is retained for cleanup replay; use a fresh ID")
-        if len(self.closed_resources) + len(self.workspaces) + len(self.read_handles) + len(self.write_handles) >= MAX_CLEANUP_IDENTITIES:
+        # A cancelled opening identity already owns its retirement slot.
+        pending = sum(1 for wid in self.opening_workspaces if ("workspace", wid) not in self.closed_resources)
+        if len(self.closed_resources) + len(self.workspaces) + pending + len(self.read_handles) + len(self.write_handles) >= MAX_CLEANUP_IDENTITIES:
             raise RpcError("E_RESOURCE_LIMIT", "cleanup identity capacity reached; new resource allocation refused")
 
     def resource_cleanup(self, kind: str, identity: Any, opid: Any, action: Any) -> Dict[str, Any]:
@@ -522,11 +538,12 @@ class Server:
                 self.prune_cleanup(); old = self.closed_resources.get((kind, identity))
             if old is not None: return old[0]
             result = action()
-            if result.get("closed") or result.get("aborted"):
+            if result.get("closed") or result.get("aborted") or result.get("cancelled"):
                 with self.resources_lock: self.closed_resources[(kind, identity)] = (result, time.monotonic())
             return result
 
     def dispatch(self, method: str, p: Dict[str, Any]) -> Dict[str, Any]:
+        with self.resources_lock: self.ensure_open()
         if method == "initialize":
             if self.initialized and not self.resume_next:
                 raise RpcError("E_ALREADY_INITIALIZED", "connection is already initialized")
@@ -547,25 +564,52 @@ class Server:
         if method == "environment/resolveExecutable": return resolve_executable(p)
         if method == "health/status": return {"ok": True, "home": os.path.realpath(os.path.expanduser("~")),
                 "uptimeMs": int((time.monotonic()-self.started)*1000), "workspaces": len(self.workspaces),
+                "openingWorkspaces": len(self.opening_workspaces),
                 "processes": len(self.processes), "pathLocks": self.write_coordinator.count(),
                 "readHandles": len(self.read_handles), "writeHandles": len(self.write_handles)}
         if method == "workspace/open":
             def open_workspace() -> Dict[str, Any]:
-                ws = Workspace(p.get("path"), p.get("access", "read-only")); wid = valid_id(p.get("workspaceId") or secrets.token_hex(16), "workspaceId")
+                wid = valid_id(p.get("workspaceId") or secrets.token_hex(16), "workspaceId")
+                reservation = object()
                 with self.cleanup_lock, self.resources_lock:
-                    if len(self.workspaces) >= MAX_WORKSPACES: ws.close(); raise RpcError("E_RESOURCE_LIMIT", "workspace limit reached")
-                    if wid in self.workspaces: ws.close(); raise RpcError("E_EXISTS", "workspaceId already exists")
-                    try: self.reserve_cleanup("workspace", wid)
-                    except Exception: ws.close(); raise
-                    self.workspaces[wid] = ws
-                return {"workspaceId": wid, "path": ws.path, "access": ws.access}
+                    self.ensure_open()
+                    if len(self.workspaces) + len(self.opening_workspaces) >= MAX_WORKSPACES:
+                        raise RpcError("E_RESOURCE_LIMIT", "workspace limit reached")
+                    if wid in self.workspaces or wid in self.opening_workspaces:
+                        raise RpcError("E_EXISTS", "workspaceId already exists")
+                    self.reserve_cleanup("workspace", wid)
+                    self.opening_workspaces[wid] = reservation
+                ws = None
+                try:
+                    ws = Workspace(p.get("path"), p.get("access", "read-only"))
+                    with self.cleanup_lock, self.resources_lock:
+                        self.ensure_open()
+                        if ("workspace", wid) in self.closed_resources:
+                            raise RpcError("E_RESOURCE_RETIRED", "workspace allocation was cancelled; use a fresh ID")
+                        result = {"workspaceId": wid, "path": ws.path, "access": ws.access}
+                        self.workspaces[wid] = ws; ws = None
+                        self.opening_workspaces.pop(wid, None)
+                    return result
+                finally:
+                    try:
+                        if ws is not None: ws.close()
+                    finally:
+                        with self.resources_lock:
+                            if self.opening_workspaces.get(wid) is reservation:
+                                self.opening_workspaces.pop(wid, None)
+                                retired = self.closed_resources.get(("workspace", wid))
+                                if retired is not None:
+                                    self.closed_resources[("workspace", wid)] = (retired[0], time.monotonic())
             return self.guarded(p.get("operationId"), p, open_workspace)
         if method == "workspace/close":
             def close_workspace() -> Dict[str, Any]:
                 with self.resources_lock:
                     ws = self.workspaces.get(p.get("workspaceId"))
                     uploads = [handle for handle in self.write_handles.values() if handle.get("workspaceId") == p.get("workspaceId")]
-                if ws is None: return {"closed": False}
+                    if ws is None:
+                        if p.get("workspaceId") not in self.opening_workspaces:
+                            self.reserve_cleanup("workspace", p.get("workspaceId"))
+                        return {"closed": False, "cancelled": True}
                 for handle in uploads:
                     self.resource_cleanup("write", handle["id"], p.get("operationId"), lambda h=handle: self.abort_write({"handleId": h["id"]}))
                 ws.close()
@@ -989,6 +1033,7 @@ class Server:
         if stdin_mode not in ("pipe", "closed"): raise RpcError("E_INVALID_PARAMS", "stdin must be pipe or closed")
         if isinstance(tty, dict) and stdin_mode != "pipe": raise RpcError("E_INVALID_PARAMS", "PTY stdin cannot start closed")
         with self.resources_lock:
+            self.ensure_open()
             self.prune_cleanup()
             if process_id in self.cancelled_processes: raise RpcError("E_PROCESS_CANCELLED", "process allocation was cancelled")
             if len(self.cancelled_processes.keys() | self.processes.keys()) >= MAX_CLEANUP_IDENTITIES:
@@ -1046,6 +1091,7 @@ class Server:
 
     def close(self) -> None:
         with self.resources_lock:
+            self.closed = True
             handles = list(self.read_handles.values()); self.read_handles.clear()
             write_handles = list(self.write_handles.values()); self.write_handles.clear()
             processes = [value for value in self.processes.values() if value is not PROCESS_RESERVED]; self.processes.clear()
