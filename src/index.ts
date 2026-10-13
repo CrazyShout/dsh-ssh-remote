@@ -64,7 +64,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   ));
   const editorFiber = ctx.inject(['workspaceFiles', 'sessions'], scope => {
     new SshRemoteEditor(scope, helpers, resolveRemotePath, root => fileIndex.invalidate(root));
-    new SshRemoteFiles(scope, fileIndex);
+    new SshRemoteFiles(scope, fileIndex, helpers, resolveRemotePath);
     scope.on('session/event', (session, event) => {
       if (event.type === 'tool/result' && session.header.cwd) fileIndex.invalidate(session.header.cwd);
     });

@@ -18,7 +18,7 @@ const ok = <T,>(value: T) => ({ ok: true as const, value });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 async function render() {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-  const remote = { query: vi.fn(async () => ok(state())), status: vi.fn(async () => ok(state())), refresh: vi.fn(async () => ok(state({ stale: true }))) };
+  const remote = { preview: vi.fn(async (sessionId: string, path: string) => ok({ sessionId, path })), query: vi.fn(async () => ok(state())), status: vi.fn(async () => ok(state())), refresh: vi.fn(async () => ok(state({ stale: true }))) };
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container), open = vi.fn();
   await act(async () => { root.render(createElement(QuickOpenPane, { sessionId: 'a', remote, open })); });
@@ -31,9 +31,9 @@ describe('quick open interaction and native menu refresh', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(151); });
     const buttons = () => [...f.container.querySelectorAll('button')];
     await act(async () => buttons().find(b => b.textContent === '中文 space.txt')!.click());
-    expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', false);
+    expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', false, expect.any(AbortSignal));
     await act(async () => buttons().find(b => b.textContent === '编辑')!.click());
-    expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', true);
+    expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', true, expect.any(AbortSignal));
     await act(async () => { (f.container.querySelector('input[type=checkbox]') as HTMLInputElement).click(); await vi.advanceTimersByTimeAsync(151); });
     expect(f.remote.query).toHaveBeenLastCalledWith('a', '', true, expect.any(AbortSignal));
     await act(async () => buttons().find(b => b.textContent === '刷新索引')!.click());

@@ -7,7 +7,7 @@ export declare function mountQuickOpen(ctx: Context, editor: EditorBridge): () =
 interface PaneProps {
     sessionId: string;
     remote: FileSearchRemote;
-    open(path: string, editing: boolean): void;
+    open(path: string, editing: boolean, signal: AbortSignal): void | Promise<void>;
 }
 export declare function QuickOpenPane({ sessionId, remote, open }: PaneProps): import("react").JSX.Element;
 /** Only the public menu refresh API is called: never mutate input/caret or reopen. */

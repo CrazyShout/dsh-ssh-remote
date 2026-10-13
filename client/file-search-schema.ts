@@ -29,6 +29,10 @@ function invocation(method: string, parameters: unknown[], schema: { parse(value
     sourceLocation: { file: 'src/file-search.ts', line: 1, column: 1 } };
 }
 export const fileSearchInvocations = [
+  invocation('preview', [parameter('path', string)], { parse(value: unknown) {
+    if (!value || typeof value !== 'object') throw new Error('invalid preview identity');
+    const row = value as Record<string, unknown>; string.parse(row.sessionId); string.parse(row.path); return value;
+  } }),
   invocation('query', [parameter('query', string), parameter('includeIgnored', bool)], result),
   invocation('status', [parameter('includeIgnored', bool)], status),
   invocation('refresh', [parameter('includeIgnored', bool)], status),

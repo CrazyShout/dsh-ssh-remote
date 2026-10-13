@@ -1587,6 +1587,8 @@ class FileDiscovery:
 
     def __init__(self, workspace: Workspace, include_ignored: bool):
         self.root = workspace.path
+        if ".git" in self.root.split("/"):
+            raise RpcError("E_INVALID_PATH", "Git metadata directories are excluded from discovery")
         # Own a root descriptor independently of workspace/close and rename.
         self.ws = Workspace.__new__(Workspace)
         self.ws.path = self.root; self.ws.access = "read-only"; self.ws.fd = workspace.dup_root()

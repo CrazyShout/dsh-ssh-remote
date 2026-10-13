@@ -29,17 +29,31 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge): () => Promis
   const fiber = ctx.inject(['remote.sshRemoteFiles', 'remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs'], scope => {
     if (!scope.sidebarRightTabs || typeof scope.remote.sshRemoteFiles?.query !== 'function') return () => {};
     const unregister = scope.sidebarRightTabs.register({ id: ID, kind: KIND, title: () => '远程快速打开', guide: [] });
-    const open = (sessionId: string, path: string, editing: boolean) => {
+    const pendingPreviews = new Map<string, AbortController>();
+    const open = async (sessionId: string, path: string, editing: boolean, signal: AbortSignal) => {
+      signal.throwIfAborted();
       if (scope.sidebarRight.mounted.getSnapshot() !== sessionId) throw new Error('会话已切换，请重新打开。');
       safePreviewPath(path);
       if (editing) {
         if (!editor.open) throw new Error('远程编辑器尚未加载。');
         editor.open(sessionId, path);
-      } else scope.sidebarRight.openResourceIn(sessionId as SessionId, sessionFileAddress(sessionId, path));
+      } else {
+        pendingPreviews.get(sessionId)?.abort();
+        const controller = new AbortController(); pendingPreviews.set(sessionId, controller);
+        const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true });
+        try {
+          const result = await scope.remote.sshRemoteFiles.preview(sessionId, path, controller.signal);
+          if (controller.signal.aborted) return;
+          if (!result.ok) throw new Error(result.error.message);
+          if (result.value.sessionId !== sessionId || scope.sidebarRight.mounted.getSnapshot() !== sessionId) throw new Error('会话已切换，未打开预览。');
+          safePreviewPath(result.value.path);
+          scope.sidebarRight.openResourceIn(sessionId as SessionId, sessionFileAddress(sessionId, result.value.path));
+        } finally { signal.removeEventListener('abort', abort); if (pendingPreviews.get(sessionId) === controller) pendingPreviews.delete(sessionId); }
+      }
     };
     const body = scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
       name: 'sidebar.right.pane.tab', key: ID,
-      inject: sessionId => ({ remote: scope.remote.sshRemoteFiles, open: (path: string, editing: boolean) => open(sessionId, path, editing) }),
+      inject: sessionId => ({ remote: scope.remote.sshRemoteFiles, open: (path: string, editing: boolean, signal: AbortSignal) => open(sessionId, path, editing, signal) }),
     }, QuickOpenPane));
     const shortcuts = scope.inject(['shortcuts'], child => child.shortcuts.register({
       id: 'dsh-ssh-remote.quick-open' as ShortcutCommandId,
@@ -52,7 +66,7 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge): () => Promis
         } };
       },
     }));
-    return async () => { await shortcuts.dispose(); body(); unregister(); };
+    return async () => { for (const controller of pendingPreviews.values()) controller.abort(); await shortcuts.dispose(); body(); unregister(); };
   });
   const statusFiber = ctx.inject(['remote.sshRemoteFiles', 'remote.sshRemote', 'slots', 'sessions', 'inputTriggers'], scope => {
     if (typeof scope.remote.sshRemoteFiles?.status !== 'function') return () => {};
@@ -66,7 +80,7 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge): () => Promis
 }
 
 interface PaneProps {
-  sessionId: string; remote: FileSearchRemote; open(path: string, editing: boolean): void;
+  sessionId: string; remote: FileSearchRemote; open(path: string, editing: boolean, signal: AbortSignal): void | Promise<void>;
 }
 export function QuickOpenPane({ sessionId, remote, open }: PaneProps) {
   const [query, setQuery] = useState('');
@@ -76,6 +90,8 @@ export function QuickOpenPane({ sessionId, remote, open }: PaneProps) {
   const [status, setStatus] = useState<FileIndexStatus>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const lifetime = useRef(new AbortController());
+  useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, [sessionId]);
   useEffect(() => { setQuery(''); setIgnored(false); setResult(undefined); setStatus(undefined); setError(''); }, [sessionId]);
   useEffect(() => {
     const controller = new AbortController(); let live = true;
@@ -112,7 +128,11 @@ export function QuickOpenPane({ sessionId, remote, open }: PaneProps) {
     } catch (error) { if (!controller.signal.aborted) setError(String(error)); }
   };
   const choose = (path: string, editing = false) => {
-    try { safePreviewPath(path); open(path, editing); }
+    try {
+      safePreviewPath(path);
+      const signal = lifetime.current.signal;
+      void Promise.resolve(open(path, editing, signal)).catch(error => { if (!signal.aborted) setError(error instanceof Error ? error.message : String(error)); });
+    }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
   };
   const current = result?.sessionId === sessionId ? result : undefined;

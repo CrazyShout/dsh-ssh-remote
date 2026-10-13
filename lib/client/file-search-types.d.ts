@@ -19,6 +19,10 @@ export interface FileIndexResult extends FileIndexStatus {
     candidates: FileCandidate[];
 }
 export interface FileSearchRemote {
+    preview(sessionId: string, path: string, signal: AbortSignal): Promise<RemoteResult<{
+        sessionId: string;
+        path: string;
+    }>>;
     query(sessionId: string, query: string, includeIgnored: boolean, signal: AbortSignal): Promise<RemoteResult<FileIndexResult>>;
     status(sessionId: string, includeIgnored: boolean, signal: AbortSignal): Promise<RemoteResult<FileIndexStatus>>;
     refresh(sessionId: string, includeIgnored: boolean, signal: AbortSignal): Promise<RemoteResult<FileIndexStatus>>;

@@ -14,6 +14,7 @@ function invocation(method: string, parameters: unknown[], schema: z.ZodType) {
     sourceLocation: { file: 'src/file-search.ts', line: 1, column: 1 } };
 }
 export const fileSearchInvocations = [
+  invocation('preview', [parameter('path', z.string().max(4096))], z.object({ sessionId: z.string(), path: z.string() })),
   invocation('query', [parameter('query', z.string().max(4096)), parameter('includeIgnored', z.boolean())], result),
   invocation('status', [parameter('includeIgnored', z.boolean())], status),
   invocation('refresh', [parameter('includeIgnored', z.boolean())], status),
