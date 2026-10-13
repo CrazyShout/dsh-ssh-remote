@@ -379,8 +379,9 @@ describe('native remote workspace panel entry points', () => {
     expect(props.workspaceInfo).toHaveBeenCalledWith('/real-saved-anchor');
     expect(container.textContent).toContain('SSH · gpu');
     expect(button('远程文件').title).toContain('gpu:/home/test/project');
+    expect(button('远程文件').title).toContain('快捷键不支持 SSH');
+    expect(container.textContent).not.toContain('本机打开不支持远端');
     expect(button('远程终端').title).toContain('使用 SSH 账号权限，不受模型沙箱限制');
-    expect(container.querySelector('[aria-label="本机打开不支持远端文件"]')?.getAttribute('title')).toContain('快捷键不支持 SSH');
     await click('远程文件');
     await click('远程终端');
     expect(props.openPanel.mock.calls).toEqual([['files'], ['terminal']]);

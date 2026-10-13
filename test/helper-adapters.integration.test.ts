@@ -179,6 +179,16 @@ describe('real TypeScript ↔ Python helper adapters', () => {
       });
       expect(localExecute).not.toHaveBeenCalled();
 
+      const rawRemotePath = await (await shell.execute({
+        command: 'pwd',
+        workdir: fixture.root,
+        timeoutMs: 5_000,
+        stdoutMaxBytes: 64 * 1024,
+        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/anchor' },
+      } as never) as any).result();
+      expect(rawRemotePath.stdout.text.trim()).toBe(fixture.root);
+      expect(localExecute).not.toHaveBeenCalled();
+
       const stdin = 'stdin-chunk-'.repeat(100_000);
       const stdinResult = await (await shell.execute({
         command: 'wc -c',

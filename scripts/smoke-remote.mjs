@@ -55,6 +55,15 @@ try {
     assert.equal(result.exitCode, 0, JSON.stringify(result));
     assert.match(result.stdout.text, /DSH_SHELL_OK/);
     report.checks[`shell:${mode}`] = true;
+    const rawPathResult = await (await shell.execute({ command: 'pwd', workdir: root,
+      timeoutMs: 10_000, sandboxPolicy: { mode, workspaceRoot: '/smoke-anchor' } })).result();
+    assert.equal(rawPathResult.exitCode, 0, JSON.stringify(rawPathResult));
+    assert.equal(rawPathResult.stdout.text.trim(), root);
+    if (mode !== 'danger-full-access') {
+      await assert.rejects(shell.execute({ command: 'pwd', workdir: '/tmp',
+        timeoutMs: 10_000, sandboxPolicy: { mode, workspaceRoot: '/smoke-anchor' } }), /outside sandbox workspace/);
+    }
+    report.checks[`shell-raw-workdir:${mode}`] = true;
   }
   const large = await (await shell.execute({ command: "python3 -c \"import sys;sys.stdout.write('x'*1048576+'END_MARKER')\"",
     workdir: uri, timeoutMs: 10_000, stdoutMaxBytes: 2 * 1024 * 1024,
