@@ -17,7 +17,7 @@ interface WorkspaceInfoRemote {
   workspaceInfo?(path: string): Promise<InfoResult>;
 }
 
-type PanelKind = 'files' | 'terminal' | 'ssh-editor';
+type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open';
 interface NativePanelInjected {
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
@@ -52,7 +52,8 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
         },
         availablePanels: () => (scope.sidebarRightTabs.get('files') === undefined ? 0 : 1)
           | (scope.sidebarRightTabs.get('terminal') === undefined ? 0 : 2)
-          | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4),
+          | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4)
+          | (scope.sidebarRightTabs.get('ssh-quick-open') === undefined ? 0 : 8),
         subscribePanels: (listener: () => void) => scope.sidebarRightTabs.subscribe(listener),
     });
     const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
@@ -133,6 +134,8 @@ export function NativePanelActions({
       >远程终端</Button>
       {(panels & 4) !== 0 && <Button size="sm" variant="ghost" title={`编辑 ${identity} 内的 UTF-8 文本，手动保存并检查版本冲突。`}
         onClick={() => open('ssh-editor')}>远程编辑</Button>}
+      {(panels & 8) !== 0 && <Button size="sm" variant="ghost" title="搜索远程工作区文件；默认只读预览。"
+        onClick={() => open('ssh-quick-open')}>远程快速打开</Button>}
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );

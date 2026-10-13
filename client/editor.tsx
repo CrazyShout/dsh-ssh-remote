@@ -9,11 +9,12 @@ import { Button, Input, Modal } from '@deepseek-ai/dsh-client-ui-primitives';
 import { parseFileAddress } from '@deepseek-ai/dsh-util-workspace-path';
 import { EditorModel } from './editor-model.js';
 import './editor-schema.js';
+import type { EditorBridge } from './file-search-types.js';
 
 const KIND = 'ssh-editor';
 const ID = 'dsh-ssh-remote.editor';
 
-export function mountRemoteEditor(ctx: Context): () => Promise<void> {
+export function mountRemoteEditor(ctx: Context, bridge?: EditorBridge): () => Promise<void> {
   const fiber = ctx.inject(['remote.sshRemoteEditor', 'remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs'], scope => {
     if (!scope.sidebarRightTabs || !scope.sidebarRight || typeof scope.remote.sshRemoteEditor?.read !== 'function') return () => {};
     const buffers = new Map<string, EditorModel>();
@@ -34,6 +35,13 @@ export function mountRemoteEditor(ctx: Context): () => Promise<void> {
     };
     const unregister = scope.sidebarRightTabs.register({ id: ID, kind: KIND, keepMounted: true,
       title: () => '远程编辑', guide: [] });
+    const openEditor = (sessionId: string, path: string) => {
+      if (scope.sidebarRight.mounted.getSnapshot() !== sessionId) throw new Error('会话已切换，请重新打开。');
+      const buffer = model(sessionId);
+      scope.sidebarRight.openTab(KIND);
+      buffer.requestOpen(path);
+    };
+    if (bridge) bridge.open = openEditor;
     const confirmedClosures = new Set<string>();
     const close = scope.sidebarRight.registerCloseHandler(KIND, (sessionId, tab) => {
       const key = `${sessionId}\0${tab.id}`;
@@ -57,10 +65,7 @@ export function mountRemoteEditor(ctx: Context): () => Promise<void> {
       inject: sessionId => ({
         workspaceInfo: scope.remote.sshRemote.workspaceInfo,
         openEditor: (path: string) => {
-          if (scope.sidebarRight.mounted.getSnapshot() !== sessionId) throw new Error('会话已切换，请重新打开。');
-          const buffer = model(sessionId);
-          scope.sidebarRight.openTab(KIND);
-          buffer.requestOpen(path);
+          openEditor(sessionId, path);
         },
       }),
     }, RemoteEditMenu));
@@ -70,6 +75,7 @@ export function mountRemoteEditor(ctx: Context): () => Promise<void> {
     };
     window.addEventListener('beforeunload', protectUnload);
     return () => {
+      if (bridge?.open === openEditor) bridge.open = undefined;
       window.removeEventListener('beforeunload', protectUnload);
       menu(); title(); body(); close(); unregister();
       for (const buffer of buffers.values()) buffer.dispose();
