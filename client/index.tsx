@@ -22,6 +22,7 @@ import {
 import TYPERT_REMOTE from './typert.remote-client.js';
 import { mountNativePanels } from './native-panels.js';
 import { mountSessionMarkdownImages } from './markdown-preview.js';
+import { mountRemoteEditor } from './editor.js';
 
 export const name = 'dsh-ssh-remote-client';
 export const inject = ['remote'];
@@ -207,9 +208,11 @@ export async function apply(ctx: ClientContext) {
 
   const disposePanels = mountNativePanels(ctx);
   const disposeMarkdown = mountSessionMarkdownImages(ctx);
+  const disposeEditor = mountRemoteEditor(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposeEditor();
     await disposeMarkdown();
     await disposePanels();
     await ui.dispose();
@@ -218,6 +221,7 @@ export async function apply(ctx: ClientContext) {
   }
 
   return async () => {
+    await disposeEditor();
     await disposeMarkdown();
     await disposePanels();
     await ui.dispose();

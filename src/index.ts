@@ -11,6 +11,7 @@ import {
 import { RemoteTerminalBackend } from './terminal.js';
 import { installRemoteUserSubprocessRouter } from './user-subprocess.js';
 import { installRemoteWorkspaceFilesRouter } from './workspace-files.js';
+import { SshRemoteEditor } from './editor.js';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
 import type {} from '@deepseek-ai/dsh-sandbox-policy';
@@ -56,6 +57,10 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     helpers,
     resolveRemotePath,
   ));
+  const editorFiber = ctx.inject(['workspaceFiles', 'sessions'], scope => {
+    new SshRemoteEditor(scope, helpers, resolveRemotePath);
+    return () => {};
+  });
 
   // Optional capability seams use child fibers: they activate whenever the
   // corresponding host services exist, unload cleanly when providers reload,
@@ -91,6 +96,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
       terminalFiber.dispose(),
       shellFiber.dispose(),
       workspaceFilesFiber.dispose(),
+      editorFiber.dispose(),
       userSubprocess.dispose(),
     ]);
     restoreSubprocess();

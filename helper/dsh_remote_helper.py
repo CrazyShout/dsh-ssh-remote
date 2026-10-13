@@ -33,7 +33,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.5.2"
+VERSION = "0.6.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -867,13 +867,15 @@ class Server:
                 self.reserve_cleanup("write", hid)
                 self.write_handles[hid] = handle
             return {"handleId": hid, "seq": "0", "maxChunkBytes": MAX_WRITE_CHUNK, "maxBytes": MAX_WRITE}
-        except Exception:
+        except Exception as exc:
             if fd >= 0:
                 try: os.close(fd)
                 except OSError: pass
             try: os.unlink(temporary, dir_fd=parent)
             except OSError: pass
-            os.close(parent); raise
+            os.close(parent)
+            if isinstance(exc, OSError): raise fail_os(exc)
+            raise
 
     def write_chunk(self, p: Dict[str, Any]) -> Dict[str, Any]:
         handle = self.write_handle(p)

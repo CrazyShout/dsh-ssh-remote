@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { editorInvocations } from './editor-schema.js';
 
 const string = z.string();
 const helperStatus = z.object({
@@ -95,6 +96,7 @@ export const TYPERT = {
     invocation('disconnectHost', [parameter('alias')], helperStatus, 'dsh-ssh-remote#HelperHostStatus'),
     invocation('retryHost', [parameter('alias')], helperStatus, 'dsh-ssh-remote#HelperHostStatus'),
     invocation('diagnostics', [parameter('alias')], diagnostics, 'dsh-ssh-remote#HelperHostDiagnostics'),
+    ...editorInvocations,
   ],
   model: { services: [], events: [], objects: [] },
 };

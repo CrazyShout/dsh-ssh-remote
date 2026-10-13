@@ -191,6 +191,25 @@ export class HelperRemoteFileSystem {
     return decodeText(result.bytes);
   }
 
+  /** Complete, bounded bytes and the strong token for exactly those bytes. */
+  async readSnapshot(target: FsTarget, maxBytes: number, signal?: AbortSignal): Promise<{ bytes: Buffer; version: string }> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > WHOLE_TEXT_MAX_BYTES) {
+      throw new FsError('invalid snapshot byte limit', 'FS_TOO_LARGE');
+    }
+    return this.read(target, maxBytes, signal);
+  }
+
+  /** Guarded editor save; unlike model writeText, no large before-image is collected. */
+  async replaceSnapshot(target: FsTarget, bytes: Uint8Array, version: FsVersion,
+    policy: SandboxExecutionPolicy, signal?: AbortSignal): Promise<FsVersion> {
+    const scope = await this.mutationScope(this.split(target).uri, policy, signal);
+    try {
+      const result = await this.write(scope, Buffer.from(bytes), { kind: 'replace-if-version', version: String(version) }, signal);
+      return FsVersion(result.version);
+    } catch (error) { throw mapHelperFsError(error); }
+    finally { await scope.release(); }
+  }
+
   async streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>> {
     const { uri } = this.split(target);
     const scope = await this.scope(uri, '/', 'read-only', signal);

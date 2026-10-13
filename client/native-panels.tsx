@@ -17,7 +17,7 @@ interface WorkspaceInfoRemote {
   workspaceInfo?(path: string): Promise<InfoResult>;
 }
 
-type PanelKind = 'files' | 'terminal';
+type PanelKind = 'files' | 'terminal' | 'ssh-editor';
 interface NativePanelInjected {
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
@@ -51,7 +51,8 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
           scope.sidebarRight.openTab(kind);
         },
         availablePanels: () => (scope.sidebarRightTabs.get('files') === undefined ? 0 : 1)
-          | (scope.sidebarRightTabs.get('terminal') === undefined ? 0 : 2),
+          | (scope.sidebarRightTabs.get('terminal') === undefined ? 0 : 2)
+          | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4),
         subscribePanels: (listener: () => void) => scope.sidebarRightTabs.subscribe(listener),
     });
     const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
@@ -130,6 +131,8 @@ export function NativePanelActions({
         title={(panels & 2) === 0 ? 'DSH 终端面板尚未加载。' : `在 ${identity} 打开交互终端；使用 SSH 账号权限，不受模型沙箱限制。`}
         onClick={() => open('terminal')}
       >远程终端</Button>
+      {(panels & 4) !== 0 && <Button size="sm" variant="ghost" title={`编辑 ${identity} 内的 UTF-8 文本，手动保存并检查版本冲突。`}
+        onClick={() => open('ssh-editor')}>远程编辑</Button>}
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );

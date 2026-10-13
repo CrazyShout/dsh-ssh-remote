@@ -46,7 +46,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: npm ci
       - run: npm run test:helper
-      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts
+      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts
 
   macos:
     # Exercise Darwin-only guardian, PTY and ignored-SIGCHLD regressions.

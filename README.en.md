@@ -7,9 +7,32 @@ hosts from your local OpenSSH configuration, lets you add a remote directory
 through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
-See the [development roadmap](docs/ROADMAP.md) (Chinese) for planned remote editing,
-file completion/quick open, forwarding and human file transfers, with acceptance
-criteria. These are future goals, not features already available in this release.
+See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
+first implementation; file completion/quick open, forwarding and transfers remain planned.
+
+## 0.6.0: manual remote text editing
+
+Use **远程编辑** (Remote edit) in an SSH workspace, or **编辑远程文本** in a file
+preview tab menu. Enter a workspace-relative or full remote path. Native read-only
+previews and local workspaces remain unchanged.
+
+- Manual save and Cmd/Ctrl-S, dirty indicators, and in-page reload/close confirmation.
+  Each buffer belongs to its original Session, host and path; Session selection never retargets a save.
+- Complete regular UTF-8 files up to 256 KiB, preserving BOM, LF/CRLF and final newlines.
+  Binary data, invalid UTF-8, mixed/lone-CR newlines, symlinks and outside-workspace paths are refused.
+- Strong-version guarded atomic replacement. Conflicts preserve the draft; inspect the
+  current remote text or explicitly reload. Arbitrary external writers remain outside atomic CAS guarantees.
+- Lost acknowledgements become **result unknown**, with explicit receipt/content verification,
+  not blind resubmission or a claim of cancellation. Unchanged content does not prove cancellation.
+- Human writes use SSH account permissions within the owning workspace, without changing model policy.
+  At most 256 receipts are retained; settled receipts expire after 24 hours, uncertain ones do not.
+  Admission fails explicitly at capacity. Client buffers are capped at 32 Sessions.
+- Drafts stay in the client plugin instance, including across tab closes, without disk storage or model submission.
+  Save before page refresh, app restart, or plugin reload/disable: these discard in-memory drafts.
+
+Syntax highlighting, new files/Save As, restart recovery and file completion/quick open are not included.
+Native local-open/Finder actions are still not Remote-SSH editor actions. PR #18 also routes
+raw remote Bash workdirs by their workspace identity without weakening sandbox containment.
 
 ## 0.5.2: M0 concurrency and lifecycle fixes
 
@@ -159,7 +182,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version 0.5.2 targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version 0.6.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`
@@ -235,7 +258,7 @@ Web background connection; prepare the agent/session first.
 
 ## Install
 
-Run `dsh --version` first: plugin `0.5.2` requires **DSH `0.2.0-rc.2` or a
+Run `dsh --version` first: plugin `0.6.0` requires **DSH `0.2.0-rc.2` or a
 compatible newer `0.2.x` release**. DSH `0.1.x`, including `0.1.7-rc.2`, cannot
 use the current main branch. Do not bypass the compatibility check with
 `allow-version`. For Desktop, check the application's bundled engine, not the

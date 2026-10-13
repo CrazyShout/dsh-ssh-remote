@@ -147,7 +147,7 @@ export class RemoteHelperManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 20_000;
     this.clientName = options.clientName ?? 'dsh-ssh-remote';
-    this.clientVersion = options.clientVersion ?? '0.5.2';
+    this.clientVersion = options.clientVersion ?? '0.6.0';
     this.retentionMs = options.retentionMs ?? 120_000;
     this.aliasValidator = options.aliasValidator;
     this.random = options.random ?? Math.random;

@@ -10,7 +10,7 @@ type InfoResult = {
         message: string;
     };
 };
-type PanelKind = 'files' | 'terminal';
+type PanelKind = 'files' | 'terminal' | 'ssh-editor';
 interface NativePanelInjected {
     workspaceInfo(path: string): Promise<InfoResult>;
     openPanel(kind: PanelKind): void;

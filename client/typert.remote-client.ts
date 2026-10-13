@@ -1,4 +1,5 @@
 import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
+import { editorInvocations } from './editor-schema.js';
 
 interface HelperStatus {
   status: 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
@@ -211,6 +212,7 @@ export const TYPERT_REMOTE = {
     invocation('disconnectHost', [parameter('alias')], helperStatusSchema, 'dsh-ssh-remote#HelperHostStatus'),
     invocation('retryHost', [parameter('alias')], helperStatusSchema, 'dsh-ssh-remote#HelperHostStatus'),
     invocation('diagnostics', [parameter('alias')], diagnosticsSchema, 'dsh-ssh-remote#HelperHostDiagnostics'),
+    ...editorInvocations,
   ],
 } as unknown as TypertRemoteContribution;
 

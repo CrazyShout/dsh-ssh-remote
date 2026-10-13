@@ -27,6 +27,13 @@ export declare class HelperRemoteFileSystem {
         cwd?: string;
     }, signal?: AbortSignal): Promise<FsPathInfo | undefined>;
     readText(target: FsTarget, signal?: AbortSignal): Promise<string>;
+    /** Complete, bounded bytes and the strong token for exactly those bytes. */
+    readSnapshot(target: FsTarget, maxBytes: number, signal?: AbortSignal): Promise<{
+        bytes: Buffer;
+        version: string;
+    }>;
+    /** Guarded editor save; unlike model writeText, no large before-image is collected. */
+    replaceSnapshot(target: FsTarget, bytes: Uint8Array, version: FsVersion, policy: SandboxExecutionPolicy, signal?: AbortSignal): Promise<FsVersion>;
     streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>>;
     readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>;
     readByteRange(target: FsTarget, range: {
