@@ -33,7 +33,7 @@ import fcntl
 import termios
 
 PROTOCOL = "1"
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -424,6 +424,7 @@ class Server:
         self.released_processes: Dict[str, Dict[str, Any]] = {}
         self.read_handles: Dict[str, Dict[str, Any]] = {}
         self.write_handles: Dict[str, Dict[str, Any]] = {}
+        self.discoveries: Dict[str, Any] = {}
         self.processes: Dict[str, "ProcessRecord"] = {}
         self.initialized = False; self.resume_supported = resume_supported; self.resume_next = False
         self.client_id: Optional[str] = None; self.detached_at: Optional[float] = None; self.attached = False
@@ -437,6 +438,8 @@ class Server:
             "filesystem": {
                 "confinement": "dirfd-no-follow", "internalSymlinks": False,
                 "strongVersion": "sha256-stat-v1",
+                "discovery": {"version": 1, "maxEntries": 50000, "maxPathBytes": 8388608,
+                              "maxPageBytes": 131072, "deadlineMs": 15000},
                 "chunkedWrite": {"supported": True, "maxBytes": MAX_WRITE, "maxChunkBytes": MAX_WRITE_CHUNK},
                 "guardedWrite": {"helperLinearizable": True, "externalWriterRaceFree": False,
                                  "createNoReplace": True, "durableRename": True,
@@ -526,7 +529,7 @@ class Server:
             raise RpcError("E_RESOURCE_RETIRED", "resource identity is retained for cleanup replay; use a fresh ID")
         # A cancelled opening identity already owns its retirement slot.
         pending = sum(1 for wid in self.opening_workspaces if ("workspace", wid) not in self.closed_resources)
-        if len(self.closed_resources) + len(self.workspaces) + pending + len(self.read_handles) + len(self.write_handles) >= MAX_CLEANUP_IDENTITIES:
+        if len(self.closed_resources) + len(self.workspaces) + pending + len(self.read_handles) + len(self.write_handles) + len(self.discoveries) >= MAX_CLEANUP_IDENTITIES:
             raise RpcError("E_RESOURCE_LIMIT", "cleanup identity capacity reached; new resource allocation refused")
 
     def resource_cleanup(self, kind: str, identity: Any, opid: Any, action: Any) -> Dict[str, Any]:
@@ -544,6 +547,42 @@ class Server:
 
     def dispatch(self, method: str, p: Dict[str, Any]) -> Dict[str, Any]:
         with self.resources_lock: self.ensure_open()
+        if method.startswith("fs/discover") and not self.initialized:
+            raise RpcError("E_NOT_INITIALIZED", "initialize must be called first")
+        if method == "fs/discoverOpen":
+            def discover_open() -> Dict[str, Any]:
+                identity = valid_id(p.get("discoveryId"), "discoveryId")
+                if not isinstance(p.get("includeIgnored", False), bool):
+                    raise RpcError("E_INVALID_PARAMS", "includeIgnored must be boolean")
+                with self.resources_lock:
+                    self.reserve_cleanup("discovery", identity)
+                    if identity in self.discoveries: raise RpcError("E_EXISTS", "discovery identity already exists")
+                    ws = self.workspace(p)
+                    if len(self.discoveries) >= 8: raise RpcError("E_RESOURCE_LIMIT", "discovery snapshot limit reached")
+                    if any(d.root == ws.path and not d.done.is_set() for d in self.discoveries.values()):
+                        raise RpcError("E_RESOURCE_LIMIT", "workspace discovery is already building", True)
+                    discovery = FileDiscovery(ws, p.get("includeIgnored", False))
+                    self.discoveries[identity] = discovery
+                    discovery.thread.start()
+                return {"discoveryId": identity, "root": ws.path}
+            return self.guarded(p.get("operationId"), p, discover_open)
+        if method == "fs/discoverRead":
+            with self.resources_lock:
+                discovery = self.discoveries.get(p.get("discoveryId"))
+                if discovery is None: raise RpcError("E_UNKNOWN_DISCOVERY", "discovery is closed or unknown")
+            return discovery.page(p)
+        if method == "fs/discoverClose":
+            def close_discovery() -> Dict[str, Any]:
+                with self.resources_lock:
+                    discovery = self.discoveries.get(p.get("discoveryId"))
+                    if discovery is None:
+                        self.reserve_cleanup("discovery", p.get("discoveryId"))
+                        self.closed_resources[("discovery", p.get("discoveryId"))] = ({"closed": False, "cancelled": True}, time.monotonic())
+                        return {"closed": False, "cancelled": True}
+                discovery.close()
+                with self.resources_lock: self.discoveries.pop(p.get("discoveryId"), None)
+                return {"closed": True}
+            return self.resource_cleanup("discovery", p.get("discoveryId"), p.get("operationId"), close_discovery)
         if method == "initialize":
             if self.initialized and not self.resume_next:
                 raise RpcError("E_ALREADY_INITIALIZED", "connection is already initialized")
@@ -565,6 +604,7 @@ class Server:
         if method == "health/status": return {"ok": True, "home": os.path.realpath(os.path.expanduser("~")),
                 "uptimeMs": int((time.monotonic()-self.started)*1000), "workspaces": len(self.workspaces),
                 "openingWorkspaces": len(self.opening_workspaces),
+                "discoveries": len(self.discoveries),
                 "processes": len(self.processes), "pathLocks": self.write_coordinator.count(),
                 "readHandles": len(self.read_handles), "writeHandles": len(self.write_handles)}
         if method == "workspace/open":
@@ -1094,11 +1134,15 @@ class Server:
     def close(self) -> None:
         with self.resources_lock:
             self.closed = True
+            discoveries = list(self.discoveries.values()); self.discoveries.clear()
             handles = list(self.read_handles.values()); self.read_handles.clear()
             write_handles = list(self.write_handles.values()); self.write_handles.clear()
             processes = [value for value in self.processes.values() if value is not PROCESS_RESERVED]; self.processes.clear()
             workspaces = list(self.workspaces.values()); self.workspaces.clear()
         errors = []
+        for discovery in discoveries:
+            try: discovery.close()
+            except Exception as exc: errors.append(exc)
         for handle in handles:
             try: self.close_read_handle(handle)
             except Exception as exc: errors.append(exc)
@@ -1232,7 +1276,9 @@ class InputLane:
 
 class ProcessRecord:
     def __init__(self, process_id: str, argv: List[str], cwd: str, supplied_env: Any, tty: Any,
-                 stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False):
+                 stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False,
+                 output_consumer: Any = None):
+        self.output_consumer = output_consumer
         self.process_id, self.tty = process_id, isinstance(tty, dict)
         self.lock, self.changed = threading.Lock(), threading.Condition(threading.Lock())
         self.pty_lock = threading.Lock()
@@ -1370,6 +1416,11 @@ class ProcessRecord:
                     if exc.errno in (errno.EIO, errno.EBADF): break
                     break
                 if not data: break
+                if self.output_consumer is not None:
+                    # Discovery has a lossless bounded NUL parser, not a terminal
+                    # ring. Its consumer must never block waiting for the reader.
+                    self.output_consumer(stream, data)
+                    continue
                 with self.changed:
                     self.seq += 1; self.chunks.append((self.seq, stream, data)); self.bytes += len(data)
                     while self.bytes > OUTPUT_LIMIT and self.chunks:
@@ -1523,6 +1574,180 @@ class ProcessRecord:
                     if acquired: self.lock.release()
             if self.release_error is not None: raise RpcError("E_CLEANUP_FAILED", self.release_error)
             return {"released": True}
+
+
+DISCOVERY_SLOTS = threading.BoundedSemaphore(2)
+
+
+class FileDiscovery:
+    """Path-only, bounded snapshot. No project file contents or terminal ring."""
+    MAX_ENTRIES = 50000
+    MAX_BYTES = 8 * 1024 * 1024
+    MAX_SECONDS = 15
+
+    def __init__(self, workspace: Workspace, include_ignored: bool):
+        self.root = workspace.path
+        # Own a root descriptor independently of workspace/close and rename.
+        self.ws = Workspace.__new__(Workspace)
+        self.ws.path = self.root; self.ws.access = "read-only"; self.ws.fd = workspace.dup_root()
+        self.ws.lock = threading.Lock(); self.ws.cleanup_error = None
+        self.include_ignored = include_ignored
+        self.cancelled = threading.Event(); self.done = threading.Event(); self.limit = threading.Event()
+        self.lock = threading.Lock(); self.entries: List[Dict[str, str]] = []; self.seen: Any = set()
+        self.path_bytes = 0; self.reason: Optional[str] = None; self.error: Optional[Dict[str, str]] = None
+        self.skipped = 0; self.source = "unknown"
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def stop_reason(self) -> Optional[str]:
+        if self.cancelled.is_set(): return "cancelled"
+        if self.limit.is_set(): return "limit"
+        if time.monotonic() >= self.deadline: return "timeout"
+        return None
+
+    def command(self, argv: List[str], consume: Any) -> Tuple[int, str]:
+        # Resolve and execute the command in ONE login environment. Prefix the
+        # data stream so login banners cannot be mistaken for paths. Do not
+        # inherit Git redirections from the host/helper or enable fsmonitor.
+        marker = b"\x00DSH_DISCOVERY\x00"; pending = bytearray(); started = [False]
+        stderr = bytearray()
+        def output(stream: str, data: bytes) -> None:
+            if stream == "stderr":
+                stderr.extend(data[:max(0, 4096-len(stderr))]); return
+            if not started[0]:
+                pending.extend(data)
+                position = pending.find(marker)
+                if position < 0:
+                    if len(pending) > 8192: del pending[:-len(marker)]
+                    return
+                data = bytes(pending[position+len(marker):]); pending.clear(); started[0] = True
+            consume(data)
+        pinned = os.fstat(self.ws.fd)
+        current = os.stat(self.root, follow_symlinks=False)
+        if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+            raise RpcError("E_WORKSPACE_CHANGED", "workspace directory identity changed")
+        script = "cd -P \"$1\" || exit 126; shift; unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; export GIT_OPTIONAL_LOCKS=0 LC_ALL=C; printf '\\0DSH_DISCOVERY\\0'; exec \"$@\""
+        record = ProcessRecord("discovery", ["sh", "-lc", script, "dsh-discovery", self.root] + argv,
+                               self.root, None, None, "closed",
+                               output_consumer=output)
+        try:
+            while True:
+                reason = self.stop_reason()
+                if reason: self.reason = reason; break
+                with record.changed:
+                    if record.returncode is not None and record.readers == 0: break
+                    if record.supervisor_closed and record.returncode is None:
+                        raise RpcError("E_DISCOVERY_PROCESS", "discovery supervisor closed unexpectedly")
+                    record.changed.wait(0.05)
+            if not started[0] and self.reason is None: raise RpcError("E_DISCOVERY_PROCESS", "login shell did not start discovery")
+            current = os.stat(self.root, follow_symlinks=False)
+            if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+                raise RpcError("E_WORKSPACE_CHANGED", "workspace directory identity changed during discovery")
+            return record.returncode if record.returncode is not None else -1, stderr.decode("utf-8", "replace")
+        finally: record.release()
+
+    def add(self, raw: bytes) -> None:
+        if self.stop_reason(): return
+        try:
+            path = raw.decode("utf-8", "strict")
+            parts = path_parts(path)
+            if not parts or ".git" in parts: return
+            path = "/".join(parts)
+            parent = self.ws.dirfd(parts[:-1])
+            try: entry_kind = kind(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False))
+            finally: os.close(parent)
+            if entry_kind not in ("file", "directory"): return
+        except (UnicodeError, OSError, RpcError) as exc:
+            # A tracked file may have been deleted; symlinks are intentionally
+            # outside discovery. Permission/encoding failures are not success.
+            code = fail_os(exc).code if isinstance(exc, OSError) else getattr(exc, "code", "E_PATH_ENCODING")
+            if code not in ("E_NOT_FOUND", "E_SYMLINK", "E_NOT_DIRECTORY"):
+                self.skipped += 1
+                self.error = {"code": code, "message": "some paths could not be inspected"}
+            return
+        rows = [("/".join(parts[:i]), "directory") for i in range(1, len(parts))] + [(path, entry_kind)]
+        with self.lock:
+            for name, item_kind in rows:
+                if name in self.seen: continue
+                size = len(name.encode("utf-8"))
+                if len(self.entries) >= self.MAX_ENTRIES or self.path_bytes + size > self.MAX_BYTES:
+                    self.limit.set(); return
+                self.seen.add(name); self.path_bytes += size
+                self.entries.append({"path": name, "kind": item_kind})
+
+    def run(self) -> None:
+        acquired = False; self.deadline = time.monotonic() + self.MAX_SECONDS
+        try:
+            while not acquired:
+                reason = self.stop_reason()
+                if reason: self.reason = reason; return
+                acquired = DISCOVERY_SLOTS.acquire(timeout=0.05)
+            git = ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
+            probe = bytearray()
+            code, error = self.command(git + ["rev-parse", "--is-inside-work-tree"],
+                                       lambda data: probe.extend(data[:max(0, 4096-len(probe))]))
+            if self.reason: return
+            if code == 127: raise RpcError("E_EXECUTABLE_NOT_FOUND", "Git is required in the remote login-shell PATH")
+            if code == 0 and bytes(probe).strip() == b"true":
+                self.source = "git"
+                argv = git + ["ls-files", "--cached", "--others", "--deduplicate", "-z"]
+                if not self.include_ignored: argv += ["--exclude-standard"]
+            elif code == 128 and "not a git repository" in error:
+                self.source = "rg"
+                argv = ["rg", "--files", "--null", "--hidden", "--no-config", "--no-require-git", "-g", "!.git"]
+                if self.include_ignored: argv += ["--no-ignore"]
+            else: raise RpcError("E_DISCOVERY_GIT", error.strip() or "cannot determine Git workspace")
+            buffered = bytearray()
+            def paths(data: bytes) -> None:
+                buffered.extend(data)
+                while b"\0" in buffered:
+                    at = buffered.index(0); raw = bytes(buffered[:at]); del buffered[:at+1]
+                    self.add(raw)
+                if len(buffered) > 65536:
+                    self.error = {"code": "E_PATH_ENCODING", "message": "file discovery emitted an oversized path"}
+                    self.limit.set(); buffered.clear()
+            code, error = self.command(argv, paths)
+            if self.reason: return
+            if code == 127: raise RpcError("E_EXECUTABLE_NOT_FOUND", "ripgrep is required in the remote login-shell PATH")
+            # rg --files exits 1 for an empty directory; errors use exit 2.
+            if code != 0 and not (self.source == "rg" and code == 1 and not error):
+                raise RpcError("E_DISCOVERY_SCAN", error.strip() or "file discovery failed")
+            if error.strip():
+                # Git can emit a permission warning yet exit 0 after omitting
+                # an unreadable directory. Such a snapshot is not complete.
+                raise RpcError("E_DISCOVERY_SCAN", error.strip())
+            if buffered: raise RpcError("E_DISCOVERY_STREAM", "file discovery ended with an incomplete path")
+        except RpcError as exc:
+            self.error = {"code": exc.code, "message": exc.message[:4096]}
+        except Exception:
+            self.error = {"code": "E_DISCOVERY_SCAN", "message": "file discovery failed"}
+        finally:
+            if acquired: DISCOVERY_SLOTS.release()
+            self.ws.close(); self.done.set()
+
+    def page(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        cursor = params.get("cursor", 0); count = params.get("limit", 500)
+        if type(cursor) is not int or cursor < 0 or type(count) is not int or count < 1 or count > 500:
+            raise RpcError("E_CURSOR", "invalid discovery cursor or limit")
+        with self.lock:
+            if cursor > len(self.entries): raise RpcError("E_CURSOR", "discovery cursor exceeds snapshot")
+            rows = []; size = 0
+            for row in self.entries[cursor:cursor+count]:
+                encoded = len(json.dumps(row, ensure_ascii=False).encode("utf-8")) + 1
+                if encoded > 131072:
+                    raise RpcError("E_PATH_ENCODING", "a discovered path exceeds the bounded page size")
+                if size + encoded > 131072: break
+                rows.append(row); size += encoded
+            done = self.done.is_set(); next_cursor = cursor + len(rows)
+            return {"entries": rows, "cursor": next_cursor, "done": done,
+                    "eof": done and next_cursor == len(self.entries),
+                    "complete": done and self.reason is None and self.error is None,
+                    "reason": self.reason, "error": self.error, "source": self.source,
+                    "pathBytes": self.path_bytes, "count": len(self.entries), "skipped": self.skipped}
+
+    def close(self) -> None:
+        self.cancelled.set()
+        if not self.done.wait(4): raise RpcError("E_CLEANUP_PENDING", "discovery cancellation is pending; retry close", True)
+        with self.lock: self.entries.clear(); self.seen.clear(); self.path_bytes = 0
 
 
 class DaemonState:

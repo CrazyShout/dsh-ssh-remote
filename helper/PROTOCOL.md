@@ -8,6 +8,46 @@ whether a working Bubblewrap sandbox is available.
 
 ## Transport and lifecycle
 
+### Optional path discovery (helper 0.7.0)
+
+`capabilities.filesystem.discovery.version = 1` advertises a path-only index,
+independent of `fs/list` (still capped at 1,000) and process-output rings.
+
+- `fs/discoverOpen {workspaceId, discoveryId, operationId, includeIgnored}`
+  starts a background scan in a read-only, canonical workspace. IDs are client
+  allocated; retirement capacity is reserved before publication. Repeated opens
+  replay their allocation receipt, not a second scan.
+- `fs/discoverRead {discoveryId, cursor: 0, limit: 500}` returns `entries`
+  (`{path, kind}`), the next absolute cursor, `done`, `eof`, `complete`, `source`,
+  `reason`, `error`, `count`, `pathBytes` and `skipped`. Cursors are replayable.
+  A page is limited to 500 entries AND 128 KiB of serialized entries. `eof`
+  means the retained snapshot has been consumed, not that discovery was complete.
+- `fs/discoverClose {discoveryId, operationId}` cancels and waits up to four
+  seconds for owned cleanup. `closed:true` confirms release; `cancelled:true`
+  retires an as-yet-unpublished ID. `E_CLEANUP_PENDING` requires retry, never
+  reuse of that ID. Session disposal also cancels discoveries.
+
+At most eight snapshots per helper session and two executing scans per daemon;
+each scan retains at most 50,000 paths / 8 MiB UTF-8 path bytes and has a 15 s
+scan deadline (bounded guardian cleanup is additional). Git enumerates cached
+and untracked entries with `--exclude-standard` unless explicitly overridden;
+ordinary directories use `rg --files --null --hidden --no-config --no-require-git`.
+Both classification and enumeration run in a login shell. Missing tools,
+permission warnings, incomplete records and cleanup failures are explicit errors.
+No dependency is installed automatically. Paths are checked through no-follow
+directory descriptors; `.git` components and symlinks are excluded. Git submodules
+are not recursively indexed; the standard file tree and explicit file paths
+remain available. Concurrent external filesystem changes can make any snapshot
+stale; this is discovery, not an atomic filesystem snapshot.
+
+The host authorizes every query/status/refresh through `workspaceFileScope`,
+keys snapshots by alias/root/helper identity/filter mode, serializes scans per
+workspace, and runs at most two globally. It retains at most eight caches / 32 MiB
+of path data, expires freshness after 60 s, and invalidates on manual saves,
+`tool/result`, or refresh. Failed rebuilds keep the previous snapshot, marked stale.
+Last-consumer cancellation has a 200 ms handoff grace for a debounced successor;
+unconfirmed cleanup retains its original resource IDs and blocks reuse.
+
 ```sh
 python3 dsh_remote_helper.py connect --stdio
 ```

@@ -913,7 +913,8 @@ print(json.dumps(observed))
     expect(startedAtLimit).toHaveLength(32);
     const rejectedAtLimit = cappedStarts.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
     expect(rejectedAtLimit).toHaveLength(8);
-    expect(rejectedAtLimit.every((result) => result.reason.code === 'E_RESOURCE_LIMIT')).toBe(true);
+    expect(rejectedAtLimit.map(result => ({ code: result.reason.code, message: result.reason.message })))
+      .toEqual(Array.from({ length: 8 }, () => ({ code: 'E_RESOURCE_LIMIT', message: expect.any(String) })));
     await Promise.all(startedAtLimit.map(({ index }) => rpc.request('process/release', {
       processId: `capped-${index}`, operationId: `release-capped-${index}`,
     })));
