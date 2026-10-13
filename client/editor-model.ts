@@ -25,7 +25,10 @@ export class EditorModel {
   get dirty() { return this.state.document !== undefined && this.state.draft !== this.state.document.text; }
   get unsettled() { return this.state.saving || this.state.outcome === 'pending' || this.state.outcome === 'unknown'; }
   get needsProtection() { return this.dirty || this.unsettled; }
-  edit(text: string) { this.update({ draft: text }); }
+  edit(text: string) {
+    this.update({ draft: text, ...(this.state.outcome === 'saved'
+      ? { message: text === this.state.document?.text ? '已保存。' : '尚未保存。' } : {}) });
+  }
   notice(message: string) { this.update({ message }); }
   requestOpen(path: string) {
     if (this.unsettled) { this.notice('保存结果待确认，请先核对；切换文件不会撤销已发出的保存。'); return; }

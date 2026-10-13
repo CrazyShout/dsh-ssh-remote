@@ -61,6 +61,7 @@ describe('remote editor buffer ownership', () => {
     await a.save();
     expect(rpc.save).toHaveBeenCalledWith('a', expect.objectContaining({ rootUri: 'ssh://a/project', text: 'edited-a', version: 'v1:original' }));
     expect(b.snapshot().draft).toBe('edited-b'); expect(b.dirty).toBe(true); expect(a.dirty).toBe(false);
+    a.edit('new unsaved edit'); expect(a.snapshot().message).toBe('尚未保存。');
   });
 
   it('preserves the draft after a conflict and while comparing the latest remote content', async () => {
