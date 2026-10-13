@@ -8,7 +8,27 @@ through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
 See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
-first implementation; file completion/quick open, forwarding and transfers remain planned.
+first implementation; file completion/quick open are now available. Forwarding and transfers remain planned.
+
+## 0.7.0: remote file references and quick open
+
+Native `@` completion uses a shared, session-authorized remote path index. Local
+completion stays with the original provider; remote failures never fall back to
+local paths. **远程快速打开** searches the same index: click a file for a native
+read-only preview, or **编辑** to reuse the protected editor buffer. A configurable
+shortcut command is registered without a default binding.
+
+Git uses tracked plus non-ignored untracked files; other directories require rg.
+The optional include-ignored checkbox affects quick open only. Scans exclude
+symlinks and `.git`, and do not automatically recurse into submodules. The native
+file tree and full-path preview remain available. Unsafe mention/address names
+(quotes, backslashes or control characters) are explicitly refused, never rewritten.
+
+Limits: 50,000 paths / 8 MiB per index, 15 s scan deadline, at most two builds
+globally and one per workspace; eight host caches / 32 MiB, stale after 60 s.
+Saves, tool results and explicit refresh invalidate snapshots. Incomplete/error/
+stale states are visible; failed rebuilds preserve old data. Missing Git/rg is an
+error, not an automatic installation. DSH remains pinned to `0.2.0-rc.2`.
 
 ## 0.6.0: manual remote text editing
 

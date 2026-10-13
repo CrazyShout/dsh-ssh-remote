@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SshRemoteEditor, decodeEditorText, EDITOR_MAX_BYTES, type EditorDocument } from '../src/editor.js';
 import { RemoteHelperRpcClient } from '../src/helper/rpc-client.js';
+import { RemoteFileIndex } from '../src/file-index.js';
+import { SshRemoteFiles } from '../src/file-search.js';
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); vi.restoreAllMocks(); });
@@ -27,14 +29,31 @@ async function fixture() {
   cleanup.push(() => context.fiber.dispose());
   const resolve = (path: string) => path === '/anchor' ? `ssh://test${root}` : path === '/other' ? `ssh://other${root}` : undefined;
   const editor = new SshRemoteEditor(context, { client: async () => client }, resolve);
+  const index = new RemoteFileIndex({ client: async () => client }, resolve);
+  cleanup.push(() => index.dispose());
+  const files = new SshRemoteFiles(context, index, { client: async () => client }, resolve);
   const scope = { sessionId: 'owner-session' as any, workspaceRoot: '/anchor' };
   const signal = new AbortController().signal;
   await writeFile(join(root, '中文 space.txt'), '\ufefffirst\r\n第二行\r\n');
-  return { root, editor, scope, signal, client };
+  return { root, editor, scope, signal, client, files };
 }
 const save = (doc: EditorDocument, text: string) => ({ ...doc, text, operationId: randomUUID() });
 
 describe('session-owned remote editor', () => {
+  it('authorizes direct preview paths using metadata, without the editor byte limit or outside-root reads', async () => {
+    const f = await fixture();
+    const calls = vi.spyOn(f.client, 'call');
+    await writeFile(join(f.root, 'large.bin'), Buffer.alloc(300 * 1024));
+    expect(await f.files.preview(f.scope, join(f.root, 'large.bin'), f.signal)).toEqual({ sessionId: f.scope.sessionId, path: 'large.bin' });
+    expect(await f.files.preview(f.scope, '中文 space.txt', f.signal)).toEqual({ sessionId: f.scope.sessionId, path: '中文 space.txt' });
+    expect(calls.mock.calls.some(([method]) => /^fs\/(read|readOpen|readNext)$/.test(method))).toBe(false);
+    for (const path of ['/etc/passwd', '../outside', 'ssh://other/file', 'quote"name', 'back\\slash']) {
+      await expect(f.files.preview(f.scope, path, f.signal)).rejects.toThrow();
+    }
+    await symlink(join(f.root, '中文 space.txt'), join(f.root, 'linked.txt'));
+    await expect(f.files.preview(f.scope, 'linked.txt', f.signal)).rejects.toThrow();
+    await expect(f.files.preview({ ...f.scope, workspaceRoot: '/local' }, 'large.bin', f.signal)).rejects.toThrow('SSH');
+  });
   it.skipIf(process.getuid?.() === 0)('reports permission refusal without changing the file', async () => {
     const f = await fixture();
     const doc = await f.editor.read(f.scope, '中文 space.txt', f.signal);

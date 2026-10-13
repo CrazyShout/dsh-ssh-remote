@@ -1,0 +1,1 @@
+{"version":3,"file":"file-search-schema.d.ts","sourceRoot":"","sources":["../../client/file-search-schema.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,wBAAwB,CAAC;AAC/D,OAAO,QAAQ,kCAAkC,CAAC;IAChD,UAAU,wBAAwB;QAAG,cAAc,EAAE,gBAAgB,CAAA;KAAE;CACxE;AA2BD,eAAO,MAAM,qBAAqB;;;;;;;;;;;;;;;;yBANgD,OAAO,GAAG,OAAO;;;;;;;;GAclG,CAAC"}

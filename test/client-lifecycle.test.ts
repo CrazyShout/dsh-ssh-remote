@@ -30,6 +30,7 @@ describe('client lifecycle', () => {
     for (const entry of TYPERT.invocations) {
       expect(entry.result.create().safeParse(undefined).success).toBe(false);
       for (const parameter of entry.parameters) {
+        if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'request') { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
         expect(parameter.codec.create().parse('gpu')).toBe('gpu');
       }
@@ -37,6 +38,7 @@ describe('client lifecycle', () => {
     for (const entry of (TYPERT_REMOTE as any).descriptors) {
       expect(typeof entry.result.create().parse).toBe('function');
       for (const parameter of entry.parameters) {
+        if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'request') { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
         expect(parameter.codec.create().parse('gpu')).toBe('gpu');
       }
@@ -118,6 +120,8 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -145,6 +149,8 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',

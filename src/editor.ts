@@ -59,7 +59,8 @@ export class SshRemoteEditor extends TypertRemoteService {
   private readonly receipts = new Map<string, Receipt>();
   private reads = 0;
 
-  constructor(ctx: Context, helpers: RemoteHelperProvider, private readonly resolvePath: RemotePathResolver) {
+  constructor(ctx: Context, helpers: RemoteHelperProvider, private readonly resolvePath: RemotePathResolver,
+    private readonly invalidate?: (workspaceRoot: string) => void) {
     super(ctx, 'sshRemoteEditor');
     this.fs = new HelperRemoteFileSystem(helpers, resolvePath);
   }
@@ -127,7 +128,10 @@ export class SshRemoteEditor extends TypertRemoteService {
         : ['FS_PERMISSION_DENIED', 'FS_SANDBOX_DENIED', 'FS_NOT_FOUND', 'FS_NOT_REGULAR_FILE', 'FS_NOT_TEXT', 'FS_TOO_LARGE', 'FS_NOT_DIRECTORY', 'ssh-editor/refused'].includes(code ?? '')
           ? { state: 'failed', message }
           : { state: 'unknown', message: `保存结果待确认：${message}` };
-    } finally { receipt.completedAt = Date.now(); }
+    } finally {
+      receipt.completedAt = Date.now();
+      if (receipt.result.state === 'saved' || receipt.result.state === 'unknown') this.invalidate?.(scope.workspaceRoot);
+    }
     return receipt.result;
   }
 
