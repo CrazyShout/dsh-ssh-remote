@@ -47,6 +47,13 @@ of path data, expires freshness after 60 s, and invalidates on manual saves,
 `tool/result`, or refresh. Failed rebuilds keep the previous snapshot, marked stale.
 Last-consumer cancellation has a 200 ms handoff grace for a debounced successor;
 unconfirmed cleanup retains its original resource IDs and blocks reuse.
+The `sshRemoteFiles.preview` API separately authorizes explicit paths through the
+same Session lookup, rejects escapes/unsafe spellings/symlinks, and checks only
+regular-file metadata. It returns a workspace-relative preview address, not file
+contents; the native preview then reads through the standard remote filesystem.
+This check is necessary because upstream native regular-file previews deliberately
+permit absolute file references outside a workspace. Quick open does not inherit
+that broader authority. Closing quick open cancels its pending preview request.
 
 ```sh
 python3 dsh_remote_helper.py connect --stdio
