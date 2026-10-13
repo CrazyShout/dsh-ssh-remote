@@ -44,10 +44,11 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 /** Human-only writes: authenticated Session lookup, never a caller-supplied SSH host. */
 export declare class SshRemoteEditor extends TypertRemoteService {
     private readonly resolvePath;
+    private readonly invalidate?;
     private readonly fs;
     private readonly receipts;
     private reads;
-    constructor(ctx: Context, helpers: RemoteHelperProvider, resolvePath: RemotePathResolver);
+    constructor(ctx: Context, helpers: RemoteHelperProvider, resolvePath: RemotePathResolver, invalidate?: ((workspaceRoot: string) => void) | undefined);
     read(scope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<EditorDocument>;
     save(scope: WorkspaceFileScope, request: EditorSave): Promise<EditorSaveResult>;
     status(scope: WorkspaceFileScope, operationId: string, signal: AbortSignal): Promise<EditorSaveResult>;
