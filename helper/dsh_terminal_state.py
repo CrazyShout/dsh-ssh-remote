@@ -71,6 +71,11 @@ ZSH_ENV = r'''
 @RESTORE_ZDOTDIR@
 if [[ -r "${ZDOTDIR-$HOME}/.zshenv" ]]; then source "${ZDOTDIR-$HOME}/.zshenv"; fi
 typeset -g __dsh_observe_zdot_set=${+ZDOTDIR} __dsh_observe_zdot=${ZDOTDIR-}
+if [[ ! -o rcs ]]; then
+  @EMITTER@
+  __dsh_observe_emit 0 unsupported 0 'Zsh RCS disabled by startup configuration'
+  return
+fi
 ZDOTDIR=@TEMP@
 '''
 ZSH_RC = r'''
@@ -79,6 +84,12 @@ if [[ -r "${ZDOTDIR-$HOME}/.zshrc" ]]; then source "${ZDOTDIR-$HOME}/.zshrc"; fi
 @EMITTER@
 autoload -Uz is-at-least
 if ! is-at-least 5.8; then __dsh_observe_emit 0 unsupported 0 'Zsh 5.8+ required'; return; fi
+if (( $+functions[precmd] || $+functions[preexec] )); then
+  # Basic functions run before hook arrays and may suppress those arrays on
+  # failure. Keep such functions untouched instead of claiming complete events.
+  __dsh_observe_emit 0 unsupported 0 'Custom basic precmd/preexec function; hook arrays remain untouched'
+  return
+fi
 typeset -g __dsh_observe_seq=-1
 __dsh_observe_prompt() {
   local __dsh_code=$?
@@ -128,7 +139,7 @@ class ShellObservation:
                 self.argv = [argv[0], '--rcfile', os.path.join(self.directory, 'bashrc'), '-i']
             else:
                 restore = 'ZDOTDIR=' + shlex.quote(env['ZDOTDIR']) if 'ZDOTDIR' in env else 'unset ZDOTDIR'
-                self.write('.zshenv', ZSH_ENV.replace('@RESTORE_ZDOTDIR@', restore).replace('@TEMP@', shlex.quote(self.directory)))
+                self.write('.zshenv', ZSH_ENV.replace('@RESTORE_ZDOTDIR@', restore).replace('@TEMP@', shlex.quote(self.directory)).replace('@EMITTER@', emitter))
                 self.write('.zshrc', ZSH_RC.replace('@EMITTER@', emitter))
                 self.env['ZDOTDIR'] = self.directory
             self.thread = threading.Thread(target=self.read, daemon=True)

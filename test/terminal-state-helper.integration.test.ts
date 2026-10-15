@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +13,11 @@ const bashPath = process.env.DSH_TEST_BASH ?? '/bin/bash';
 const bashSupported = Number(execFileSync(bashPath, ['-c', 'printf %s "${BASH_VERSINFO[0]}"'], { encoding: 'utf8' })) >= 4;
 let zshSupported = false;
 try { zshSupported = /^5\.(?:[89]|[1-9]\d)/u.test(execFileSync('zsh', ['-fc', 'print $ZSH_VERSION'], { encoding: 'utf8' })); } catch {}
-async function fixture(shell: string, args = ['-i'], startup = '') {
+async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root: string) => Promise<void>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-shell-state-')));
   disposers.push(() => rm(root, { recursive: true, force: true }));
   if (startup) await writeFile(join(root, shell.includes('zsh') ? '.zshrc' : '.bashrc'), startup);
+  await setup?.(root);
   const child = spawn('python3', [helperPath, 'connect', '--stdio', '--direct'], { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = ''; child.stderr.on('data', data => { stderr += String(data); });
   const client = new RemoteHelperRpcClient({ readable: child.stdout, writable: child.stdin });
@@ -69,6 +70,19 @@ describe('private shell observation channel', () => {
   it('does not rewrite custom startup arguments', async () => {
     const f = await fixture('/bin/bash', ['--noprofile', '--norc', '-i']);
     expect((await f.state()).state).toBe('unsupported'); await f.write('true\r');
+  });
+  it.skipIf(!zshSupported)('preserves Zsh env/changed ZDOTDIR and falls back for basic hooks without replacing them', async () => {
+    const f = await fixture('/bin/zsh', ['-i'], '', async root => {
+      await mkdir(join(root, 'custom'));
+      await writeFile(join(root, '.zshenv'), 'export ENV_MARKER=preserved\nZDOTDIR="$HOME/custom"\n');
+      await writeFile(join(root, 'custom', '.zshrc'), 'export RC_MARKER=preserved\n');
+    });
+    await f.until(row => row.state === 'prompt'); await f.write('test "$ENV_MARKER:$RC_MARKER:$ZDOTDIR" = "preserved:preserved:$HOME/custom"\r');
+    expect((await f.until(row => row.recent.length === 1)).recent[0].exitCode).toBe(0);
+    const raw = await fixture('/bin/zsh', ['-i'], 'precmd() { return 1; }\n');
+    expect((await raw.until(row => row.state === 'unsupported')).reason).toContain('basic precmd');
+    const rcs = await fixture('/bin/zsh', ['-i'], '', root => writeFile(join(root, '.zshenv'), 'unsetopt rcs\n'));
+    expect((await rcs.until(row => row.state === 'unsupported')).reason).toContain('RCS disabled');
   });
   it('bounds metadata, diagnoses forged/gapped frames, and cleans private startup files', () => {
     const modulePath = fileURLToPath(new URL('../helper/dsh_terminal_state.py', import.meta.url));

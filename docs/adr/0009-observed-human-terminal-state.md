@@ -31,7 +31,9 @@ covered by the installed helper asset SHA. No user rc file is changed. Bash sour
 the original `.bashrc`, preserves PS0 and PROMPT_COMMAND, and uses a scalar prompt
 composition for Bash 4.4/5.0 (array composition for 5.1+). Custom DEBUG/extdebug or
 readonly prompt settings fall back to raw. Zsh preserves user `.zshenv`/`.zshrc`,
-ZDOTDIR and existing preexec/precmd arrays. Startup code is removed on release.
+ZDOTDIR and existing preexec/precmd arrays. Basic (non-array) precmd/preexec functions
+can suppress arrays on failure, so those profiles retain their original hooks and
+explicitly fall back; disabled RCS also stays unchanged. Startup code is removed on release.
 Unusual global startup overrides may prevent hooks from loading; after ten seconds
 the status explicitly reports raw/unsupported instead of manufacturing a prompt.
 
