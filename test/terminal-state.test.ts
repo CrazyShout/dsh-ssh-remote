@@ -46,7 +46,7 @@ describe('public terminal identity and observation boundary', () => {
     expect(Buffer.byteLength(view.text)).toBeLessThanOrEqual(65536); expect(view.truncated).toBe(true); expect(view.text).toContain('RED'); expect(view.text).not.toContain('\x1b'); expect(view.text).not.toContain('\0');
     f.unmount(); f.manager.dispose();
   });
-  it('retains observations as stale on disconnect, and ignores replies after disposal', async () => {
+  it('retains observations as stale on disconnect', async () => {
     const f = fixture(), signal = new AbortController().signal;
     await f.controller.create(f.agent('one', '/a'), { id: 'one' }, signal);
     const scope = { sessionId: 'one', workspaceRoot: '/a' } as any;
@@ -55,5 +55,28 @@ describe('public terminal identity and observation boundary', () => {
     f.terminals.get('one').shellState.mockRejectedValue(new Error('connection lost'));
     const rows = await f.manager.list(scope, signal); expect(rows[0].stale).toBe(true); expect(rows[0].recent[0].exitCode).toBe(1);
     clock.mockRestore(); f.unmount(); f.manager.dispose();
+  });
+  it('cannot revive a disposed association with late metadata or output', async () => {
+    const f = fixture(), signal = new AbortController().signal, scope = { sessionId: 'one', workspaceRoot: '/a' } as any;
+    await f.controller.create(f.agent('one', '/a'), { id: 'one' }, signal);
+    const old = f.terminals.get('one'); let finish!: (value: unknown) => void;
+    old.shellState.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = f.manager.list(scope, signal); f.unmount(); const unmount = f.manager.mount(f.controller);
+    await f.controller.create(f.agent('one', '/a'), { id: 'one' }, signal);
+    old.observation.output(Buffer.from('OLD_INSTANCE_OUTPUT'));
+    finish({ ...snapshot, cwd: '/OLD_INSTANCE_CWD' }); await pending;
+    const current = await f.manager.context(scope, 'one', signal);
+    expect(current.text).not.toContain('OLD_INSTANCE'); expect(current.terminal.cwd).toBe('/work');
+    unmount(); f.manager.dispose();
+  });
+  it('does not turn shell exit into a confirmed foreground command completion', async () => {
+    const f = fixture(), signal = new AbortController().signal;
+    await f.controller.create(f.agent('one', '/a'), { id: 'one' }, signal);
+    const terminal = f.terminals.get('one'); terminal.shellState.mockResolvedValue({ ...snapshot, state: 'running', current: { ...snapshot.recent[0], exitCode: null, elapsedMs: null } });
+    const scope = { sessionId: 'one', workspaceRoot: '/a' } as any;
+    await f.manager.list(scope, signal); terminal.observation.closed();
+    const result = await f.manager.list(scope, signal); expect(result[0].state).toBe('exited');
+    expect(result[0].current?.exitCode).toBeNull(); expect(result[0].current?.uncertain).toBe(true);
+    f.unmount(); f.manager.dispose();
   });
 });

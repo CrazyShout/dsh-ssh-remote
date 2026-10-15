@@ -82,7 +82,7 @@ export function TerminalStatePane({ sessionId, remote, inputActions }: { session
     </select></label>}
     {row && <>
       <div role="status">{labels[row.state]}{row.stale ? ' · 过期，不代表当前状态' : ''}<br />目录：{row.cwd ?? '未知'}<br />{row.reason}</div>
-      {row.current && <div>运行中：{row.current.command ?? '命令文本未知（历史配置未提供）'}</div>}
+      {row.current && <div>{row.state === 'running' && !row.stale ? '运行中' : '未确认结束的命令'}：{row.current.command ?? '命令文本未知（历史配置未提供）'}</div>}
       <ol>{row.recent.map((command, index) => <li key={`${command.startedAt}-${index}`} style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
         {command.command ?? '命令文本未知'}<br />退出码：{command.exitCode ?? '未知'} · {command.elapsedMs ?? '未知'} ms{command.uncertain ? ' · 事件不完整' : ''}
       </li>)}</ol>

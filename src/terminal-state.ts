@@ -94,7 +94,8 @@ export class TerminalStateManager {
   }
   private view(info: WebTerminalInfo, alias: string, entry?: Entry): TerminalObservation {
     return { ...(entry?.last ?? empty('此终端创建时未启用状态感知；请新建终端，已有终端不会被注入。')),
-      ...(entry?.closed || info.state === 'exited' ? { state: 'exited' as const } : {}),
+      ...(entry?.closed || info.state === 'exited' ? { state: 'exited' as const,
+        current: entry?.last?.current ? { ...entry.last.current, uncertain: true, exitCode: null } : null } : {}),
       ...(entry?.stale ? { reason: '连接或元数据不可用，显示上次观察：' + entry.error } : {}),
       id: info.id, title: info.title, alias, stale: entry?.stale ?? false, observedAt: entry?.observedAt ?? 0 };
   }
