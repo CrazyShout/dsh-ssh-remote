@@ -28,6 +28,7 @@ export declare class TransferModel {
     private executor?;
     private disposed;
     private revision;
+    private errorRevision;
     private readonly folders;
     private readonly executionIds;
     private readonly beforeUnload;

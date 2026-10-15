@@ -19,6 +19,7 @@ export class TransferModel {
   private executor?: Execution;
   private disposed = false;
   private revision = 0;
+  private errorRevision = 0;
   private readonly folders = new Map<string, LocalDirectory>();
   private readonly executionIds = new Map<string, string>();
   private readonly beforeUnload = (event: BeforeUnloadEvent) => { if (this.executor) { event.preventDefault(); event.returnValue = ''; } };
@@ -28,7 +29,7 @@ export class TransferModel {
   snapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<State>) { if (this.disposed) return; this.state = { ...this.state, ...patch }; for (const fn of this.listeners) fn(); }
-  report(error: unknown) { this.update({ error: error instanceof Error ? error.message : String(error) }); }
+  report(error: unknown) { this.errorRevision++; this.update({ error: error instanceof Error ? error.message : String(error) }); }
   select(files: LocalFile[]) { if (this.executor) throw new Error('请先暂停当前传输。'); validateLocalManifest(files); this.update({ selected: files, error: '', notice: '本地源已选择；请核对清单，然后建立计划或继续原任务。' }); }
   private put(page: TransferPage) {
     this.update({ jobs: [page.job, ...this.state.jobs.filter(job => job.id !== page.job.id)], page });
@@ -200,19 +201,22 @@ export class TransferModel {
   }
   async pause() { const execution = this.executor; if (!execution) return; execution.stop.abort(new DOMException('用户暂停', 'AbortError')); await execution.promise; }
   async cancel(job: TransferSummary, folder?: LocalDirectory) {
+    const errorRevision = this.errorRevision; this.revision++;
     if (this.executor?.id === job.id) await this.pause();
     const page = await transferResult(this.remote.control(this.sessionId, { id: job.id, run: this.executionIds.get(job.id) ?? crypto.randomUUID(), action: 'cancel' })); this.put(page);
     if (page.job.state !== 'cancelled') throw new Error(page.job.error ?? '远端清理未确认。');
     this.executionIds.delete(job.id);
     const target = folder ?? this.folders.get(job.id);
     if (job.direction === 'download' && target) { await cleanupLocalStaging(target, page.job, !page.job.destination); this.folders.delete(job.id); }
-    this.update({ notice: job.direction === 'download' && !target ? '远端取消已确认。仍需重新授权原本地目录以清理暂存；已完成文件保留。' : '已取消并清理已授权的未完成暂存，已完成文件保留。' });
+    this.update({ ...(errorRevision === this.errorRevision ? { error: '' } : {}), notice: job.direction === 'download' && !target ? '远端取消已确认。仍需重新授权原本地目录以清理暂存；已完成文件保留。' : '已取消并清理已授权的未完成暂存，已完成文件保留。' });
   }
   async forget(job: TransferSummary, folder?: LocalDirectory) {
+    const errorRevision = this.errorRevision; this.revision++;
     if (job.direction === 'download') { if (!folder) throw new Error('请先授权原下载目录以清理暂存。'); await cleanupLocalStaging(folder, job, ['cancelled', 'expired'].includes(job.state) && !job.destination); }
     await transferResult(this.remote.control(this.sessionId, { id: job.id, run: crypto.randomUUID(), action: 'forget' }));
     if (folder) await removeCleanupReceipt(folder, job);
-    this.folders.delete(job.id); this.executionIds.delete(job.id); this.update({ jobs: this.state.jobs.filter(row => row.id !== job.id), page: undefined });
+    this.folders.delete(job.id); this.executionIds.delete(job.id); this.update({ jobs: this.state.jobs.filter(row => row.id !== job.id), page: undefined,
+      ...(errorRevision === this.errorRevision ? { error: '' } : {}), notice: '暂存及任务记录已清理，已完成文件保留。' });
   }
   async dispose() { await this.pause(); this.disposed = true; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this.beforeUnload); this.listeners.clear(); this.folders.clear(); }
 }

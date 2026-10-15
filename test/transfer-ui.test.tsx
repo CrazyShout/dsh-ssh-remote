@@ -19,6 +19,24 @@ function fixture() {
   const model = new TransferModel('original-session', remote as any); models.push(model); return { model, remote, job };
 }
 describe('transfer pane interactions', () => {
+  it('clears an old picker error after acknowledged cleanup, without erasing a later error', async () => {
+    const f = fixture(); f.job.state = 'complete';
+    const element = document.createElement('div'), root = createRoot(element);
+    f.remote.control.mockResolvedValue({ ok: true, value: {} });
+    await act(async () => root.render(createElement(TransferPane, { sessionId: 'original-session', getModel: () => f.model })));
+    await act(async () => f.model.report(new Error('old picker cancelled')));
+    await act(async () => [...element.querySelectorAll('button')].find(item => item.textContent === '清理暂存及任务记录')!.click());
+    expect(element.textContent).not.toContain('old picker cancelled'); expect(element.textContent).toContain('已完成文件保留');
+    expect(f.model.snapshot().jobs).toEqual([]);
+    let finish!: (value: any) => void;
+    f.remote.control.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => {
+      const pending = f.model.forget(f.job); f.model.report(new Error('new operation failed'));
+      finish({ ok: true, value: {} }); await pending;
+    });
+    expect(element.textContent).toContain('new operation failed');
+    await act(async () => root.unmount());
+  });
   it('shows restart-safe state, does not auto-start, and preserves errors on refresh', async () => {
     const f = fixture(), element = document.createElement('div'), root = createRoot(element);
     await act(async () => root.render(createElement(TransferPane, { sessionId: 'original-session', getModel: () => f.model })));
