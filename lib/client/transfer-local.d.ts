@@ -33,6 +33,7 @@ export interface LocalDirectory {
 }
 export declare const excludedPath: (path: string) => boolean;
 export declare const hexHash: (bytes: Uint8Array) => string;
+export declare function readLocalChunk(file: Blob, offset: number, signal: AbortSignal): Promise<Uint8Array>;
 export declare function localPath(path: string): string[];
 export declare function hashFile(file: Blob, signal: AbortSignal, progress?: (bytes: number) => void): Promise<string>;
 export declare function validateLocalManifest(files: LocalFile[]): void;

@@ -29,6 +29,7 @@ export declare class TransferModel {
     private disposed;
     private revision;
     private readonly folders;
+    private readonly executionIds;
     private readonly beforeUnload;
     constructor(sessionId: string, remote: TransferRemote, fetcher?: typeof fetch);
     snapshot: () => State;
