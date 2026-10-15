@@ -60,6 +60,9 @@ describe('private shell observation channel', () => {
       view = await f.until(view => view.recent.length === 7); expect(view.recent.at(-1).command).toBe('cat'); expect(view.recent.at(-1).exitCode).toBe(0);
       await f.write("printf '\\033]133;D;99\\007'\r"); view = await f.until(view => view.recent.length === 8);
       expect(view.recent.at(-1).exitCode).toBe(0); expect(view.cwd).toBe('/tmp');
+      // Zsh correctly refuses the first exit while a background job still
+      // exists. Join our test-only job rather than weakening that shell policy.
+      await f.write('wait\r'); await f.until(view => view.recent.length === 9);
       await f.write('exit\r');
       let drained; const deadline = Date.now() + 3000;
       do { drained = await f.output(); } while (!drained.exited && Date.now() < deadline);
