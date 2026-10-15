@@ -31,6 +31,13 @@ async function begin(m: TransferManager, scope: any, id: string, run: string, in
   return r;
 }
 describe('Session-authorized transfer control', () => {
+  it('persists the download destination before bytes and refuses a different folder after restart', async () => {
+    const f = await fixture(), id = randomUUID(), run = randomUUID(), destination = randomUUID(); await writeFile(join(f.target, 'a'), 'small');
+    await f.m.plan(f.scope, { id, direction: 'download', target: 'a' });
+    await f.m.control(f.scope, { id, run, destination, action: 'resume' }); await f.m.control(f.scope, { id, run, action: 'pause' }); await f.m.dispose();
+    const fresh = f.manager(); expect((await fresh.page(f.scope, id)).job.destination).toBe(destination);
+    await expect(fresh.control(f.scope, { id, run: randomUUID(), destination: randomUUID(), action: 'resume' })).rejects.toThrow('最初授权');
+  });
   it('publishes upload only after checksums, and resumes through a new Host manager', async () => {
     const f = await fixture(), id = randomUUID(), data = Buffer.alloc(512 * 1024, 32), run = randomUUID();
     await f.m.plan(f.scope, { id, direction: 'upload', target: '', count: 1, totalBytes: data.length });
@@ -63,7 +70,7 @@ describe('Session-authorized transfer control', () => {
     await writeFile(join(f.target, 'read.txt'), data);
     const page = await f.m.plan(f.scope, { id, direction: 'download', target: 'read.txt' });
     expect(page.entries[0].path).toBe('read.txt');
-    await f.m.control(f.scope, { id, run, action: 'resume' }); await begin(f.m, f.scope, id, run, 0, { offset: 0 });
+    await f.m.control(f.scope, { id, run, action: 'resume', destination: randomUUID() }); await begin(f.m, f.scope, id, run, 0, { offset: 0 });
     expect((await f.m.download(f.scope, id, 0, run, 0)).bytes).toEqual(data);
     expect((await f.m.page(f.scope, id)).job.state).toBe('running');
     await f.m.file(f.scope, { id, run, index: 0, action: 'finish', sha256: hash(data) });

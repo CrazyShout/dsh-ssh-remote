@@ -101,9 +101,7 @@ export function TransferPane({ sessionId, getModel }: { sessionId: string; getMo
           <Button size="sm" onClick={() => void model.page(job.id)}>查看清单</Button>
           {!done(job) && job.state !== 'preparing' && <Button size="sm" disabled={!!state.active} onClick={() => start(job)}>{job.direction === 'download' ? '授权目录并开始 / 继续' : '用当前选择开始 / 继续'}</Button>}
           {state.active === job.id && <Button size="sm" onClick={() => run(() => model.pause())}>暂停</Button>}
-          {!done(job) && <Button size="sm" onClick={() => run(async () => {
-            const folder = job.direction === 'download' ? await pickLocalDirectory('readwrite') : undefined; await model.cancel(job, folder);
-          })}>取消并清理暂存</Button>}
+          {!done(job) && <Button size="sm" onClick={() => run(() => model.cancel(job))}>取消并清理暂存</Button>}
           {done(job) && <Button size="sm" onClick={() => run(async () => {
             const folder = job.direction === 'download' ? await pickLocalDirectory('readwrite') : undefined; await model.forget(job, folder);
           })}>清理暂存及任务记录</Button>}

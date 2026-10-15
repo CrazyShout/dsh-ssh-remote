@@ -54,6 +54,8 @@ never claims a completed publication was undone.
 
 Downloads use browser File System Access, not a path on the DSH Host. A nonce-marked
 job folder contains closed blocks (up to 4 MiB) and per-file JSON checkpoints.
+An opaque destination binding is persisted on the Host before the first data
+operation; selecting a different folder is refused even when the offset is zero.
 Unclosed writable streams are never a checkpoint. Resume hashes closed blocks and
 compares the remote prefix before continuing. Final output is composed through a
 bounded writable stream with an exclusive writer and a second target-version check.
@@ -69,6 +71,9 @@ partials when the relevant remote workspace is accessible. Remote sweeps process
 100 records at a time; the Host attempts one expired job at a time. Browser cleanup
 requires fresh permission for the original folder. Unknown files inside a staging
 folder prevent deletion. Closed task records can be explicitly forgotten.
+An empty local ownership receipt is retained until Host Forget is acknowledged;
+missing staging in an unrelated directory is never proof of cleanup. Cancel stops
+remote work without waiting for a new picker grant; local cleanup can be authorized later.
 
 File System Access must be available in a secure Desktop/Chromium context. Unsupported
 browsers receive a clear error: no ZIP, whole-file Blob, silent renaming or Host-local

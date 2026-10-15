@@ -1,7 +1,7 @@
 import { File as NodeFile } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import { DownloadStaging, CHUNK_BYTES, BLOCK_BYTES, cleanupLocalStaging, directoryFiles, hashFile, hexHash, selectedFiles,
-  validateLocalManifest, readLocalChunk, type LocalDirectory, type LocalFileHandle } from '../client/transfer-local.js';
+  validateLocalManifest, readLocalChunk, bindDownloadDirectory, removeCleanupReceipt, type LocalDirectory, type LocalFileHandle } from '../client/transfer-local.js';
 import type { TransferFile, TransferSummary } from '../shared/transfers.js';
 const missing = () => Object.assign(new Error('not found'), { name: 'NotFoundError' });
 let stamp = 0;
@@ -62,7 +62,18 @@ describe('browser durable download staging', () => {
     const fresh = await DownloadStaging.open(root, job(), { ...file, offset: data.length }, false, signal());
     const writes = output.writes; await fresh.publish(signal()); expect(output.writes).toBe(writes);
     await cleanupLocalStaging(root, job()); expect(hexHash(output.bytes)).toBe(hexHash(data));
+    await cleanupLocalStaging(root, job()); await removeCleanupReceipt(root, job());
     expect([...root.children.keys()]).toEqual(['tree']);
+  });
+  it('binds the original destination even at offset zero and keeps a cleanup receipt until Host confirmation', async () => {
+    const original = new MemoryDirectory('original'), wrong = new MemoryDirectory('wrong'), task = { ...job(), state: 'ready' as const };
+    const destination = await bindDownloadDirectory(original, task), bound = { ...task, destination, state: 'paused' as const };
+    expect(await bindDownloadDirectory(original, bound)).toBe(destination);
+    await expect(bindDownloadDirectory(wrong, bound)).rejects.toThrow('最初授权');
+    await expect(cleanupLocalStaging(wrong, bound)).rejects.toThrow('不能确认');
+    await cleanupLocalStaging(original, bound); await cleanupLocalStaging(original, bound);
+    expect(await bindDownloadDirectory(original, bound)).toBe(destination);
+    await removeCleanupReceipt(original, bound); expect(original.children.size).toBe(0);
   });
   it('refuses changed sources, corrupted blocks, wrong folders and ownership markers', async () => {
     const root = new MemoryDirectory('local'), file = entry(4), stage = await DownloadStaging.open(root, job(), file, false, signal());

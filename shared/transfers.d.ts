@@ -7,14 +7,14 @@ export interface TransferFile extends TransferEntry {
   offset: number; sha256?: string; error?: string; replaceVersion?: string | null;
 }
 export interface TransferSummary {
-  id: string; direction: 'upload' | 'download'; rootUri: string; alias: string; target: string; sources?: string[];
+  id: string; direction: 'upload' | 'download'; rootUri: string; alias: string; target: string; sources?: string[]; destination?: string;
   state: 'preparing' | 'ready' | 'running' | 'paused' | 'complete' | 'cancelled' | 'cleanup-pending' | 'expired';
   count: number; appended: number; totalBytes: number; created: number; updated: number; error?: string; live: boolean; nonce: string;
 }
 export interface TransferPage { job: TransferSummary; entries: TransferFile[]; next: number; done: boolean; run?: string; }
 export interface TransferPlan { id: string; direction: 'upload' | 'download'; target: string; sources?: string[]; count?: number; totalBytes?: number; }
 export interface TransferAppend { id: string; after: number; entries: TransferEntry[]; }
-export interface TransferControl { id: string; action: 'resume' | 'pause' | 'cancel' | 'heartbeat' | 'forget'; run: string; }
+export interface TransferControl { id: string; action: 'resume' | 'pause' | 'cancel' | 'heartbeat' | 'forget'; run: string; destination?: string; }
 export interface TransferFileRequest {
   id: string; index: number; run: string; action: 'begin' | 'verify' | 'finish' | 'skip' | 'retry';
   sha256?: string; offset?: number; replace?: boolean;

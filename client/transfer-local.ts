@@ -116,11 +116,21 @@ export async function ownedStaging(root: LocalDirectory, job: TransferSummary, c
   catch (error) {
     if (!absent(error) || !create) throw error;
     directory = await root.getDirectoryHandle(name, { create: true });
-    await putJson(directory, 'owner.json', { schema: 1, id: job.id, nonce: job.nonce });
+    await putJson(directory, 'owner.json', { schema: 1, id: job.id, nonce: job.nonce, destination: crypto.randomUUID() });
   }
-  const owner = await jsonFile<{ schema: number; id: string; nonce: string }>(directory, 'owner.json');
-  if (owner.schema !== 1 || owner.id !== job.id || owner.nonce !== job.nonce) throw new Error('暂存目录不属于此任务，未读取或删除。');
+  const owner = await jsonFile<{ schema: number; id: string; nonce: string; destination?: string }>(directory, 'owner.json');
+  if (owner.schema !== 1 || owner.id !== job.id || owner.nonce !== job.nonce || job.destination && owner.destination !== job.destination) throw new Error('暂存目录不属于此任务，未读取或删除。');
   return directory;
+}
+export async function bindDownloadDirectory(root: LocalDirectory, job: TransferSummary): Promise<string> {
+  let directory: LocalDirectory;
+  try { directory = await ownedStaging(root, job, !job.destination && job.state === 'ready'); }
+  catch (error) { if (absent(error)) throw new Error('请选择最初授权的下载目录；此处没有原任务的目录绑定。'); throw error; }
+  const owner = await jsonFile<{ schema: number; id: string; nonce: string; destination?: string }>(directory, 'owner.json');
+  // Additive upgrade for a v1 checkpoint written by an earlier candidate.
+  if (!owner.destination) { owner.destination = crypto.randomUUID(); await putJson(directory, 'owner.json', owner); }
+  if (!/^[a-zA-Z0-9-]{16,80}$/u.test(owner.destination)) throw new Error('下载目录绑定无效。');
+  return owner.destination;
 }
 export function downloadPath(job: TransferSummary, file: TransferEntry): string {
   // Multiple roots retain workspace-relative paths, avoiding basename collisions.
@@ -137,7 +147,7 @@ export class DownloadStaging {
   static async open(root: LocalDirectory, job: TransferSummary, file: TransferFile, replace: boolean, signal: AbortSignal): Promise<DownloadStaging> {
     let directory: LocalDirectory;
     try {
-      const stage = await ownedStaging(root, job, file.offset === 0);
+      const stage = await ownedStaging(root, job, !job.destination && file.offset === 0);
       directory = await stage.getDirectoryHandle('file-' + file.index, { create: file.offset === 0 });
     } catch (error) { if (absent(error)) throw new Error('此目录没有原来的下载检查点，请选择原授权目录。'); throw error; }
     const parts = localPath(downloadPath(job, file)), name = parts.pop()!, destination = await localDirectory(root, parts.join('/'));
@@ -220,9 +230,12 @@ async function targetVersion(directory: LocalDirectory, name: string, signal: Ab
   catch (error) { if (absent(error)) return { exists: false }; throw error; }
   return { exists: true, size: file.size, modified: file.lastModified, sha256: await hashFile(file, signal) };
 }
-export async function cleanupLocalStaging(root: LocalDirectory, job: TransferSummary) {
+export async function cleanupLocalStaging(root: LocalDirectory, job: TransferSummary, allowMissing = false) {
   let staging: LocalDirectory;
-  try { staging = await ownedStaging(root, job, false); } catch (error) { if (absent(error)) return; throw error; }
+  try { staging = await ownedStaging(root, job, false); } catch (error) {
+    if (absent(error) && allowMissing && !job.destination) return;
+    if (absent(error)) throw new Error('没有原任务暂存标记，不能确认已清理；请重新选择原目录。'); throw error;
+  }
   const files: Array<[string, LocalDirectory]> = [];
   for await (const [name, entry] of staging.entries()) {
     if (name === 'owner.json' && entry.kind === 'file') continue;
@@ -239,5 +252,12 @@ export async function cleanupLocalStaging(root: LocalDirectory, job: TransferSum
     }
   }
   for (const [name, directory] of files) { for await (const [entry] of directory.entries()) await directory.removeEntry(entry); await staging.removeEntry(name); }
+  // Keep the ownership receipt until the Host confirms Forget. A lost Host
+  // acknowledgement can then retry cleanup without accepting a wrong folder.
+}
+export async function removeCleanupReceipt(root: LocalDirectory, job: TransferSummary) {
+  let staging: LocalDirectory;
+  try { staging = await ownedStaging(root, job, false); } catch (error) { if (absent(error) && !job.destination) return; throw error; }
+  for await (const [name] of staging.entries()) if (name !== 'owner.json') throw new Error('仍有暂存项，保留清理回执。');
   await staging.removeEntry('owner.json'); await root.removeEntry('.dsh-transfer-' + job.id);
 }

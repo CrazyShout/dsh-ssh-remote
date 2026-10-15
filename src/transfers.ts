@@ -207,6 +207,11 @@ export class TransferManager {
         if (['cancelled', 'expired', 'complete'].includes(job.state)) throw new Error('任务已完成或终止，不会自动重新创建。');
         if (job.appended !== job.count || job.state === 'preparing') throw new Error('清单未准备完成，请重新创建计划。');
         if (Date.now() - job.updated > TRANSFER_RETENTION) throw new Error('任务已闲置超过七天，请清理后重新创建。');
+        if (job.direction === 'download') {
+          const destination = transferId(request.destination ?? '');
+          if (job.destination && job.destination !== destination) throw new Error('下载目标目录不是此任务最初授权的目录。');
+          if (!job.destination) { job.destination = destination; await this.store.write(job.id, 'job', job); }
+        }
         const previous = this.runs.get(job.id);
         if (previous) { if (previous.run !== request.run) throw new Error('任务正在另一个窗口执行。'); }
         else {

@@ -1,6 +1,6 @@
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { TransferFile, TransferFileResult, TransferPage, TransferRemote, TransferSummary } from './transfer-types.js';
-import { CHUNK_BYTES, DownloadStaging, cleanupLocalStaging, downloadPath, hashFile, hexHash, localDirectory, readLocalChunk,
+import { CHUNK_BYTES, DownloadStaging, bindDownloadDirectory, cleanupLocalStaging, removeCleanupReceipt, downloadPath, hashFile, hexHash, localDirectory, readLocalChunk,
   validateLocalManifest, type LocalDirectory, type LocalFile } from './transfer-local.js';
 
 interface State { jobs: TransferSummary[]; page?: TransferPage; selected: LocalFile[]; error: string; listError: string; notice: string; busy: boolean; active?: string; progress?: { path: string; bytes: number; size: number; phase: string } }
@@ -92,14 +92,17 @@ export class TransferModel {
     const notify = (file: TransferFile, bytes: number, phase: string) => this.update({ progress: { path: file.path, bytes, size: file.size ?? 0, phase } });
     try {
       const manifest = await this.manifest(id, signal), source = new Map(this.state.selected.map(file => [file.entry.path, file]));
+      job = manifest.job;
       const pending = manifest.entries.filter(file => !['complete', 'skipped'].includes(file.state) && (onlyIndex === undefined || file.index === onlyIndex || file.kind === 'directory'));
       if (job.direction === 'upload') for (const file of pending) {
         const local = source.get(file.path);
         if (!local || local.entry.kind !== file.kind || local.entry.size !== file.size) throw new Error('重新选择的源文件清单不匹配：' + file.path);
       }
       signal.throwIfAborted();
+      const destination = folder ? await bindDownloadDirectory(folder, job) : undefined;
       this.executionIds.set(id, run); claimed = true;
-      this.put(await transferResult(this.remote.control(this.sessionId, { id, run, action: 'resume' })));
+      const resumed = await transferResult(this.remote.control(this.sessionId, { id, run, action: 'resume', ...(destination ? { destination } : {}) }));
+      job = resumed.job; this.put(resumed);
       heartbeat = setInterval(() => {
         if (heartbeatPending || signal.aborted) return; heartbeatPending = true;
         void transferResult(this.remote.control(this.sessionId, { id, run, action: 'heartbeat' })).catch(error => {
@@ -202,12 +205,13 @@ export class TransferModel {
     if (page.job.state !== 'cancelled') throw new Error(page.job.error ?? '远端清理未确认。');
     this.executionIds.delete(job.id);
     const target = folder ?? this.folders.get(job.id);
-    if (job.direction === 'download' && target) { await cleanupLocalStaging(target, job); this.folders.delete(job.id); }
+    if (job.direction === 'download' && target) { await cleanupLocalStaging(target, page.job, !page.job.destination); this.folders.delete(job.id); }
     this.update({ notice: job.direction === 'download' && !target ? '远端取消已确认。仍需重新授权原本地目录以清理暂存；已完成文件保留。' : '已取消并清理已授权的未完成暂存，已完成文件保留。' });
   }
   async forget(job: TransferSummary, folder?: LocalDirectory) {
-    if (job.direction === 'download') { if (!folder) throw new Error('请先授权原下载目录以清理暂存。'); await cleanupLocalStaging(folder, job); }
+    if (job.direction === 'download') { if (!folder) throw new Error('请先授权原下载目录以清理暂存。'); await cleanupLocalStaging(folder, job, ['cancelled', 'expired'].includes(job.state) && !job.destination); }
     await transferResult(this.remote.control(this.sessionId, { id: job.id, run: crypto.randomUUID(), action: 'forget' }));
+    if (folder) await removeCleanupReceipt(folder, job);
     this.folders.delete(job.id); this.executionIds.delete(job.id); this.update({ jobs: this.state.jobs.filter(row => row.id !== job.id), page: undefined });
   }
   async dispose() { await this.pause(); this.disposed = true; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this.beforeUnload); this.listeners.clear(); this.folders.clear(); }

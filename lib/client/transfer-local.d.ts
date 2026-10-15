@@ -59,6 +59,7 @@ interface DownloadState {
     phase: 'partial' | 'publishing' | 'published';
 }
 export declare function ownedStaging(root: LocalDirectory, job: TransferSummary, create: boolean): Promise<LocalDirectory>;
+export declare function bindDownloadDirectory(root: LocalDirectory, job: TransferSummary): Promise<string>;
 export declare function downloadPath(job: TransferSummary, file: TransferEntry): string;
 /** Closed 4 MiB files survive a browser restart; no unclosed FSA write stream is used as a checkpoint. */
 export declare class DownloadStaging {
@@ -77,6 +78,7 @@ export declare class DownloadStaging {
     checkpoint(): Promise<void>;
     publish(signal: AbortSignal): Promise<void>;
 }
-export declare function cleanupLocalStaging(root: LocalDirectory, job: TransferSummary): Promise<void>;
+export declare function cleanupLocalStaging(root: LocalDirectory, job: TransferSummary, allowMissing?: boolean): Promise<void>;
+export declare function removeCleanupReceipt(root: LocalDirectory, job: TransferSummary): Promise<void>;
 export {};
 //# sourceMappingURL=transfer-local.d.ts.map
