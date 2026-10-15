@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import {
   RemoteHelperInstaller,
   buildHelperConnectCommand,
@@ -13,6 +13,7 @@ import {
   helperRemotePath,
   redactHelperDiagnostic,
   resetSshCapabilityCache,
+  loadHelperAsset,
 } from '../src/helper/installer.js';
 
 class FakeChild extends EventEmitter {
@@ -59,6 +60,11 @@ async function asset(content = '# helper\n'): Promise<string> {
 }
 
 describe('RemoteHelperInstaller', () => {
+  it('keeps bundled shell dollar-quote tokens literal and compiles the deployed Python artifact', () => {
+    const bundled = loadHelperAsset();
+    expect(bundled.content.toString()).toContain("PROMPT_COMMAND=$'");
+    expect(execFileSync('python3', ['-B', '-c', 'import sys; compile(sys.stdin.buffer.read(), "bundled-helper", "exec"); print("compiled")'], { input: bundled.content, encoding: 'utf8' })).toContain('compiled');
+  });
   it('uploads the verified asset through hardened system SSH arguments', async () => {
     const path = await asset('#!/usr/bin/env python3\nprint("ok")\n');
     const child = new FakeChild();
