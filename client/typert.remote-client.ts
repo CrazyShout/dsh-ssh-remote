@@ -2,6 +2,8 @@ import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-ty
 import { editorInvocations } from './editor-schema.js';
 import { fileSearchInvocations } from './file-search-schema.js';
 import { portForwardInvocations } from './port-forward-schema.js';
+import { transferInvocations } from 'dsh-ssh-remote/transfer-schema';
+import type {} from './transfer-types.js';
 
 interface HelperStatus {
   status: 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
@@ -217,6 +219,7 @@ export const TYPERT_REMOTE = {
     ...editorInvocations,
     ...fileSearchInvocations,
     ...portForwardInvocations,
+    ...transferInvocations,
   ],
 } as unknown as TypertRemoteContribution;
 
