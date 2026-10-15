@@ -10,6 +10,22 @@ shell, and terminal operations to a versioned helper on that host.
 See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
 first implementation; file completion, quick open, local forwarding and resumable human transfers are available.
 
+## 0.10.0: human terminal observations and context
+
+Open **终端状态**, or **查看 SSH 终端状态** in the native terminal tab menu.
+New default interactive Bash 4.4+ / Zsh 5.8+ terminals expose cwd, command start/return,
+exit status and duration. Existing terminals are not injected; unsupported shells,
+custom arguments and incompatible hooks remain raw with an explicit reason.
+
+- No user rc edits or changes to official input ownership, screen recovery or lifecycle.
+- Disconnects mark observations stale; missing events remain unknown. Prompt return
+  does not mean background jobs ended; nested SSH/tmux internal state is unknown.
+- Preview and trim context before explicit insertion into the original Session draft.
+  A changed draft refuses insertion, with a copy alternative. Nothing is auto-submitted.
+- Up to 64 KiB volatile Host context per terminal; no plugin persistence or automatic
+  Agent cwd changes. Observations are not security authority.
+- Durable M3 transfer manifest v1 remains compatible. See [ADR-0009](docs/adr/0009-observed-human-terminal-state.md).
+
 ## 0.9.0: resumable file and folder transfers
 
 Open **文件传输** in an SSH workspace. Select/drop upload files or a directory, or

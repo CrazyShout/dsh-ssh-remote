@@ -51,7 +51,28 @@ jobs:
       - name: Install file-discovery test dependency
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run test:helper
-      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts test/transfer-helper.integration.test.ts test/transfers.integration.test.ts
+      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts test/transfer-helper.integration.test.ts test/transfers.integration.test.ts test/terminal-state-helper.integration.test.ts
+
+  bash-44:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build isolated minimum supported Bash (not installed system-wide)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location https://ftp.gnu.org/gnu/bash/bash-4.4.tar.gz -o bash-4.4.tar.gz
+          echo 'd86b3392c1202e8ff5a423b302e6284db7f8f435ea9f39b5b1b20fd3ac36dfcb  bash-4.4.tar.gz' | sha256sum --check
+          tar -xzf bash-4.4.tar.gz
+          cd bash-4.4
+          ./configure --without-bash-malloc
+          make -j2
+      - name: Exercise minimum Bash shell hooks
+        run: DSH_TEST_BASH="$RUNNER_TEMP/bash-4.4/bash" npx vitest run test/terminal-state-helper.integration.test.ts
 
   macos:
     # Exercise Darwin-only guardian, PTY and ignored-SIGCHLD regressions.

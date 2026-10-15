@@ -17,7 +17,7 @@ interface WorkspaceInfoRemote {
   workspaceInfo?(path: string): Promise<InfoResult>;
 }
 
-type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open' | 'ssh-ports' | 'ssh-transfers';
+type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open' | 'ssh-ports' | 'ssh-transfers' | 'ssh-terminal-state';
 interface NativePanelInjected {
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
@@ -55,7 +55,8 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
           | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4)
           | (scope.sidebarRightTabs.get('ssh-quick-open') === undefined ? 0 : 8)
           | (scope.sidebarRightTabs.get('ssh-ports') === undefined ? 0 : 16)
-          | (scope.sidebarRightTabs.get('ssh-transfers') === undefined ? 0 : 32),
+          | (scope.sidebarRightTabs.get('ssh-transfers') === undefined ? 0 : 32)
+          | (scope.sidebarRightTabs.get('ssh-terminal-state') === undefined ? 0 : 64),
         subscribePanels: (listener: () => void) => scope.sidebarRightTabs.subscribe(listener),
     });
     const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
@@ -140,6 +141,7 @@ export function NativePanelActions({
         onClick={() => open('ssh-quick-open')}>远程快速打开</Button>}
       {(panels & 16) !== 0 && <Button size="sm" variant="ghost" title="将远端回环服务映射到 DSH 宿主的回环端口。" onClick={() => open('ssh-ports')}>端口转发</Button>}
       {(panels & 32) !== 0 && <Button size="sm" variant="ghost" title="可恢复的文件和目录传输，单文件 / 批次最多 1 TiB。" onClick={() => open('ssh-transfers')}>文件传输</Button>}
+      {(panels & 64) !== 0 && <Button size="sm" variant="ghost" title="查看人工终端目录、命令返回和退出码；预览后主动插入草稿。" onClick={() => open('ssh-terminal-state')}>终端状态</Button>}
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );

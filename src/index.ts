@@ -16,6 +16,7 @@ import { RemoteFileIndex, installRemoteFileReferencesRouter } from './file-index
 import { SshRemoteFiles } from './file-search.js';
 import { PortForwardManager, SshRemotePorts } from './port-forwards.js';
 import { TransferManager, SshRemoteTransfers, mountTransferHttp } from './transfers.js';
+import { TerminalStateManager, SshRemoteTerminalState } from './terminal-state.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -52,6 +53,11 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const fileIndex = new RemoteFileIndex(helpers, resolveRemotePath);
   const portForwards = new PortForwardManager(resolveRemotePath);
   const transfers = new TransferManager(helpers, resolveRemotePath, root => fileIndex.invalidate(root));
+  const terminalState = new TerminalStateManager(resolveRemotePath);
+  const terminalStateFiber = ctx.inject(['terminalController', 'workspaceFiles', 'sessions'], scope => {
+    new SshRemoteTerminalState(scope, terminalState);
+    return terminalState.mount(scope.terminalController);
+  });
   const disposeTransferHttp = mountTransferHttp(ctx, transfers);
   const referencesFiber = ctx.inject(['fileReferences'], scope => installRemoteFileReferencesRouter(scope.fileReferences, fileIndex, resolveRemotePath));
   const restoreFileSystem = installRemoteFileSystemRouter(
@@ -61,7 +67,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     helpers,
   );
   const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
-  const userSubprocess = installRemoteUserSubprocessRouter(ctx, ctx.subprocess, helpers, resolveRemotePath);
+  const userSubprocess = installRemoteUserSubprocessRouter(ctx, ctx.subprocess, helpers, resolveRemotePath, terminalState);
   const workspaceFilesFiber = ctx.inject(['workspaceFiles'], scope => installRemoteWorkspaceFilesRouter(
     scope.workspaceFiles,
     helpers,
@@ -115,9 +121,11 @@ export function apply(ctx: Context, config: LegacySshConfig) {
       editorFiber.dispose(),
       referencesFiber.dispose(),
       disposeTransferHttp(),
+      terminalStateFiber.dispose(),
       userSubprocess.dispose(),
     ]);
     restoreSubprocess();
+    terminalState.dispose();
     restoreFileSystem();
     const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose(), portForwards.dispose(), transfers.dispose()]);
     const results = [

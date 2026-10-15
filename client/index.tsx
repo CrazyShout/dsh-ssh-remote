@@ -26,6 +26,7 @@ import { mountRemoteEditor } from './editor.js';
 import { mountQuickOpen } from './quick-open.js';
 import { mountPortForwards } from './port-forwards.js';
 import { mountTransfers } from './transfers.js';
+import { mountTerminalState } from './terminal-state.js';
 import type { EditorBridge } from './file-search-types.js';
 
 export const name = 'dsh-ssh-remote-client';
@@ -217,9 +218,11 @@ export async function apply(ctx: ClientContext) {
   const disposeQuickOpen = mountQuickOpen(ctx, editorBridge);
   const disposePorts = mountPortForwards(ctx);
   const disposeTransfers = mountTransfers(ctx);
+  const disposeTerminalState = mountTerminalState(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposeTerminalState();
     await disposeTransfers();
     await disposePorts();
     await disposeQuickOpen();
@@ -232,6 +235,7 @@ export async function apply(ctx: ClientContext) {
   }
 
   return async () => {
+    await disposeTerminalState();
     await disposeTransfers();
     await disposePorts();
     await disposeQuickOpen();

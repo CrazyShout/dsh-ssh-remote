@@ -1,4 +1,5 @@
 import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
+import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
 interface HelperStatus {
     status: 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
     version: string;
@@ -71,6 +72,7 @@ export interface RemoteWorkspaceInfo {
 }
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap {
+        sshRemoteTerminalState: TerminalStateRemote;
         sshRemote: {
             config: () => Promise<RemoteResult<ConfigResult>>;
             statuses: () => Promise<RemoteResult<Record<string, HelperStatus>>>;
