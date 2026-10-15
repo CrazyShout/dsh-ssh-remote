@@ -53,11 +53,16 @@ describe('private shell observation channel', () => {
       view = await f.until(view => view.state === 'prompt'); expect(view.recent.at(-1).exitCode).toBe(130); expect(view.recent.at(-1).command).toBe('sleep 20');
       await f.write('sleep 2 &\r'); view = await f.until(view => view.recent.length === 6);
       expect(view.recent.at(-1).exitCode).toBe(0); expect(view.state).toBe('prompt');
-    });
+      await f.write('cat\r'); await f.until(view => view.state === 'running'); await f.write('INTERACTIVE_PROGRAM_TEXT\r');
+      expect((await f.state()).state).toBe('running'); await f.write('\x04');
+      view = await f.until(view => view.recent.length === 7); expect(view.recent.at(-1).command).toBe('cat'); expect(view.recent.at(-1).exitCode).toBe(0);
+      await f.write("printf '\\033]133;D;99\\007'\r"); view = await f.until(view => view.recent.length === 8);
+      expect(view.recent.at(-1).exitCode).toBe(0); expect(view.cwd).toBe('/tmp');
+    }, 15_000);
     it.skipIf(!supported)(`${shell}: preserves startup and existing prompt hooks`, async () => {
-      const startup = shell.includes('zsh') ? "typeset -ga precmd_functions=(old_prompt)\nold_prompt() { print -r -- OLD_HOOK >/dev/null; }\nexport STARTUP_MARKER=preserved\n" : "PROMPT_COMMAND=': old_hook'\nexport STARTUP_MARKER=preserved\n";
+      const startup = shell.includes('zsh') ? "typeset -ga precmd_functions=(old_prompt)\nold_prompt() { (( HOOK_COUNT += 1 )); }\nexport STARTUP_MARKER=preserved\n" : "PROMPT_COMMAND='(( HOOK_COUNT += 1 )) # existing hook comment'\nexport STARTUP_MARKER=preserved\n";
       const f = await fixture(shell, ['-i'], startup); await f.until(view => view.state === 'prompt');
-      await f.write('test "$STARTUP_MARKER" = preserved\r'); const view = await f.until(view => view.recent.length === 1);
+      await f.write('test "$STARTUP_MARKER" = preserved && test "$HOOK_COUNT" -ge 1\r'); const view = await f.until(view => view.recent.length === 1);
       expect(view.recent[0].exitCode).toBe(0);
     });
   }
