@@ -14,6 +14,7 @@ import { installRemoteWorkspaceFilesRouter } from './workspace-files.js';
 import { SshRemoteEditor } from './editor.js';
 import { RemoteFileIndex, installRemoteFileReferencesRouter } from './file-index.js';
 import { SshRemoteFiles } from './file-search.js';
+import { PortForwardManager, SshRemotePorts } from './port-forwards.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -48,6 +49,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const service = new SshRemoteService(ctx, helpers, config);
   const resolveRemotePath = service.resolveRemotePath.bind(service);
   const fileIndex = new RemoteFileIndex(helpers, resolveRemotePath);
+  const portForwards = new PortForwardManager(resolveRemotePath);
   const referencesFiber = ctx.inject(['fileReferences'], scope => installRemoteFileReferencesRouter(scope.fileReferences, fileIndex, resolveRemotePath));
   const restoreFileSystem = installRemoteFileSystemRouter(
     ctx.fs,
@@ -65,6 +67,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const editorFiber = ctx.inject(['workspaceFiles', 'sessions'], scope => {
     new SshRemoteEditor(scope, helpers, resolveRemotePath, root => fileIndex.invalidate(root));
     new SshRemoteFiles(scope, fileIndex, helpers, resolveRemotePath);
+    new SshRemotePorts(scope, portForwards);
     scope.on('session/event', (session, event) => {
       if (event.type === 'tool/result' && session.header.cwd) fileIndex.invalidate(session.header.cwd);
     });
@@ -111,7 +114,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     ]);
     restoreSubprocess();
     restoreFileSystem();
-    const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose()]);
+    const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose(), portForwards.dispose()]);
     const results = [
       ...childResults,
       ...shellResult,

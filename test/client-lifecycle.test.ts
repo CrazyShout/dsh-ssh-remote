@@ -31,7 +31,8 @@ describe('client lifecycle', () => {
       expect(entry.result.create().safeParse(undefined).success).toBe(false);
       for (const parameter of entry.parameters) {
         if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
-        if (parameter.name === 'request') { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
+        if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
+        if (parameter.name === 'id') { expect(parameter.codec.create().parse('test-forward-identity')).toBe('test-forward-identity'); continue; }
         expect(parameter.codec.create().parse('gpu')).toBe('gpu');
       }
     }
@@ -39,7 +40,8 @@ describe('client lifecycle', () => {
       expect(typeof entry.result.create().parse).toBe('function');
       for (const parameter of entry.parameters) {
         if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
-        if (parameter.name === 'request') { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
+        if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
+        if (parameter.name === 'id') { expect(parameter.codec.create().parse('test-forward-identity')).toBe('test-forward-identity'); continue; }
         expect(parameter.codec.create().parse('gpu')).toBe('gpu');
       }
     }
@@ -122,6 +124,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
+      'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -151,6 +154,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
+      'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',

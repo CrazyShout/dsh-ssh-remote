@@ -24,6 +24,7 @@ import { mountNativePanels } from './native-panels.js';
 import { mountSessionMarkdownImages } from './markdown-preview.js';
 import { mountRemoteEditor } from './editor.js';
 import { mountQuickOpen } from './quick-open.js';
+import { mountPortForwards } from './port-forwards.js';
 import type { EditorBridge } from './file-search-types.js';
 
 export const name = 'dsh-ssh-remote-client';
@@ -213,9 +214,11 @@ export async function apply(ctx: ClientContext) {
   const editorBridge: EditorBridge = {};
   const disposeEditor = mountRemoteEditor(ctx, editorBridge);
   const disposeQuickOpen = mountQuickOpen(ctx, editorBridge);
+  const disposePorts = mountPortForwards(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposePorts();
     await disposeQuickOpen();
     await disposeEditor();
     await disposeMarkdown();
@@ -226,6 +229,7 @@ export async function apply(ctx: ClientContext) {
   }
 
   return async () => {
+    await disposePorts();
     await disposeQuickOpen();
     await disposeEditor();
     await disposeMarkdown();
