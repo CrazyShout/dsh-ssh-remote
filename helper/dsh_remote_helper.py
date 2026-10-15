@@ -609,7 +609,11 @@ class Server:
                 module = sys.modules.get('dsh_transfer')
                 if module is None:
                     spec = importlib.util.spec_from_file_location('dsh_transfer', os.path.join(os.path.dirname(__file__), 'dsh_transfer.py'))
-                    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); sys.modules['dsh_transfer'] = module
+                    module = importlib.util.module_from_spec(spec)
+                    # Avoid creating per-platform __pycache__ next to the trusted
+                    # deployment source (or polluting a clean source checkout).
+                    exec(compile(spec.loader.get_source('dsh_transfer'), spec.origin, 'exec'), module.__dict__)
+                    sys.modules['dsh_transfer'] = module
                 with self.resources_lock:
                     self.ensure_open()
                     if self.transfers is None: self.transfers = module.DurableTransfers()

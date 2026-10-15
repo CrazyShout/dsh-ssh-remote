@@ -42,7 +42,7 @@ async function send(f: { call: (method: string, params?: any) => Promise<any> },
 }
 describe('durable human transfers', () => {
   it('recovers interrupted chunk/publication intent and safely handles disk-full, permission and expiry faults', () => {
-    const result = spawnSync('python3', [fileURLToPath(new URL('./fixtures/transfer_faults.py', import.meta.url)), fileURLToPath(new URL('../helper/dsh_transfer.py', import.meta.url))], { encoding: 'utf8', timeout: 15000 });
+    const result = spawnSync('python3', ['-B', fileURLToPath(new URL('./fixtures/transfer_faults.py', import.meta.url)), fileURLToPath(new URL('../helper/dsh_transfer.py', import.meta.url))], { encoding: 'utf8', timeout: 15000 });
     expect(result.status, result.stderr).toBe(0); expect(result.stdout).toContain('faults passed');
   });
   it('resumes a verified upload across helper restart and publishes once', async () => {
@@ -70,7 +70,7 @@ describe('durable human transfers', () => {
     for (const offset of [-1, 1.5, 2 ** 40 + 1, Number.MAX_SAFE_INTEGER + 1]) {
       await expect(f.call('write', { id, offset, data: 'YQ==', sha256: sha(Buffer.from('a')) })).rejects.toThrow();
     }
-    const python = spawnSync('python3', ['-c', 'import sys;sys.path.insert(0,sys.argv[1]);from dsh_transfer import integer,MAX_BYTES;assert integer(2**32)==2**32;assert integer(2**40)==MAX_BYTES;print(MAX_BYTES)', fileURLToPath(new URL('../helper', import.meta.url))], { encoding: 'utf8' });
+    const python = spawnSync('python3', ['-B', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);from dsh_transfer import integer,MAX_BYTES;assert integer(2**32)==2**32;assert integer(2**40)==MAX_BYTES;print(MAX_BYTES)', fileURLToPath(new URL('../helper', import.meta.url))], { encoding: 'utf8' });
     expect(python.status).toBe(0); expect(python.stdout.trim()).toBe('1099511627776');
   });
   it('cancels only owned partials, keeps existing targets and rejects changed staging', async () => {
