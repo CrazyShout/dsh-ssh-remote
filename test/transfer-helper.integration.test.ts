@@ -41,6 +41,17 @@ async function send(f: { call: (method: string, params?: any) => Promise<any> },
   }
 }
 describe('durable human transfers', () => {
+  it('recovers acknowledged bytes after an actual helper SIGKILL with the retained execution identity', async () => {
+    const f = await fixture(), id = randomUUID(), data = Buffer.from('small crash recovery');
+    await f.call('open', { id, path: 'crash.txt', direction: 'upload', size: data.length, sha256: sha(data) }); await claim(f, id);
+    await send(f, id, data, 0, 8);
+    f.child.kill('SIGKILL'); await f.close(); const next = await f.connect();
+    await expect(next.call('claim', { id })).rejects.toMatchObject({ code: 'E_BUSY' });
+    const retained = { call: (method: string, params: Record<string, unknown> = {}) => next.call(method, { ...params, owner: f.owner }) };
+    expect((await claim(retained, id)).offset).toBe(8); await send(retained, id, data, 8);
+    await retained.call('finish', { id, sha256: sha(data) });
+    expect((await readFile(join(f.target, 'crash.txt'))).equals(data)).toBe(true);
+  });
   it('recovers interrupted chunk/publication intent and safely handles disk-full, permission and expiry faults', () => {
     const result = spawnSync('python3', ['-B', fileURLToPath(new URL('./fixtures/transfer_faults.py', import.meta.url)), fileURLToPath(new URL('../helper/dsh_transfer.py', import.meta.url))], { encoding: 'utf8', timeout: 15000 });
     expect(result.status, result.stderr).toBe(0); expect(result.stdout).toContain('faults passed');
