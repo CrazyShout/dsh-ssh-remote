@@ -8,7 +8,33 @@ through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
 See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
-first implementation; file completion/quick open are now available. Forwarding and transfers remain planned.
+first implementation; file completion, quick open and local port forwarding are available. Transfers are next.
+
+## 0.8.0: owned local port forwarding
+
+Click **端口转发** in an SSH workspace. Enter an existing remote service port
+(for example `6006`) and an unused Host port (for example `16006`), then create.
+Both the DSH Host listener and SSH target are fixed to `127.0.0.1`. The plugin
+does not launch your remote service, scan ports, edit SSH configuration or widen model permissions.
+
+- Listener establishment and remote TCP reachability are separate facts. The latter
+  is not HTTP health or proof of server forwarding permission. Connection refusal
+  diagnostics are retained; the optional TCP probe requires existing Python 3.
+- Open, copy address, probe, stop and explicit recreate actions. HTTP/HTTPS selects
+  the browser URL, not a TLS wrapper. Web requires confirmation that the browser
+  runs on the displayed DSH Host, even for a localhost DSH URL (which can itself be tunneled).
+- An independent OpenSSH master and private socket per forward. Existing alias
+  authentication/jump-host/fingerprint policy is retained; inherited forwarding rules
+  are suppressed. User-owned SSH masters and occupied ports are never taken over.
+- Closing a pane or switching Sessions preserves the forward. Stop, plugin disposal
+  and Host exit clean owned children; a guardian also handles parent IPC loss.
+  Unknown creation results keep their identity and can be stopped, not blindly retried.
+  Disconnections never auto-reconnect. Session-authorized access is workspace-scoped.
+- Eight concurrent forwards, macOS/Linux Host only. No saved forwards, credential URLs,
+  arbitrary target addresses, reverse forwarding or SOCKS in this release.
+
+DSH stays at `0.2.0-rc.2`; the unchanged remote helper remains `0.7.0` without
+redeployment for this feature. See [ADR-0007](docs/adr/0007-owned-port-forwarding.md).
 
 ## 0.7.0: remote file references and quick open
 

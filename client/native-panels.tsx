@@ -17,7 +17,7 @@ interface WorkspaceInfoRemote {
   workspaceInfo?(path: string): Promise<InfoResult>;
 }
 
-type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open';
+type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open' | 'ssh-ports';
 interface NativePanelInjected {
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
@@ -53,7 +53,8 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
         availablePanels: () => (scope.sidebarRightTabs.get('files') === undefined ? 0 : 1)
           | (scope.sidebarRightTabs.get('terminal') === undefined ? 0 : 2)
           | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4)
-          | (scope.sidebarRightTabs.get('ssh-quick-open') === undefined ? 0 : 8),
+          | (scope.sidebarRightTabs.get('ssh-quick-open') === undefined ? 0 : 8)
+          | (scope.sidebarRightTabs.get('ssh-ports') === undefined ? 0 : 16),
         subscribePanels: (listener: () => void) => scope.sidebarRightTabs.subscribe(listener),
     });
     const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
@@ -114,7 +115,7 @@ export function NativePanelActions({
   };
 
   return (
-    <div aria-label={`远程工作区 ${identity}`} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, ...(presentation === 'dock' ? { justifyContent: 'flex-end', marginBottom: 8 } : {}) }}>
+    <div aria-label={`远程工作区 ${identity}`} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, minWidth: 0, ...(presentation === 'dock' ? { justifyContent: 'flex-end', marginBottom: 8 } : {}) }}>
       <span title={identity} style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         SSH · {info.alias}
       </span>
@@ -136,6 +137,7 @@ export function NativePanelActions({
         onClick={() => open('ssh-editor')}>远程编辑</Button>}
       {(panels & 8) !== 0 && <Button size="sm" variant="ghost" title="搜索远程工作区文件；默认只读预览。"
         onClick={() => open('ssh-quick-open')}>远程快速打开</Button>}
+      {(panels & 16) !== 0 && <Button size="sm" variant="ghost" title="将远端回环服务映射到 DSH 宿主的回环端口。" onClick={() => open('ssh-ports')}>端口转发</Button>}
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );

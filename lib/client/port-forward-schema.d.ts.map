@@ -1,0 +1,1 @@
+{"version":3,"file":"port-forward-schema.d.ts","sourceRoot":"","sources":["../../client/port-forward-schema.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,iBAAiB,EAAE,MAAM,yBAAyB,CAAC;AACjE,OAAO,QAAQ,kCAAkC,CAAC;IAAE,UAAU,wBAAwB;QAAG,cAAc,EAAE,iBAAiB,CAAA;KAAE;CAAE;AAwC9H,eAAO,MAAM,sBAAsB;;;;;yBAN+C,OAAO,GAAG,OAAO;;;;;;;;;;;;;;;;;;;GAOsE,CAAC"}
