@@ -25,7 +25,7 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
   disposers.push(async () => { if (child.exitCode !== null) return; const done = new Promise(resolve => child.once('exit', resolve)); child.stdin.end(); await done; });
   await client.initialize({ clientId: randomUUID() });
   const ws = await client.call<{ workspaceId: string }>('workspace/open', { path: root, access: 'danger-full-access', operationId: randomUUID() });
-  const process = await client.call<{ processId: string }>('process/start', { operationId: randomUUID(), workspaceId: ws.workspaceId, argv: [shell, ...args], env: { HOME: root, ZDOTDIR: root, TERM: 'xterm' }, tty: { cols: 80, rows: 24 }, shellObservation: true });
+  const process = await client.call<{ processId: string; pid: number }>('process/start', { operationId: randomUUID(), workspaceId: ws.workspaceId, argv: [shell, ...args], env: { HOME: root, ZDOTDIR: root, TERM: 'xterm' }, tty: { cols: 80, rows: 24 }, shellObservation: true });
   disposers.push(() => client.call('process/release', { processId: process.processId, operationId: randomUUID() }));
   const state = () => client.call<any>('process/shellState', { processId: process.processId });
   let sequence = 0;
@@ -36,7 +36,16 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
     throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr);
   };
   const output = () => client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 65536, waitMs: 100 });
-  return { root, state, write, until, output };
+  const foregroundJob = async () => {
+    const deadline = Date.now() + 3000;
+    do {
+      const group = await client.call<{ pgid: number; verified: boolean }>('process/inspectForeground', { processId: process.processId });
+      if (group.verified && group.pgid !== process.pid) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    } while (Date.now() < deadline);
+    throw new Error('fixture command did not acquire the terminal foreground');
+  };
+  return { root, state, write, until, output, foregroundJob };
 }
 describe('private shell observation channel', () => {
   for (const [shell, supported] of [[bashPath, bashSupported], ['/bin/zsh', zshSupported]] as const) {
@@ -51,7 +60,11 @@ describe('private shell observation channel', () => {
       await f.write('for x in a b; do\rprintf "%s\\n" "$x"\rdone\r');
       view = await f.until(view => view.recent.length === 3); expect(view.recent[2].exitCode).toBe(0); expect(view.recent[2].command).toContain('for x');
       await f.write('cd /tmp\r'); view = await f.until(view => view.cwd === '/tmp'); expect(view.state).toBe('prompt');
-      await f.write('sleep 20\r'); await f.until(view => view.state === 'running'); await f.write('\x03');
+      await f.write('sleep 20\r'); await f.until(view => view.state === 'running');
+      // preexec observes the shell command before it forks/foregrounds sleep.
+      // Synchronize the Ctrl-C fixture with actual job control, not a delay or
+      // the observational metadata (which is deliberately not an authority).
+      await f.foregroundJob(); await f.write('\x03');
       view = await f.until(view => view.state === 'prompt'); expect(view.recent.at(-1).exitCode).toBe(130); expect(view.recent.at(-1).command).toBe('sleep 20');
       await f.write('sleep 2 &\r'); view = await f.until(view => view.recent.length === 6);
       expect(view.recent.at(-1).exitCode).toBe(0); expect(view.state).toBe('prompt');
