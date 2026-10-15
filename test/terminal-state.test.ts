@@ -79,4 +79,15 @@ describe('public terminal identity and observation boundary', () => {
     expect(result[0].current?.exitCode).toBeNull(); expect(result[0].current?.uncertain).toBe(true);
     f.unmount(); f.manager.dispose();
   });
+  it('retains the final output checkpoint when the panel was never opened and ignores older replies', async () => {
+    const f = fixture(), signal = new AbortController().signal;
+    await f.controller.create(f.agent('one', '/a'), { id: 'one' }, signal);
+    const terminal = f.terminals.get('one');
+    terminal.observation.state({ ...snapshot, state: 'exited' });
+    terminal.observation.state({ ...snapshot, revision: 1, state: 'prompt', cwd: '/older' });
+    terminal.observation.closed();
+    const result = await f.manager.list({ sessionId: 'one', workspaceRoot: '/a' } as any, signal);
+    expect(result[0].state).toBe('exited'); expect(result[0].recent[0].exitCode).toBe(1); expect(result[0].cwd).toBe('/work');
+    expect(terminal.shellState).not.toHaveBeenCalled(); f.unmount(); f.manager.dispose();
+  });
 });

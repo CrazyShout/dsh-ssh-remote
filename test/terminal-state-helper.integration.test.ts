@@ -35,7 +35,8 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
     do { view = await state(); if (predicate(view)) return view; await new Promise(resolve => setTimeout(resolve, 30)); } while (Date.now() < end);
     throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr);
   };
-  return { root, state, write, until };
+  const output = () => client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 65536, waitMs: 100 });
+  return { root, state, write, until, output };
 }
 describe('private shell observation channel', () => {
   for (const [shell, supported] of [[bashPath, bashSupported], ['/bin/zsh', zshSupported]] as const) {
@@ -59,6 +60,11 @@ describe('private shell observation channel', () => {
       view = await f.until(view => view.recent.length === 7); expect(view.recent.at(-1).command).toBe('cat'); expect(view.recent.at(-1).exitCode).toBe(0);
       await f.write("printf '\\033]133;D;99\\007'\r"); view = await f.until(view => view.recent.length === 8);
       expect(view.recent.at(-1).exitCode).toBe(0); expect(view.cwd).toBe('/tmp');
+      await f.write('exit\r');
+      let drained; const deadline = Date.now() + 3000;
+      do { drained = await f.output(); } while (!drained.exited && Date.now() < deadline);
+      expect(drained.exited).toBe(true); expect(drained.shellState.state).toBe('exited');
+      expect(drained.shellState.recent[0].exitCode).toBe(1);
     }, 15_000);
     it.skipIf(!supported)(`${shell}: preserves startup and existing prompt hooks`, async () => {
       const startup = shell.includes('zsh') ? "typeset -ga precmd_functions=(old_prompt)\nold_prompt() { (( HOOK_COUNT += 1 )); }\nexport STARTUP_MARKER=preserved\n" : "PROMPT_COMMAND='(( HOOK_COUNT += 1 )) # existing hook comment'\nexport STARTUP_MARKER=preserved\n";

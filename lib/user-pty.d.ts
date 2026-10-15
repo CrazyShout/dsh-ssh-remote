@@ -25,6 +25,7 @@ export declare class RemoteUserTerminalAllocationError extends AggregateError {
 /** Human terminals deliberately use the SSH user's permissions, like DSH's local user terminal. */
 export declare function openRemoteUserTerminal(uri: string, spec: SubprocessTerminalSpawnSpec, helpers: RemoteHelperProvider, onClosed?: (terminal: RemoteUserTerminal) => void, observation?: {
     output(data: Buffer): void;
+    state?(snapshot: ShellSnapshot): void;
 }): Promise<RemoteUserTerminal>;
 /**
  * Raw helper PTY handle consumed by the OFFICIAL human TerminalController.
@@ -66,6 +67,7 @@ export declare class RemoteUserTerminal implements SubprocessTerminalHandle {
     private rejectOutcome;
     constructor(helpers: RemoteHelperProvider, allocation: Allocation, started: ProcessStatus, graceMs: number, onClosed: (terminal: RemoteUserTerminal) => void, observation?: {
         output(data: Buffer): void;
+        state?(snapshot: ShellSnapshot): void;
     } | undefined);
     shellState(signal: AbortSignal): Promise<ShellSnapshot>;
     write(data: string): Promise<void>;

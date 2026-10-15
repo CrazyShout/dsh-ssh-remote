@@ -34,7 +34,7 @@ export class TerminalStateManager {
     };
     return () => { controller.create = original; if (this.controller === controller) { this.controller = undefined; this.entries.clear(); } };
   }
-  reserve(uri: string): { output(data: Buffer): void; attached(terminal: RemoteUserTerminal): void; failed(): void; closed(): void } | undefined {
+  reserve(uri: string): { output(data: Buffer): void; state(snapshot: ShellSnapshot): void; attached(terminal: RemoteUserTerminal): void; failed(): void; closed(): void } | undefined {
     const binding = this.scope.getStore();
     if (!binding || this.disposed || parseSshUri(binding.root).host !== parseSshUri(uri).host) return undefined;
     const key = this.key(binding);
@@ -47,6 +47,7 @@ export class TerminalStateManager {
     const entry: Entry = { ...binding, output: Buffer.alloc(0), truncated: false, closed: false, observedAt: 0, stale: false, error: '' };
     this.entries.set(key, entry);
     return {
+      state: snapshot => { this.accept(entry, snapshot); },
       output: data => {
         if (this.disposed || this.entries.get(key) !== entry) return;
         entry.truncated ||= entry.output.length + data.length > OUTPUT_BYTES;
@@ -57,6 +58,13 @@ export class TerminalStateManager {
       failed: () => { if (this.entries.get(key) === entry) this.entries.delete(key); },
       closed: () => { entry.closed = true; },
     };
+  }
+  private accept(entry: Entry, snapshot: ShellSnapshot) {
+    if (this.disposed || this.entries.get(this.key(entry)) !== entry || entry.closed) return;
+    if (entry.last?.instance && entry.last.instance !== snapshot.instance) throw new Error('终端元数据实例改变，旧上下文不可继续关联。');
+    if (entry.last && (snapshot.revision < entry.last.revision || entry.last.state === 'exited' && snapshot.state !== 'exited')) return;
+    if (Buffer.byteLength(JSON.stringify(snapshot)) > 24 * 1024) throw new Error('终端元数据超过预算。');
+    entry.last = snapshot; entry.stale = false; entry.error = ''; entry.observedAt = Date.now();
   }
   private authorize(scope: WorkspaceFileScope) {
     const root = this.resolve(scope.workspaceRoot);
@@ -69,11 +77,12 @@ export class TerminalStateManager {
     entry.pending = (async () => {
       try {
         const snapshot = await entry.terminal!.shellState(this.lifetime.signal);
-        if (this.disposed || this.entries.get(this.key(entry)) !== entry || entry.closed) return;
-        if (entry.last?.instance && entry.last.instance !== snapshot.instance) throw new Error('终端元数据实例改变，旧上下文不可继续关联。');
-        if (Buffer.byteLength(JSON.stringify(snapshot)) > 24 * 1024) throw new Error('终端元数据超过预算。');
-        entry.last = snapshot; entry.stale = false; entry.error = ''; entry.observedAt = Date.now();
-      } catch (error) { entry.stale = true; entry.error = error instanceof Error ? error.message : String(error); }
+        this.accept(entry, snapshot);
+      } catch (error) {
+        if (!this.disposed && !entry.closed && this.entries.get(this.key(entry)) === entry) {
+          entry.stale = true; entry.error = error instanceof Error ? error.message : String(error);
+        }
+      }
       finally { entry.pending = undefined; }
     })();
     return entry.pending;
@@ -93,7 +102,7 @@ export class TerminalStateManager {
     return result;
   }
   private view(info: WebTerminalInfo, alias: string, entry?: Entry): TerminalObservation {
-    return { ...(entry?.last ?? empty('此终端创建时未启用状态感知；请新建终端，已有终端不会被注入。')),
+    return { ...(entry?.last ?? empty(entry ? '未获得可用的命令元数据；无法确认最近命令状态。' : '此终端创建时未启用状态感知；请新建终端，已有终端不会被注入。')),
       ...(entry?.closed || info.state === 'exited' ? { state: 'exited' as const,
         current: entry?.last?.current ? { ...entry.last.current, uncertain: true, exitCode: null } : null } : {}),
       ...(entry?.stale ? { reason: '连接或元数据不可用，显示上次观察：' + entry.error } : {}),

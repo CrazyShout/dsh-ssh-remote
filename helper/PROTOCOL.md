@@ -485,6 +485,10 @@ start timestamp, elapsed milliseconds, nullable exit code and an uncertainty fla
 Unknown/gapped data does not assert a completed exit. Only the observed prompt
 ends a foreground command; background descendants and nested shells remain separate.
 Data is bounded and volatile, not terminal output or a trusted authorization signal.
+Observed PTY `process/read` responses may also contain this bounded `shellState`
+checkpoint so a Host can retain the last observation before process release.
+The dedicated state RPC remains available independently of output backpressure;
+legacy clients ignore the optional field.
 See [ADR-0009](../docs/adr/0009-observed-human-terminal-state.md) for hook/version,
 privacy, cancellation and public-controller integration boundaries.
 

@@ -4,7 +4,7 @@ import type { WorkspaceFileScope } from '@deepseek-ai/dsh-api-workspace-files';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import type { RemotePathResolver } from './runtime-router.js';
 import type { RemoteUserTerminal } from './user-pty.js';
-import type { TerminalContext, TerminalObservation } from '../shared/terminal-state.js';
+import type { ShellSnapshot, TerminalContext, TerminalObservation } from '../shared/terminal-state.js';
 /** Only the public create request correlates identities; no controller private maps or guessed env ids. */
 export declare class TerminalStateManager {
     private readonly resolve;
@@ -18,10 +18,12 @@ export declare class TerminalStateManager {
     mount(controller: TerminalController): () => void;
     reserve(uri: string): {
         output(data: Buffer): void;
+        state(snapshot: ShellSnapshot): void;
         attached(terminal: RemoteUserTerminal): void;
         failed(): void;
         closed(): void;
     } | undefined;
+    private accept;
     private authorize;
     private refresh;
     list(scope: WorkspaceFileScope, signal: AbortSignal): Promise<TerminalObservation[]>;

@@ -53,6 +53,10 @@ accordingly. Ignored/disabled history yields unknown command text, never the pre
 entry. Receipt timestamps supply monotonic durations, not performance benchmarks.
 
 `process/shellState` returns a bounded snapshot, independent of output reads.
+A bounded optional snapshot also accompanies normal output-pump responses so the
+final observation can be retained before a fast-exiting process is released, even
+if the panel was never opened. It is metadata, not a parsed output marker, and its
+failure cannot fail output delivery. Older checkpoint replies cannot replace newer ones.
 Host observation acquisition has a three-second total abort bound, including
 reconnection waits. Failure preserves old observations as stale. Polling does not
 classify silence as completion. A prompt means the foreground shell has returned,

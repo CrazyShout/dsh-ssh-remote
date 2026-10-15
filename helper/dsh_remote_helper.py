@@ -1515,9 +1515,16 @@ class ProcessRecord:
                 if used >= maximum: break
             status = self.status()
             output_closed = self.returncode is not None and self.readers == 0 and next_seq >= self.seq
-            return {"chunks": selected, "earliestSeq": str(self.earliest), "nextSeq": str(next_seq),
+            result = {"chunks": selected, "earliestSeq": str(self.earliest), "nextSeq": str(next_seq),
                     "truncated": after < self.earliest - 1, "exited": output_closed, "closed": output_closed,
                     "exitCode": status["exitCode"], "signal": status["signal"]}
+            # A small optional checkpoint preserves observations before the
+            # official output pump retires a fast-exiting process. Live reads
+            # still have their independent shellState RPC; no output is parsed.
+            if self.shell_observation is not None:
+                try: result['shellState'] = self.shell_observation.snapshot(self.returncode is not None)
+                except Exception: pass  # Observation must never fail task output.
+            return result
 
     def write(self, p: Dict[str, Any]) -> Dict[str, Any]:
         try: data = base64.b64decode(p.get("data", ""), validate=True)

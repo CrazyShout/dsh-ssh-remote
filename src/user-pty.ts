@@ -30,6 +30,7 @@ interface ProcessStatus {
 }
 
 interface ProcessRead {
+  shellState?: ShellSnapshot;
   chunks: Array<{ seq: string; stream: string; data: string }>;
   nextSeq: string;
   truncated: boolean;
@@ -60,7 +61,7 @@ export async function openRemoteUserTerminal(
   spec: SubprocessTerminalSpawnSpec,
   helpers: RemoteHelperProvider,
   onClosed: (terminal: RemoteUserTerminal) => void = () => {},
-  observation?: { output(data: Buffer): void },
+  observation?: { output(data: Buffer): void; state?(snapshot: ShellSnapshot): void },
 ): Promise<RemoteUserTerminal> {
   validateSpawn(spec);
   spec.signal?.throwIfAborted();
@@ -142,7 +143,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     started: ProcessStatus,
     private readonly graceMs: number,
     private readonly onClosed: (terminal: RemoteUserTerminal) => void,
-    private readonly observation?: { output(data: Buffer): void },
+    private readonly observation?: { output(data: Buffer): void; state?(snapshot: ShellSnapshot): void },
   ) {
     this.pid = started.pid;
     this.done = new Promise((resolve, reject) => { this.resolveOutcome = resolve; this.rejectOutcome = reject; });
@@ -330,6 +331,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
         if (result.truncated) throw new Error('remote terminal output buffer overflowed during disconnection; reopen this terminal');
         if (!Array.isArray(result.chunks) || typeof result.nextSeq !== 'string') throw new Error('invalid remote terminal output');
         this.cursor = result.nextSeq;
+        try { if (result.shellState) this.observation?.state?.(shellSnapshotSchema.parse(result.shellState)); } catch {}
         // Outcome is independent of output backpressure. The controller still
         // drains the output stream before publishing its final screen state.
         if (result.exitCode !== null || result.signal !== null) this.observeOutcome(result);
