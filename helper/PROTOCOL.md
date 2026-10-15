@@ -8,6 +8,36 @@ whether a working Bubblewrap sandbox is available.
 
 ## Transport and lifecycle
 
+### Optional durable human transfers (helper 0.9.0)
+
+`capabilities.transfers = {version:1, persistent:true, maxBytes:1099511627776,
+maxChunkBytes:262144}` negotiates the separate human-transfer plane. It does not
+raise `fs/*` model write/read limits. The installer embeds the stdlib extension
+in the content-addressed deployment artifact; no additional remote dependency is installed.
+
+- `transfer/identity` returns a durable installation identity independent of helper build.
+- `transfer/scan {workspaceId, scanId, path, cursor}` returns a replayable bounded
+  manifest page. `scanClose` retires the snapshot; a scan cannot cross workspace identity.
+- `transfer/job {workspaceId, installation, jobId, owner, action}` manages the
+  durable job lease (`claim`, `renew`, `pause`, `cleanup`, `cancel`, `status`).
+- `transfer/open` binds file ID, job, root/directory identities, path, direction,
+  byte count, upload SHA-256 or download version, and optional replacement version.
+  `claim` starts bounded prefix `verify`; `renew` keeps a live file lease.
+- `transfer/write {id, owner, offset, data, sha256}` carries a base64 chunk of at
+  most 256 KiB. Exact retries verify their old bytes. Pre-write intent, fsync and
+  durable receipts distinguish confirmed offsets from an interrupted tail.
+- `transfer/read {id, owner, offset}` returns one bounded chunk and SHA-256.
+  Client-confirmed download offsets can be rewound only through claim/verification.
+- `finish` verifies the full digest and records publication; `status` reconciles
+  uncertain publication. `pause` keeps data; `cancel` never removes completed output
+  or a different staging inode. Unknown outcomes remain explicit.
+
+All methods except `identity` require an open workspace and matching installation.
+File operations also require the task's current execution owner. Paths stay under
+the canonical root through no-follow directory descriptors. Durable v1 manifests
+must remain compatible across 0.9.0 and 0.10.0. Full storage, cleanup, browser and
+external-writer boundaries: [ADR-0008](../docs/adr/0008-durable-human-transfers.md).
+
 ### Optional path discovery (helper 0.7.0)
 
 `capabilities.filesystem.discovery.version = 1` advertises a path-only index,
