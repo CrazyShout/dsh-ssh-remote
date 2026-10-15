@@ -25,6 +25,7 @@ import socket
 import sys
 import threading
 import time
+import importlib.util
 from collections import deque
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,8 +33,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import fcntl
 import termios
 
+# DSH_BUNDLED_EXTENSIONS
+
 PROTOCOL = "1"
-VERSION = "0.7.0"
+VERSION = "0.9.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -55,6 +58,7 @@ MAX_LIST_SCAN = 100_000
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SENSITIVE_ENV_PATTERN = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 PROCESS_RESERVED = object()
+TRANSFER_MODULE_LOCK = threading.Lock()
 
 
 def build_id() -> str:
@@ -425,6 +429,7 @@ class Server:
         self.read_handles: Dict[str, Dict[str, Any]] = {}
         self.write_handles: Dict[str, Dict[str, Any]] = {}
         self.discoveries: Dict[str, Any] = {}
+        self.transfers: Any = None
         self.processes: Dict[str, "ProcessRecord"] = {}
         self.initialized = False; self.resume_supported = resume_supported; self.resume_next = False
         self.client_id: Optional[str] = None; self.detached_at: Optional[float] = None; self.attached = False
@@ -451,6 +456,7 @@ class Server:
                     "sequencedResize": True},
             "session": {"resume": self.resume_supported},
             "environment": {"check": True, "resolveExecutable": True},
+            "transfers": {"version": 1, "maxBytes": 1099511627776, "maxChunkBytes": 262144, "persistent": True},
         }
 
     def workspace(self, params: Dict[str, Any]) -> Workspace:
@@ -598,6 +604,27 @@ class Server:
                     "retentionMs": self.retention_ms, "serverEpoch": self.server_id},
                     "capabilities": self.capabilities(), "limits": protocol_limits()}
         if not self.initialized: raise RpcError("E_NOT_INITIALIZED", "initialize must be called first")
+        if method.startswith('transfer/'):
+            with TRANSFER_MODULE_LOCK:
+                module = sys.modules.get('dsh_transfer')
+                if module is None:
+                    spec = importlib.util.spec_from_file_location('dsh_transfer', os.path.join(os.path.dirname(__file__), 'dsh_transfer.py'))
+                    module = importlib.util.module_from_spec(spec)
+                    # Avoid creating per-platform __pycache__ next to the trusted
+                    # deployment source (or polluting a clean source checkout).
+                    exec(compile(spec.loader.get_source('dsh_transfer'), spec.origin, 'exec'), module.__dict__)
+                    sys.modules['dsh_transfer'] = module
+                with self.resources_lock:
+                    self.ensure_open()
+                    if self.transfers is None: self.transfers = module.DurableTransfers()
+            try:
+                args = dict(p)
+                if method != 'transfer/identity':
+                    ws = self.workspace(p); args['root'] = ws.path; args['access'] = ws.access
+                    if method.split('/')[1] in ('mkdir', 'write', 'finish') or method == 'transfer/open' and p.get('direction') == 'upload':
+                        if ws.access == 'read-only': raise RpcError('E_PERMISSION_DENIED', 'transfer writes require workspace-write')
+                return self.transfers.call(method.split('/')[1], args, self.write_coordinator)
+            except module.TransferError as exc: raise RpcError(exc.code, str(exc))
         if method == "health/ping": return {"nonce": p.get("nonce"), "ok": True}
         if method == "environment/check": return check_environment()
         if method == "environment/resolveExecutable": return resolve_executable(p)
@@ -1140,6 +1167,9 @@ class Server:
             processes = [value for value in self.processes.values() if value is not PROCESS_RESERVED]; self.processes.clear()
             workspaces = list(self.workspaces.values()); self.workspaces.clear()
         errors = []
+        if self.transfers is not None:
+            try: self.transfers.close()
+            except Exception as exc: errors.append(exc)
         for discovery in discoveries:
             try: discovery.close()
             except Exception as exc: errors.append(exc)

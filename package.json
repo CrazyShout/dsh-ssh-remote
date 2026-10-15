@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "DeepSeek Harness SSH remote workspaces with a versioned system-OpenSSH helper runtime and compatibility fallback.",
   "type": "module",
   "main": "lib/index.js",
@@ -17,10 +17,13 @@
     "./typert": "./lib/typert.host.js",
     "./remote": "./lib/typert.remote-client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./transfers": { "types": "./shared/transfers.d.ts" },
+    "./transfer-schema": { "types": "./shared/transfer-schema.d.ts", "default": "./shared/transfer-schema.js" }
   },
   "files": [
     "lib",
+    "shared",
     "helper",
     "docs/adr",
     "docs/ROADMAP.md",
@@ -47,6 +50,7 @@
     }
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@deepseek-ai/schemastery": "^3.18.0",
     "ssh2": "^1.16.0",
     "zod": "^4.4.3"
@@ -114,7 +118,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "vitest run",
-    "test:helper": "PYTHONPYCACHEPREFIX=/tmp/dsh-ssh-remote-pycache python3 -m py_compile helper/dsh_remote_helper.py"
+    "test:helper": "PYTHONPYCACHEPREFIX=/tmp/dsh-ssh-remote-pycache python3 -m py_compile helper/dsh_remote_helper.py helper/dsh_transfer.py"
   },
   "engines": {
     "node": ">=22"

@@ -29,6 +29,7 @@ jobs:
       - name: Verify committed build artifacts
         run: |
           git diff --exit-code
+          git status --short
           test -z "$(git status --porcelain)"
 
   helper-python:
@@ -50,7 +51,7 @@ jobs:
       - name: Install file-discovery test dependency
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run test:helper
-      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts
+      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts test/transfer-helper.integration.test.ts test/transfers.integration.test.ts
 
   macos:
     # Exercise Darwin-only guardian, PTY and ignored-SIGCHLD regressions.
@@ -72,6 +73,7 @@ jobs:
       - name: Verify committed build artifacts
         run: |
           git diff --exit-code
+          git status --short
           test -z "$(git status --porcelain)"
 
   helper-sandbox-required:

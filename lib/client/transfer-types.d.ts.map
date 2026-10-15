@@ -1,0 +1,1 @@
+{"version":3,"file":"transfer-types.d.ts","sourceRoot":"","sources":["../../client/transfer-types.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,0BAA0B,CAAC;AAC/D,mBAAmB,0BAA0B,CAAC;AAC9C,OAAO,QAAQ,kCAAkC,CAAC;IAAE,UAAU,wBAAwB;QAAG,kBAAkB,EAAE,cAAc,CAAA;KAAE;CAAE"}

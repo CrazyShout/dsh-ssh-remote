@@ -1,29 +1,9 @@
-import { z } from 'zod';
 /** Deterministic host-face descriptor discovered through package export ./typert. */
 export declare const TYPERT: {
     package: string;
     face: string;
     schemas: never[];
-    invocations: {
-        id: string;
-        service: string;
-        namespace: string;
-        method: string;
-        invocation: {
-            kind: string;
-        };
-        parameters: unknown[];
-        result: {
-            mode: string;
-            typeSymbol: string;
-            create: () => z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
-        };
-        sourceLocation: {
-            file: string;
-            line: number;
-            column: number;
-        };
-    }[];
+    invocations: any[];
     model: {
         services: never[];
         events: never[];

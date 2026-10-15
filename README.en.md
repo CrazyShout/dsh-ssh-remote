@@ -8,7 +8,30 @@ through the normal **Add Workspace** dialog, and routes standard DSH file,
 shell, and terminal operations to a versioned helper on that host.
 
 See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
-first implementation; file completion, quick open and local port forwarding are available. Transfers are next.
+first implementation; file completion, quick open, local forwarding and resumable human transfers are available.
+
+## 0.9.0: resumable file and folder transfers
+
+Open **文件传输** in an SSH workspace. Select/drop upload files or a directory, or
+enter download paths (one per line). Review the actual manifest and exclusions,
+then start explicitly. Folder downloads go to an authorized browser-local folder.
+
+- **1 TiB per file and batch**, two concurrent files, 10,000 entries; bounded chunks
+  and incremental/full SHA-256. No giant buffers or preallocation; model tools remain at 64 MiB.
+- Pause/resume and durable restart checkpoints. Reload never auto-resumes: reselect
+  upload sources / reauthorize the original download folder. Changed sources,
+  remote identity or staging data are refused. Unknown publication is reconciled first.
+- No overwrite by default; explicit replacement checks the target version. Per-item
+  retries/results; cancellation preserves completed files and cleans only owned partials.
+  Idle partials expire after seven days when accessible; local cleanup still requires permission.
+- Credentials, keys, `.env`, `.git` and build caches are excluded by default. No
+  recursive symlink traversal, silent name changes or truncated successful manifests.
+- Full downloads require File System Access in secure Desktop/Chromium. No ZIP,
+  whole-file Blob or DSH-Host destination fallback. Staging and final output need disk space.
+
+DSH remains `0.2.0-rc.2`. The helper explicitly negotiates durable transfer protocol v1.
+Large numeric boundaries are simulated; small real transfers do not establish TB-scale
+performance. See [ADR-0008](docs/adr/0008-durable-human-transfers.md) for concurrency and cleanup limits.
 
 ## 0.8.0: owned local port forwarding
 

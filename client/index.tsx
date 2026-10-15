@@ -25,6 +25,7 @@ import { mountSessionMarkdownImages } from './markdown-preview.js';
 import { mountRemoteEditor } from './editor.js';
 import { mountQuickOpen } from './quick-open.js';
 import { mountPortForwards } from './port-forwards.js';
+import { mountTransfers } from './transfers.js';
 import type { EditorBridge } from './file-search-types.js';
 
 export const name = 'dsh-ssh-remote-client';
@@ -215,9 +216,11 @@ export async function apply(ctx: ClientContext) {
   const disposeEditor = mountRemoteEditor(ctx, editorBridge);
   const disposeQuickOpen = mountQuickOpen(ctx, editorBridge);
   const disposePorts = mountPortForwards(ctx);
+  const disposeTransfers = mountTransfers(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposeTransfers();
     await disposePorts();
     await disposeQuickOpen();
     await disposeEditor();
@@ -229,6 +232,7 @@ export async function apply(ctx: ClientContext) {
   }
 
   return async () => {
+    await disposeTransfers();
     await disposePorts();
     await disposeQuickOpen();
     await disposeEditor();

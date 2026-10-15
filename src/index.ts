@@ -15,6 +15,7 @@ import { SshRemoteEditor } from './editor.js';
 import { RemoteFileIndex, installRemoteFileReferencesRouter } from './file-index.js';
 import { SshRemoteFiles } from './file-search.js';
 import { PortForwardManager, SshRemotePorts } from './port-forwards.js';
+import { TransferManager, SshRemoteTransfers, mountTransferHttp } from './transfers.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -50,6 +51,8 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const resolveRemotePath = service.resolveRemotePath.bind(service);
   const fileIndex = new RemoteFileIndex(helpers, resolveRemotePath);
   const portForwards = new PortForwardManager(resolveRemotePath);
+  const transfers = new TransferManager(helpers, resolveRemotePath, root => fileIndex.invalidate(root));
+  const disposeTransferHttp = mountTransferHttp(ctx, transfers);
   const referencesFiber = ctx.inject(['fileReferences'], scope => installRemoteFileReferencesRouter(scope.fileReferences, fileIndex, resolveRemotePath));
   const restoreFileSystem = installRemoteFileSystemRouter(
     ctx.fs,
@@ -68,6 +71,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     new SshRemoteEditor(scope, helpers, resolveRemotePath, root => fileIndex.invalidate(root));
     new SshRemoteFiles(scope, fileIndex, helpers, resolveRemotePath);
     new SshRemotePorts(scope, portForwards);
+    new SshRemoteTransfers(scope, transfers);
     scope.on('session/event', (session, event) => {
       if (event.type === 'tool/result' && session.header.cwd) fileIndex.invalidate(session.header.cwd);
     });
@@ -110,11 +114,12 @@ export function apply(ctx: Context, config: LegacySshConfig) {
       workspaceFilesFiber.dispose(),
       editorFiber.dispose(),
       referencesFiber.dispose(),
+      disposeTransferHttp(),
       userSubprocess.dispose(),
     ]);
     restoreSubprocess();
     restoreFileSystem();
-    const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose(), portForwards.dispose()]);
+    const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose(), portForwards.dispose(), transfers.dispose()]);
     const results = [
       ...childResults,
       ...shellResult,

@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const HELPER_REMOTE_ROOT = '.local/share/dsh-remote-helper';
@@ -68,7 +69,17 @@ export function resolveHelperAssetPath(assetPath?: string): string {
 
 export function loadHelperAsset(assetPath?: string): HelperAsset {
   const path = resolveHelperAssetPath(assetPath);
-  const content = readFileSync(path);
+  let content = readFileSync(path);
+  // Keep deployment a single authenticated, content-addressed Python file.
+  // Extension sources are packaged verbatim, and therefore covered by its SHA.
+  if (content.includes('# DSH_BUNDLED_EXTENSIONS')) {
+    const modules = ['dsh_transfer'];
+    const embedded = modules.map(name => {
+      const source = readFileSync(join(dirname(path), `${name}.py`), 'utf8');
+      return `import types as _dsh_types\n_dsh_module = _dsh_types.ModuleType(${JSON.stringify(name)})\nexec(compile(${JSON.stringify(source)}, ${JSON.stringify(`<bundled:${name}>`)}, 'exec'), _dsh_module.__dict__)\nsys.modules[${JSON.stringify(name)}] = _dsh_module\n`;
+    }).join('\n');
+    content = Buffer.from(content.toString('utf8').replace('# DSH_BUNDLED_EXTENSIONS', embedded));
+  }
   const sha256 = createHash('sha256').update(content).digest('hex');
   return {
     path,

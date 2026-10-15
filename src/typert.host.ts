@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { editorInvocations } from './editor-schema.js';
 import { fileSearchInvocations } from './file-search-schema.js';
 import { portForwardInvocations } from './port-forward-schema.js';
+import { transferInvocations } from '../shared/transfer-schema.js';
 
 const string = z.string();
 const helperStatus = z.object({
@@ -101,6 +102,7 @@ export const TYPERT = {
     ...editorInvocations,
     ...fileSearchInvocations,
     ...portForwardInvocations,
+    ...transferInvocations,
   ],
   model: { services: [], events: [], objects: [] },
 };
