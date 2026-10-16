@@ -76,7 +76,7 @@ export function TerminalStatePane({ sessionId, remote, inputActions }: { session
     <small>仅观察新建的受支持 Bash / Zsh。已有终端不会被注入。命令行返回不代表后台任务结束；嵌套 SSH、tmux 内部状态未知。状态不是操作授权，不会自动发送消息或更改 Agent 目录。</small>
     <Button size="sm" onClick={() => refresh.current()}>刷新状态</Button>
     {listError && <div role="alert">状态读取失败，旧结果已标记过期：{listError}</div>}
-    {!rows.length && <p>当前会话尚无终端。请从“远程终端”新建。</p>}
+    {!rows.length && <p>当前会话尚无终端。请使用侧边栏的“新建终端”。</p>}
     {rows.length > 0 && <label>当前会话终端<select aria-label="当前会话终端" value={selected} onChange={event => { setSelected(event.target.value); setPreview(''); insertion.current = undefined; generation.current++; setBusy(false); }}>
       {rows.map(item => <option key={item.id} value={item.id}>{item.title} · {item.alias} · {labels[item.state]}{item.stale ? '（过期）' : ''}</option>)}
     </select></label>}

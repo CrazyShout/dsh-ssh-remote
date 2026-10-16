@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "DeepSeek Harness SSH remote workspaces with a versioned system-OpenSSH helper runtime and compatibility fallback.",
   "type": "module",
   "main": "lib/index.js",

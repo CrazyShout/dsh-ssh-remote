@@ -10,7 +10,26 @@ type InfoResult = {
         message: string;
     };
 };
-type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open' | 'ssh-ports' | 'ssh-transfers' | 'ssh-terminal-state';
+declare const tools: readonly [{
+    readonly kind: "ssh-quick-open";
+    readonly bit: 2;
+    readonly title: "快速打开";
+    readonly description: "查找并预览远端文件";
+    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
+}, {
+    readonly kind: "ssh-transfers";
+    readonly bit: 4;
+    readonly title: "文件传输";
+    readonly description: "上传和下载文件或目录";
+    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
+}, {
+    readonly kind: "ssh-ports";
+    readonly bit: 8;
+    readonly title: "端口转发";
+    readonly description: "访问远端运行的网页服务";
+    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
+}];
+type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {
     workspaceInfo(path: string): Promise<InfoResult>;
     openPanel(kind: PanelKind): void;
@@ -25,7 +44,7 @@ type BlankNativePanelProps = PropsRuntime<'conversation.input.dock'> & NativePan
 export declare function mountNativePanels(ctx: Context): () => Promise<void>;
 /** The official header hides its utilities while a real Session is still blank. */
 export declare function BlankNativePanelActions(props: BlankNativePanelProps): import("react").JSX.Element | null;
-/** Session identity comes from the SDK; SSH identity comes only from the Host's saved mapping. */
-export declare function NativePanelActions({ sessionId, useSessions, workspaceInfo, openPanel, availablePanels, subscribePanels, presentation, }: NativePanelProps): import("react").JSX.Element | null;
+export declare function NativePanelActions(props: NativePanelProps): import("react").JSX.Element | null;
+export declare function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected): import("react").JSX.Element;
 export {};
 //# sourceMappingURL=native-panels.d.ts.map

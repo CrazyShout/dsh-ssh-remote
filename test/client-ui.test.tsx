@@ -3,7 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SshDirectoryFlow, SshRemotePanel } from '../client/index.js';
-import { BlankNativePanelActions, NativePanelActions } from '../client/native-panels.js';
+import { BlankNativePanelActions, NativePanelActions, RemoteToolsPane } from '../client/native-panels.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: element } = await import('react');
@@ -15,6 +15,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
     Input: (props: any) => element('input', props),
     IconFolderCloseRegular: () => null,
     IconPlusOutlineRegular: () => null,
+    IconGlobeOutlineRegular: () => null,
+    IconDownloadOutlineRegular: () => null,
+    IconSearchOutlineRegular: () => null,
+    IconLinkOutlineRegular: () => null,
     Modal: ({ open, title, description, children, footer }: any) => open
       ? element('section', {}, element('h2', {}, title), element('p', {}, description), children, footer)
       : null,
@@ -339,7 +343,7 @@ describe('native remote workspace panel entry points', () => {
       useSessions: (selector: any) => selector({ byId: { 'session-a': { cwd } } }),
       workspaceInfo: vi.fn(async () => ok({ alias: 'gpu', remotePath: '/home/test/project', uri: 'ssh://gpu/home/test/project' })),
       openPanel: vi.fn(),
-      availablePanels: () => 3,
+      availablePanels: () => 15,
       subscribePanels: () => () => {},
     };
   }
@@ -351,9 +355,8 @@ describe('native remote workspace panel entry points', () => {
       useConversation: (selector: any) => selector({ activeTargets: new Set() }),
     };
     await render(BlankNativePanelActions, props);
-    await click('远程文件');
-    await click('远程终端');
-    expect(props.openPanel.mock.calls).toEqual([['files'], ['terminal']]);
+    await click('SSH · gpu');
+    expect(props.openPanel.mock.calls).toEqual([['ssh-tools']]);
     expect(container.querySelector<HTMLElement>('[aria-label^="远程工作区"]')?.style.justifyContent).toBe('flex-end');
   });
 
@@ -373,18 +376,16 @@ describe('native remote workspace panel entry points', () => {
     expect(props.workspaceInfo).not.toHaveBeenCalled();
   });
 
-  it('opens the official tab kinds using verified workspace identity and explains terminal permissions', async () => {
+  it('replaces duplicate header actions with one verified host badge', async () => {
     const props = panelProps();
     await render(NativePanelActions, props);
     expect(props.workspaceInfo).toHaveBeenCalledWith('/real-saved-anchor');
     expect(container.textContent).toContain('SSH · gpu');
-    expect(button('远程文件').title).toContain('gpu:/home/test/project');
-    expect(button('远程文件').title).toContain('快捷键不支持 SSH');
-    expect(container.textContent).not.toContain('本机打开不支持远端');
-    expect(button('远程终端').title).toContain('使用 SSH 账号权限，不受模型沙箱限制');
-    await click('远程文件');
-    await click('远程终端');
-    expect(props.openPanel.mock.calls).toEqual([['files'], ['terminal']]);
+    expect(button('SSH · gpu').title).toBe('gpu:/home/test/project');
+    expect(container.querySelectorAll('button')).toHaveLength(1);
+    expect(container.textContent).not.toMatch(/远程文件|远程终端|远程编辑|快速打开|端口转发|文件传输|终端状态/);
+    await click('SSH · gpu');
+    expect(props.openPanel.mock.calls).toEqual([['ssh-tools']]);
   });
 
   it('never infers remote identity from an anchor-looking local path or title', async () => {
@@ -414,14 +415,56 @@ describe('native remote workspace panel entry points', () => {
     props.availablePanels = () => available;
     props.subscribePanels = (listener: () => void) => { changed = listener; return () => {}; };
     await render(NativePanelActions, props);
-    expect(button('远程文件').disabled).toBe(true);
-    expect(button('远程终端').disabled).toBe(true);
-    expect(button('远程终端').title).toContain('尚未加载');
-    await act(async () => { available = 3; changed(); });
-    expect(button('远程终端').disabled).toBe(false);
+    expect(button('SSH · gpu').disabled).toBe(true);
+    await act(async () => { available = 1; changed(); });
+    expect(button('SSH · gpu').disabled).toBe(false);
     props.openPanel.mockImplementation(() => { throw new Error('会话已切换'); });
-    await click('远程终端');
+    await click('SSH · gpu');
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('会话已切换');
+  });
+
+  it('keeps long host names bounded while retaining the full identity', async () => {
+    const props = panelProps();
+    const alias = 'research-host-'.repeat(20);
+    props.workspaceInfo.mockResolvedValue(ok({ alias, remotePath: '/实验 目录/project', uri: 'ssh://test/project' }));
+    await render(NativePanelActions, props);
+    const badge = container.querySelector('button')!;
+    expect(badge.title).toBe(`${alias}:/实验 目录/project`);
+    expect(badge.style.maxWidth).toBe('160px');
+    expect(badge.querySelector('span')?.style.textOverflow).toBe('ellipsis');
+    await act(async () => badge.click());
+    expect(props.openPanel).toHaveBeenCalledWith('ssh-tools');
+  });
+
+  it('opens existing tools in order and displays a failure at its action', async () => {
+    const props = panelProps();
+    await render(RemoteToolsPane, props);
+    expect(container.textContent).toContain('/home/test/project');
+    const actions = [...container.querySelectorAll<HTMLButtonElement>('button')];
+    expect(actions.map(action => action.getAttribute('aria-label'))).toEqual(['快速打开', '文件传输', '端口转发']);
+    for (const action of actions) await act(async () => action.click());
+    expect(props.openPanel.mock.calls).toEqual([['ssh-quick-open'], ['ssh-transfers'], ['ssh-ports']]);
+    props.openPanel.mockImplementation(() => { throw new Error('会话已切换'); });
+    await act(async () => actions[1].click());
+    expect(actions[1].parentElement?.querySelector('[role="alert"]')?.textContent).toBe('会话已切换');
+  });
+
+  it('removes hub actions immediately on a Session switch and ignores the old lookup', async () => {
+    const props = panelProps();
+    await render(RemoteToolsPane, props);
+    const pending = deferred();
+    const next = { ...panelProps('/other-anchor'), sessionId: 'session-b',
+      useSessions: (selector: any) => selector({ byId: { 'session-b': { cwd: '/other-anchor' } } }),
+      workspaceInfo: vi.fn(() => pending.promise) };
+    await render(RemoteToolsPane, next);
+    expect(container.querySelector('button')).toBeNull();
+    expect(container.textContent).not.toContain('/home/test/project');
+    const local = panelProps('/local');
+    local.workspaceInfo.mockResolvedValue(ok(null) as any);
+    await render(RemoteToolsPane, local);
+    await act(async () => pending.resolve(ok({ alias: 'old', remotePath: '/old', uri: 'ssh://old/old' })));
+    expect(container.querySelector('button')).toBeNull();
+    expect(container.textContent).toContain('当前会话没有可用的 SSH 工作区');
   });
 
   it('does not open a remote panel after a timed-out identity lookup or without a cwd', async () => {
