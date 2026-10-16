@@ -6,7 +6,7 @@ import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-ui-conversati
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type {} from '@deepseek-ai/dsh-client-ui-session/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client';
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import { Button, IconDownloadOutlineRegular, IconGlobeOutlineRegular, IconLinkOutlineRegular, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
 
 type InfoResult =
@@ -17,7 +17,13 @@ interface WorkspaceInfoRemote {
   workspaceInfo?(path: string): Promise<InfoResult>;
 }
 
-type PanelKind = 'files' | 'terminal' | 'ssh-editor' | 'ssh-quick-open' | 'ssh-ports' | 'ssh-transfers' | 'ssh-terminal-state';
+const TOOLS_ID = 'dsh-ssh-remote.tools';
+const tools = [
+  { kind: 'ssh-quick-open', bit: 2, title: '快速打开', description: '查找并预览远端文件', icon: IconSearchOutlineRegular },
+  { kind: 'ssh-transfers', bit: 4, title: '文件传输', description: '上传和下载文件或目录', icon: IconDownloadOutlineRegular },
+  { kind: 'ssh-ports', bit: 8, title: '端口转发', description: '访问远端运行的网页服务', icon: IconLinkOutlineRegular },
+] as const;
+type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
@@ -32,7 +38,7 @@ type BlankNativePanelProps = PropsRuntime<'conversation.input.dock'> & NativePan
 
 /** Additive optional integration: no sidebar/conversation composition is required at boot. */
 export function mountNativePanels(ctx: Context): () => Promise<void> {
-  const fiber = ctx.inject(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs'], scope => {
+  const fiber = ctx.inject(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions'], scope => {
     const ssh = scope.remote.sshRemote as WorkspaceInfoRemote;
     // Older plugin backends can still serve settings and directory picking.
     if (typeof ssh.workspaceInfo !== 'function') return () => {};
@@ -46,19 +52,46 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
             throw new Error('会话已切换，请在当前会话中重新打开。');
           }
           if (scope.sidebarRightTabs.get(kind) === undefined) {
-            throw new Error(kind === 'files' ? '文件面板尚未加载。' : '终端面板尚未加载。');
+            throw new Error('工具尚未加载，请稍后再试。');
           }
           scope.sidebarRight.openTab(kind);
         },
-        availablePanels: () => (scope.sidebarRightTabs.get('files') === undefined ? 0 : 1)
-          | (scope.sidebarRightTabs.get('terminal') === undefined ? 0 : 2)
-          | (scope.sidebarRightTabs.get('ssh-editor') === undefined ? 0 : 4)
-          | (scope.sidebarRightTabs.get('ssh-quick-open') === undefined ? 0 : 8)
-          | (scope.sidebarRightTabs.get('ssh-ports') === undefined ? 0 : 16)
-          | (scope.sidebarRightTabs.get('ssh-transfers') === undefined ? 0 : 32)
-          | (scope.sidebarRightTabs.get('ssh-terminal-state') === undefined ? 0 : 64),
+        availablePanels: () => tools.reduce((bits, tool) => bits | (scope.sidebarRightTabs.get(tool.kind) ? tool.bit : 0),
+          scope.sidebarRightTabs.get('ssh-tools') ? 1 : 0),
         subscribePanels: (listener: () => void) => scope.sidebarRightTabs.subscribe(listener),
     });
+    let identity = '';
+    let generation = 0;
+    let unregister: (() => void) | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const updateGuide = () => {
+      const sessionId = scope.sidebarRight.mounted.getSnapshot();
+      const cwd = sessionId ? scope.sessions.list.getSnapshot().byId[sessionId]?.cwd : undefined;
+      const next = `${sessionId ?? ''}\0${cwd ?? ''}`;
+      if (next === identity) return;
+      identity = next;
+      const revision = ++generation;
+      clearTimeout(timeout);
+      unregister?.(); unregister = undefined;
+      if (!sessionId || !cwd) return;
+      timeout = setTimeout(() => { if (revision === generation) generation++; }, 10_000);
+      void Promise.resolve().then(() => workspaceInfo(cwd)).then(result => {
+        if (revision !== generation) return;
+        clearTimeout(timeout);
+        if (result.ok && result.value) {
+          unregister = scope.sidebarRightTabs.register({
+            id: TOOLS_ID, kind: 'ssh-tools', title: () => '远程工具',
+            guide: [{ id: TOOLS_ID, order: 40, title: () => '远程工具', icon: IconGlobeOutlineRegular }],
+          });
+        }
+      }, () => { if (revision === generation) clearTimeout(timeout); });
+    };
+    const stopMounted = scope.sidebarRight.mounted.subscribe(updateGuide);
+    const stopSessions = scope.sessions.list.subscribe(updateGuide);
+    updateGuide();
+    const body = scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+      name: 'sidebar.right.pane.tab', key: TOOLS_ID, inject,
+    }, RemoteToolsPane));
     const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
       name: 'conversation.session.header.utilities',
       id: 'dsh-ssh-remote.native-panels',
@@ -71,7 +104,10 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
       order: 40,
       inject,
     }, BlankNativePanelActions));
-    return () => { blank(); header(); };
+    return () => {
+      generation++; clearTimeout(timeout); stopSessions(); stopMounted();
+      blank(); header(); body(); unregister?.();
+    };
   });
   return async () => { await fiber.dispose(); };
 }
@@ -84,21 +120,17 @@ export function BlankNativePanelActions(props: BlankNativePanelProps) {
 }
 
 /** Session identity comes from the SDK; SSH identity comes only from the Host's saved mapping. */
-export function NativePanelActions({
-  sessionId, useSessions, workspaceInfo, openPanel, availablePanels, subscribePanels, presentation = 'header',
-}: NativePanelProps) {
+function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo'>) {
   const cwd: string | undefined = useSessions((snapshot: SessionListState) => snapshot.byId[sessionId]?.cwd);
   const key = `${sessionId}\0${cwd ?? ''}`;
   const [resolved, setResolved] = useState<{ key: string; info: RemoteWorkspaceInfo | null } | null>(null);
-  const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
-  const panels = useSyncExternalStore(subscribePanels, availablePanels, availablePanels);
 
   useEffect(() => {
     let active = true;
     if (cwd === undefined || cwd === '') return;
     // The lookup reads a local mapping only. Bound a wedged Remote, and never
     // infer SSH identity from a title, basename, URI-looking string or prefix.
-    const timeout = setTimeout(() => { active = false; }, 10_000);
+    const timeout = setTimeout(() => { active = false; setResolved({ key, info: null }); }, 10_000);
     void Promise.resolve().then(() => workspaceInfo(cwd)).then(result => {
       if (active) setResolved({ key, info: result.ok ? result.value : null });
     }, () => {
@@ -107,9 +139,15 @@ export function NativePanelActions({
     return () => { active = false; clearTimeout(timeout); };
   }, [key, cwd, workspaceInfo]);
 
-  if (resolved?.key !== key || resolved.info === null) return null;
-  const info = resolved.info;
-  const identity = `${info.alias}:${info.remotePath}`;
+  return { key, info: resolved?.key === key ? resolved.info : null, pending: Boolean(cwd) && resolved?.key !== key };
+}
+
+export function NativePanelActions(props: NativePanelProps) {
+  const { openPanel, availablePanels, subscribePanels, presentation = 'header' } = props;
+  const { key, info } = useRemoteWorkspace(props);
+  const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
+  const panels = useSyncExternalStore(subscribePanels, availablePanels, availablePanels);
+  if (!info) return null;
   const open = (kind: PanelKind) => {
     setFailure(null);
     try { openPanel(kind); }
@@ -117,32 +155,55 @@ export function NativePanelActions({
   };
 
   return (
-    <div aria-label={`远程工作区 ${identity}`} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, minWidth: 0, ...(presentation === 'dock' ? { justifyContent: 'flex-end', marginBottom: 8 } : {}) }}>
-      <span title={identity} style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        SSH · {info.alias}
-      </span>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={(panels & 1) === 0}
-        title={(panels & 1) === 0 ? 'DSH 文件面板尚未加载。' : `浏览 ${identity}，文件预览为只读。本机打开 / Finder 及其快捷键不支持 SSH，可能打开本机同名路径。`}
-        onClick={() => open('files')}
-      >远程文件</Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={(panels & 2) === 0}
-        title={(panels & 2) === 0 ? 'DSH 终端面板尚未加载。' : `在 ${identity} 打开交互终端；使用 SSH 账号权限，不受模型沙箱限制。`}
-        onClick={() => open('terminal')}
-      >远程终端</Button>
-      {(panels & 4) !== 0 && <Button size="sm" variant="ghost" title={`编辑 ${identity} 内的 UTF-8 文本，手动保存并检查版本冲突。`}
-        onClick={() => open('ssh-editor')}>远程编辑</Button>}
-      {(panels & 8) !== 0 && <Button size="sm" variant="ghost" title="搜索远程工作区文件；默认只读预览。"
-        onClick={() => open('ssh-quick-open')}>远程快速打开</Button>}
-      {(panels & 16) !== 0 && <Button size="sm" variant="ghost" title="将远端回环服务映射到 DSH 宿主的回环端口。" onClick={() => open('ssh-ports')}>端口转发</Button>}
-      {(panels & 32) !== 0 && <Button size="sm" variant="ghost" title="可恢复的文件和目录传输，单文件 / 批次最多 1 TiB。" onClick={() => open('ssh-transfers')}>文件传输</Button>}
-      {(panels & 64) !== 0 && <Button size="sm" variant="ghost" title="查看人工终端目录、命令返回和退出码；预览后主动插入草稿。" onClick={() => open('ssh-terminal-state')}>终端状态</Button>}
+    <div aria-label={`远程工作区 ${info.alias}:${info.remotePath}`} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, ...(presentation === 'dock' ? { justifyContent: 'flex-end', marginBottom: 8 } : {}) }}>
+      <Button size="sm" variant="ghost" disabled={(panels & 1) === 0}
+        aria-label={`远程工具 · ${info.alias}`} title={`${info.alias}:${info.remotePath}`}
+        style={{ minWidth: 0, maxWidth: 160, color: 'var(--dsw-alias-label-secondary)' }}
+        onClick={() => open('ssh-tools')}>
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>SSH · {info.alias}</span>
+      </Button>
       {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
     </div>
   );
+}
+
+export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected) {
+  const { key, info, pending } = useRemoteWorkspace(props);
+  const [failure, setFailure] = useState<{ key: string; kind: PanelKind; message: string } | null>(null);
+  const panels = useSyncExternalStore(props.subscribePanels, props.availablePanels, props.availablePanels);
+  const open = (kind: PanelKind) => {
+    setFailure(null);
+    try { props.openPanel(kind); }
+    catch (error) { setFailure({ key, kind, message: error instanceof Error ? error.message : String(error) }); }
+  };
+  return <section aria-label="远程工具" style={{ containerType: 'inline-size', containerName: 'dsh-ssh-tools', height: '100%', minWidth: 0, overflow: 'auto' }}>
+    <style>{'.dsh-ssh-tools-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}@container dsh-ssh-tools (min-width:520px){.dsh-ssh-tools-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}'}</style>
+    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {info ? <>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>远程工具</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 }}>
+            <span aria-hidden="true" style={{ display: 'flex', flexShrink: 0 }}><IconGlobeOutlineRegular size={16} /></span>
+            <span title={info.alias} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>SSH · {info.alias}</span>
+          </div>
+          <div title={info.remotePath} style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' }}>{info.remotePath}</div>
+        </div>
+        <div className="dsh-ssh-tools-grid">
+          {tools.map(tool => <div key={tool.kind} style={{ minWidth: 0 }}>
+            <Button variant="outline" aria-label={tool.title} disabled={(panels & tool.bit) === 0}
+              title={(panels & tool.bit) === 0 ? '工具尚未加载' : undefined}
+              onClick={() => open(tool.kind)}
+              style={{ width: '100%', height: 'auto', minHeight: 76, padding: 14, gap: 12, justifyContent: 'flex-start', textAlign: 'left', whiteSpace: 'normal' }}>
+              <span aria-hidden="true" style={{ display: 'flex', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' }}><tool.icon size={20} /></span>
+              <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{tool.title}</span>
+                <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-secondary)' }}>{tool.description}</span>
+              </span>
+            </Button>
+            {failure?.key === key && failure.kind === tool.kind && <p role="alert" style={{ fontSize: 12, color: 'var(--dsw-alias-label-error)' }}>{failure.message}</p>}
+          </div>)}
+        </div>
+      </> : <p role="status" style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>{pending ? '正在读取工作区…' : '当前会话没有可用的 SSH 工作区。'}</p>}
+    </div>
+  </section>;
 }

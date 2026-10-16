@@ -11,6 +11,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Button: () => null,
   IconFolderCloseRegular: () => null,
   IconPlusOutlineRegular: () => null,
+  IconGlobeOutlineRegular: () => null,
+  IconDownloadOutlineRegular: () => null,
+  IconSearchOutlineRegular: () => null,
+  IconLinkOutlineRegular: () => null,
   Input: () => null,
   Modal: () => null,
   Pill: () => null,
@@ -121,7 +125,7 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -153,7 +157,7 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -177,28 +181,65 @@ describe('client lifecycle', () => {
         inject: vi.fn((_slot, callback) => callback()),
         register: vi.fn(() => unregister),
       },
-      sidebarRight: { mounted: { getSnapshot: () => selected }, openTab: vi.fn() },
-      sidebarRightTabs: { get: vi.fn(() => ({})), subscribe: vi.fn(() => () => {}) },
+      sidebarRight: { mounted: { getSnapshot: () => selected, subscribe: vi.fn(() => () => {}) }, openTab: vi.fn() },
+      sidebarRightTabs: { get: vi.fn(() => ({})), subscribe: vi.fn(() => () => {}), register: vi.fn(() => () => {}) },
+      sessions: { list: { getSnapshot: () => ({ byId: {} }), subscribe: vi.fn(() => () => {}) } },
     };
     const ctx = {
       inject: vi.fn((dependencies, callback) => {
-        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs']);
+        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions']);
         return { dispose: callback(scope) };
       }),
     };
     const dispose = mountNativePanels(ctx as never);
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.session.header.utilities', expect.any(Function));
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.input.dock', expect.any(Function));
-    const options = (scope.slots.register.mock.calls[0] as any)[0];
+    const options = scope.slots.register.mock.calls.map((call: any) => call[0]).find((options: any) => options.name === 'conversation.session.header.utilities');
     expect(options).toMatchObject({ name: 'conversation.session.header.utilities', id: 'dsh-ssh-remote.native-panels' });
     const face = options.inject('session-a');
-    face.openPanel('files');
-    face.openPanel('terminal');
-    expect(scope.sidebarRight.openTab.mock.calls).toEqual([['files'], ['terminal']]);
+    face.openPanel('ssh-tools');
+    face.openPanel('ssh-quick-open');
+    expect(scope.sidebarRight.openTab.mock.calls).toEqual([['ssh-tools'], ['ssh-quick-open']]);
     selected = 'session-b';
-    expect(() => face.openPanel('terminal')).toThrow('会话已切换');
+    expect(() => face.openPanel('ssh-tools')).toThrow('会话已切换');
     await dispose();
-    expect(unregister).toHaveBeenCalledTimes(2);
+    expect(unregister).toHaveBeenCalledTimes(3);
+  });
+
+  it('contributes one guide card only for the current verified SSH Session and releases subscriptions', async () => {
+    let selected = 'remote';
+    const listeners = new Set<() => void>();
+    const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
+    const tabs = new Map<string, any>();
+    let resolveOld!: (value: unknown) => void;
+    const old = new Promise(resolve => { resolveOld = resolve; });
+    const workspaceInfo = vi.fn(async (path: string) => path === '/slow' ? old : ({ ok: true, value: path === '/local' ? null : { alias: 'gpu', remotePath: '/project' } }));
+    const scope = {
+      remote: { sshRemote: { workspaceInfo } },
+      sidebarRight: { mounted: { getSnapshot: () => selected, subscribe }, openTab: vi.fn() },
+      sessions: { list: { getSnapshot: () => ({ byId: { remote: { cwd: '/anchor' }, local: { cwd: '/local' }, slow: { cwd: '/slow' } } }), subscribe } },
+      sidebarRightTabs: { get: (kind: string) => tabs.get(kind), subscribe: () => () => {},
+        register: vi.fn(definition => { tabs.set(definition.kind, definition); return () => tabs.delete(definition.kind); }) },
+      slots: { inject: (_name: string, callback: () => unknown) => callback(), register: () => () => {} },
+    };
+    const dispose = mountNativePanels({ inject: (_dependencies: string[], callback: (scope: unknown) => unknown) => ({ dispose: callback(scope) }) } as never);
+    await vi.waitFor(() => expect(tabs.get('ssh-tools')?.guide).toHaveLength(1));
+    expect(tabs.get('ssh-tools').guide[0].title()).toBe('远程工具');
+    expect(tabs.size).toBe(1);
+    selected = 'local'; listeners.forEach(listener => listener());
+    expect(tabs.size).toBe(0);
+    await vi.waitFor(() => expect(workspaceInfo).toHaveBeenCalledWith('/local'));
+    selected = 'slow'; listeners.forEach(listener => listener());
+    await vi.waitFor(() => expect(workspaceInfo).toHaveBeenCalledWith('/slow'));
+    selected = 'local'; listeners.forEach(listener => listener());
+    resolveOld({ ok: true, value: { alias: 'old', remotePath: '/old' } });
+    await Promise.resolve(); await Promise.resolve();
+    expect(tabs.size).toBe(0);
+    selected = 'remote'; listeners.forEach(listener => listener());
+    await vi.waitFor(() => expect(tabs.size).toBe(1));
+    await dispose();
+    expect(listeners.size).toBe(0);
+    expect(tabs.size).toBe(0);
   });
 
   it('does not await missing native-panel modules or register against an older backend', async () => {

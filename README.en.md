@@ -10,9 +10,23 @@ shell, and terminal operations to a versioned helper on that host.
 See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
 first implementation; file completion, quick open, local forwarding and resumable human transfers are available.
 
+## 0.10.1: compact remote tools
+
+The header now shows a single **SSH · host** badge. Click it to open **远程工具**
+(Remote tools); blank Sessions show the same badge above the composer. Hover for
+the full remote path. One Remote tools card also joins the official sidebar start
+page, only for a verified SSH workspace. It opens **Quick open**, **File transfers**
+and **Port forwarding** in that order, with a single column in narrow panes.
+
+Use the official **工作区文件** (Workspace files) and **新建终端** (New terminal)
+entries. Editing remains in the file-preview tab menu, and terminal observations
+remain in the terminal tab menu. Existing tab IDs, shortcuts and draft protection
+are preserved. DSH stays at `0.2.0-rc.2`; the helper stays at `0.10.0` with the same
+content hash, so this client-only update needs no remote helper redeployment.
+
 ## 0.10.0: human terminal observations and context
 
-Open **终端状态**, or **查看 SSH 终端状态** in the native terminal tab menu.
+Open **查看 SSH 终端状态** in the native terminal tab menu.
 New default interactive Bash 4.4+ / Zsh 5.8+ terminals expose cwd, command start/return,
 exit status and duration. Existing terminals are not injected; unsupported shells,
 custom arguments and incompatible hooks remain raw with an explicit reason.
@@ -28,7 +42,7 @@ custom arguments and incompatible hooks remain raw with an explicit reason.
 
 ## 0.9.0: resumable file and folder transfers
 
-Open **文件传输** in an SSH workspace. Select/drop upload files or a directory, or
+Open **远程工具 → 文件传输** in an SSH workspace. Select/drop upload files or a directory, or
 enter download paths (one per line). Review the actual manifest and exclusions,
 then start explicitly. Folder downloads go to an authorized browser-local folder.
 
@@ -79,7 +93,7 @@ redeployment for this feature. See [ADR-0007](docs/adr/0007-owned-port-forwardin
 
 Native `@` completion uses a shared, session-authorized remote path index. Local
 completion stays with the original provider; remote failures never fall back to
-local paths. **远程快速打开** searches the same index: click a file for a native
+local paths. **远程工具 → 快速打开** searches the same index: click a file for a native
 read-only preview, or **编辑** to reuse the protected editor buffer. A configurable
 shortcut command is registered without a default binding.
 
@@ -97,9 +111,9 @@ error, not an automatic installation. DSH remains pinned to `0.2.0-rc.2`.
 
 ## 0.6.0: manual remote text editing
 
-Use **远程编辑** (Remote edit) in an SSH workspace, or **编辑远程文本** in a file
-preview tab menu. Enter a workspace-relative or full remote path. Native read-only
-previews and local workspaces remain unchanged.
+Use **编辑远程文本** in an SSH file-preview tab menu, or **编辑** beside a quick-open
+result. The editor also accepts workspace-relative or full remote paths. Native
+previews remain read-only.
 
 - Manual save and Cmd/Ctrl-S, dirty indicators, and in-page reload/close confirmation.
   Each buffer belongs to its original Session, host and path; Session selection never retargets a save.
@@ -163,10 +177,9 @@ identity boundaries below.
 
 ## Native remote file and user-terminal panels (since 0.5.0)
 
-Open an SSH workspace session and select **Remote files** or **Remote terminal**
-(currently labelled 远程文件 / 远程终端). Shortcuts appear above the input for an
-empty session and in the conversation header after chatting. No model prompt is
-required; both open DSH's native right sidebar.
+Open an SSH workspace Session and select the official **工作区文件** (Workspace files)
+or **新建终端** (New terminal) on the sidebar start page. The plugin routes these
+native panels to the current remote workspace. No model prompt is required.
 
 - Browse directories lazily and use native read-only file previews, including
   Unicode/space paths. Each directory is bounded to 1,000 entries with explicit

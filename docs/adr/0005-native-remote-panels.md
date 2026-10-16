@@ -11,9 +11,15 @@ leaves shell discovery on the local OS and loses helper lifecycle guarantees.
 
 ## Decision
 
-Reuse DSH's existing files, document preview and terminal sidebar tabs. Add
-shortcuts through public list slots (`conversation.session.header.utilities`
-and, for blank sessions, `conversation.input.dock`). Never replace single-slot
+Reuse DSH's existing files, document preview and terminal sidebar tabs. Since
+0.10.1, public list slots (`conversation.session.header.utilities` and, for blank
+sessions, `conversation.input.dock`) show only a host badge opening `ssh-tools`.
+The public tab registry contributes one guide card while the mounted Session has
+a verified SSH mapping; public Session and mounted subscriptions remove it on
+local Sessions and reject late mapping responses. The hub opens the existing
+quick-open, transfer and forwarding tabs. File editing and terminal observations
+remain in their native tab menus. Existing tab kinds and saved layouts are retained.
+Never replace single-slot
 owners, inspect the DOM, create a second terminal API or ship another xterm.
 `workspaceInfo(cwd)` resolves only persisted SSH anchors/descendants, without
 opening a connection. Local directories and lookalike names return null.
