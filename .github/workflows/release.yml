@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to release from main
+        required: true
+        default: '0.10.2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Validate version and keep published tags immutable
+        run: |
+          node -e 'const p=require("./package.json"); if(!/^\d+\.\d+\.\d+$/.test(process.env.RELEASE_VERSION)||p.version!==process.env.RELEASE_VERSION)process.exit(1)'
+          if git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
+            echo 'This version already has a tag. Publish a new version instead.'
+            exit 1
+          fi
+          test -f "docs/releases/$RELEASE_VERSION.md"
+      - run: npm run build
+      - run: git diff --exit-code
+      - name: Pack and create draft
+        run: |
+          npm run release:pack -- --version "$RELEASE_VERSION" --out "$RUNNER_TEMP/release"
+          gh release create "v$RELEASE_VERSION" --draft --target "$GITHUB_SHA" --title "v$RELEASE_VERSION — Easier installation" --notes-file "docs/releases/$RELEASE_VERSION.md" "$RUNNER_TEMP/release/dsh-ssh-remote-$RELEASE_VERSION.tgz" "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/release/release-manifest.json"

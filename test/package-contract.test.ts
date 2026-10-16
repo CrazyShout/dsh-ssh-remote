@@ -14,7 +14,7 @@ function exportTargets(value: unknown): string[] {
   return [];
 }
 
-describe('Git installation package contract', () => {
+describe('release and Git installation package contract', () => {
   let cache: string;
   let packed: Set<string>;
 
@@ -37,7 +37,8 @@ describe('Git installation package contract', () => {
       manifest.main, manifest.types,
       ...exportTargets(manifest.exports),
       manifest.dsh.bundle.patch.replace(/^\.\//, ''),
-      'helper/dsh_remote_helper.py', 'helper/PROTOCOL.md',
+      'helper/dsh_remote_helper.py', 'helper/dsh_transfer.py', 'helper/dsh_terminal_state.py', 'helper/PROTOCOL.md',
+      'CHANGELOG.md', 'docs/TROUBLESHOOTING.md', 'docs/RELEASING.md',
     ];
     for (const path of required) {
       expect(packed.has(path), `Missing packed runtime asset: ${path}`).toBe(true);
