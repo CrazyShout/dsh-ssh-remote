@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "DeepSeek Harness SSH remote workspaces with a versioned system-OpenSSH helper runtime and compatibility fallback.",
   "type": "module",
   "main": "lib/index.js",
@@ -27,8 +27,8 @@
     "lib",
     "shared",
     "helper",
-    "docs/adr",
-    "docs/ROADMAP.md",
+    "docs",
+    "CHANGELOG.md",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
@@ -120,6 +120,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "vitest run",
+    "release:pack": "node scripts/pack-release.mjs",
+    "test:install": "node scripts/smoke-package-install.mjs",
     "test:helper": "PYTHONPYCACHEPREFIX=/tmp/dsh-ssh-remote-pycache python3 -m py_compile helper/dsh_remote_helper.py helper/dsh_transfer.py helper/dsh_terminal_state.py"
   },
   "engines": {

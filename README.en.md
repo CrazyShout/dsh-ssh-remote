@@ -1,488 +1,118 @@
 # dsh-ssh-remote
 
-English | [中文](README.md)
+English | [中文](README.md) · [Download 0.10.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.10.2) · [Changelog](CHANGELOG.md)
 
-Codex-style SSH workspaces for DeepSeek Harness Web / Desktop. The plugin discovers concrete
-hosts from your local OpenSSH configuration, lets you add a remote directory
-through the normal **Add Workspace** dialog, and routes standard DSH file,
-shell, and terminal operations to a versioned helper on that host.
+SSH development workspaces for DeepSeek Harness: browse and edit remote files, reference code, open terminals, forward ports, and transfer files. Uses your existing OpenSSH configuration and DSH's native file and terminal panels.
 
-See the [development roadmap](docs/ROADMAP.md) (Chinese). Text editing now has a
-first implementation; file completion, quick open, local forwarding and resumable human transfers are available.
-
-## 0.10.1: compact remote tools
-
-The header now shows a single **SSH · host** badge. Click it to open **远程工具**
-(Remote tools); blank Sessions show the same badge above the composer. Hover for
-the full remote path. One Remote tools card also joins the official sidebar start
-page, only for a verified SSH workspace. It opens **Quick open**, **File transfers**
-and **Port forwarding** in that order, with a single column in narrow panes.
-
-Use the official **工作区文件** (Workspace files) and **新建终端** (New terminal)
-entries. Editing remains in the file-preview tab menu, and terminal observations
-remain in the terminal tab menu. Existing tab IDs, shortcuts and draft protection
-are preserved. DSH stays at `0.2.0-rc.2`; the helper stays at `0.10.0` with the same
-content hash, so this client-only update needs no remote helper redeployment.
-
-## 0.10.0: human terminal observations and context
-
-Open **查看 SSH 终端状态** in the native terminal tab menu.
-New default interactive Bash 4.4+ / Zsh 5.8+ terminals expose cwd, command start/return,
-exit status and duration. Existing terminals are not injected; unsupported shells,
-custom arguments and incompatible hooks remain raw with an explicit reason.
-
-- No user rc edits or changes to official input ownership, screen recovery or lifecycle.
-- Disconnects mark observations stale; missing events remain unknown. Prompt return
-  does not mean background jobs ended; nested SSH/tmux internal state is unknown.
-- Preview and trim context before explicit insertion into the original Session draft.
-  A changed draft refuses insertion, with a copy alternative. Nothing is auto-submitted.
-- Up to 64 KiB volatile Host context per terminal; no plugin persistence or automatic
-  Agent cwd changes. Observations are not security authority.
-- Durable M3 transfer manifest v1 remains compatible. See [ADR-0009](docs/adr/0009-observed-human-terminal-state.md).
-
-## 0.9.0: resumable file and folder transfers
-
-Open **远程工具 → 文件传输** in an SSH workspace. Select/drop upload files or a directory, or
-enter download paths (one per line). Review the actual manifest and exclusions,
-then start explicitly. Folder downloads go to an authorized browser-local folder.
-
-- **1 TiB per file and batch**, two concurrent files, 10,000 entries; bounded chunks
-  and incremental/full SHA-256. No giant buffers or preallocation; model tools remain at 64 MiB.
-- Pause/resume and durable restart checkpoints. Reload never auto-resumes: reselect
-  upload sources / reauthorize the original download folder. Changed sources,
-  remote identity or staging data are refused. Unknown publication is reconciled first.
-- No overwrite by default; explicit replacement checks the target version. Per-item
-  retries/results; cancellation preserves completed files and cleans only owned partials.
-  Idle partials expire after seven days when accessible; local cleanup still requires permission.
-- Credentials, keys, `.env`, `.git` and build caches are excluded by default. No
-  recursive symlink traversal, silent name changes or truncated successful manifests.
-- Full downloads require File System Access in secure Desktop/Chromium. No ZIP,
-  whole-file Blob or DSH-Host destination fallback. Staging and final output need disk space.
-
-DSH remains `0.2.0-rc.2`. The helper explicitly negotiates durable transfer protocol v1.
-Large numeric boundaries are simulated; small real transfers do not establish TB-scale
-performance. See [ADR-0008](docs/adr/0008-durable-human-transfers.md) for concurrency and cleanup limits.
-
-## 0.8.0: owned local port forwarding
-
-Click **端口转发** in an SSH workspace. Enter an existing remote service port
-(for example `6006`) and an unused Host port (for example `16006`), then create.
-Both the DSH Host listener and SSH target are fixed to `127.0.0.1`. The plugin
-does not launch your remote service, scan ports, edit SSH configuration or widen model permissions.
-
-- Listener establishment and remote TCP reachability are separate facts. The latter
-  is not HTTP health or proof of server forwarding permission. Connection refusal
-  diagnostics are retained; the optional TCP probe requires existing Python 3.
-- Open, copy address, probe, stop and explicit recreate actions. HTTP/HTTPS selects
-  the browser URL, not a TLS wrapper. Web requires confirmation that the browser
-  runs on the displayed DSH Host, even for a localhost DSH URL (which can itself be tunneled).
-- An independent OpenSSH master and private socket per forward. Existing alias
-  authentication/jump-host/fingerprint policy is retained; inherited forwarding rules
-  are suppressed. User-owned SSH masters and occupied ports are never taken over.
-- Closing a pane or switching Sessions preserves the forward. Stop, plugin disposal
-  and Host exit clean owned children; a guardian also handles parent IPC loss.
-  Unknown creation results keep their identity and can be stopped, not blindly retried.
-  Disconnections never auto-reconnect. Session-authorized access is workspace-scoped.
-- Eight concurrent forwards, macOS/Linux Host only. No saved forwards, credential URLs,
-  arbitrary target addresses, reverse forwarding or SOCKS in this release.
-
-DSH stays at `0.2.0-rc.2`; the unchanged remote helper remains `0.7.0` without
-redeployment for this feature. See [ADR-0007](docs/adr/0007-owned-port-forwarding.md).
-
-## 0.7.0: remote file references and quick open
-
-Native `@` completion uses a shared, session-authorized remote path index. Local
-completion stays with the original provider; remote failures never fall back to
-local paths. **远程工具 → 快速打开** searches the same index: click a file for a native
-read-only preview, or **编辑** to reuse the protected editor buffer. A configurable
-shortcut command is registered without a default binding.
-
-Git uses tracked plus non-ignored untracked files; other directories require rg.
-The optional include-ignored checkbox affects quick open only. Scans exclude
-symlinks and `.git`, and do not automatically recurse into submodules. The native
-file tree and full-path preview remain available. Unsafe mention/address names
-(quotes, backslashes or control characters) are explicitly refused, never rewritten.
-
-Limits: 50,000 paths / 8 MiB per index, 15 s scan deadline, at most two builds
-globally and one per workspace; eight host caches / 32 MiB, stale after 60 s.
-Saves, tool results and explicit refresh invalidate snapshots. Incomplete/error/
-stale states are visible; failed rebuilds preserve old data. Missing Git/rg is an
-error, not an automatic installation. DSH remains pinned to `0.2.0-rc.2`.
-
-## 0.6.0: manual remote text editing
-
-Use **编辑远程文本** in an SSH file-preview tab menu, or **编辑** beside a quick-open
-result. The editor also accepts workspace-relative or full remote paths. Native
-previews remain read-only.
-
-- Manual save and Cmd/Ctrl-S, dirty indicators, and in-page reload/close confirmation.
-  Each buffer belongs to its original Session, host and path; Session selection never retargets a save.
-- Complete regular UTF-8 files up to 256 KiB, preserving BOM, LF/CRLF and final newlines.
-  Binary data, invalid UTF-8, mixed/lone-CR newlines, symlinks and outside-workspace paths are refused.
-- Strong-version guarded atomic replacement. Conflicts preserve the draft; inspect the
-  current remote text or explicitly reload. Arbitrary external writers remain outside atomic CAS guarantees.
-- Lost acknowledgements become **result unknown**, with explicit receipt/content verification,
-  not blind resubmission or a claim of cancellation. Unchanged content does not prove cancellation.
-- Human writes use SSH account permissions within the owning workspace, without changing model policy.
-  At most 256 receipts are retained; settled receipts expire after 24 hours, uncertain ones do not.
-  Admission fails explicitly at capacity. Client buffers are capped at 32 Sessions.
-- Drafts stay in the client plugin instance, including across tab closes, without disk storage or model submission.
-  Save before page refresh, app restart, or plugin reload/disable: these discard in-memory drafts.
-
-Syntax highlighting, new files/Save As, restart recovery and file completion/quick open are not included.
-Native local-open/Finder actions are still not Remote-SSH editor actions. PR #18 also routes
-raw remote Bash workdirs by their workspace identity without weakening sandbox containment.
-
-## 0.5.2: M0 concurrency and lifecycle fixes
-
-- Reads and retirement share a handle lifecycle lock. Closed handles return
-  neither cached data nor bytes from a reused FD. Workspace root duplication
-  also coordinates with close; already-borrowed FDs can finish their operation.
-- All clients of one helper daemon share publication locks for inline and
-  chunked writes. Competing saves with the same old version produce one success
-  and one `E_STALE_VERSION`; unrelated files remain concurrent. Other daemons,
-  other helper builds, and external editors are outside this guarantee.
-- Workspace allocation reserves its identity and capacity before opening a
-  directory. Bounded cancellation records prevent late publication, including
-  during session shutdown; pending allocations keep their cancellation pinned.
-- Human-terminal rollback requires an explicit close or cancellation receipt.
-  Unconfirmed cleanup remains retryable; timeouts and `closed: false` alone do
-  not mean an allocation was revoked. This release adds no remote editing UI.
-
-## 0.5.1: reconnect, input and cleanup hardening
-
-- Human terminals wait through transient transport failures within the original
-  helper session's retention window, retaining their process and output cursor.
-  Explicit disconnect, permanent failures and expiry stop recovery; they do not
-  reactivate a closed connection or silently create a replacement terminal.
-  Stalled read/status responses can retire a blackholed transport and resume the
-  same session; an absolute recovery budget prevents endless retry.
-- Input and resize use separate acknowledged sequence lanes instead of filling
-  the shared 4,096-entry operation journal. Retry never duplicates the same input;
-  an unresolved sent mutation poisons its lane rather than claiming rollback.
-- Allocation reserves bounded cleanup capacity. Existing resources can still be
-  retired when the operation journal is full. Expiry sweeps run under continuous
-  connection traffic. Installer cancellation waits for SSH child closure, with a
-  bounded TERM-to-KILL escalation when necessary.
-- CI adds Darwin process/PTY regressions and mandatory positive Linux bubblewrap
-  execution, not merely tests that an unavailable sandbox fails closed.
-- Markdown file images are read through their document's owning session, including
-  relative Unicode/space paths, and use revocable Blob URLs. Limits are 4 MiB per
-  image, 16 MiB retained and 64 images per document cache. Failed/oversized images
-  show a notice and never fall back to the Host-only `/api/file` route. Local
-  documents retain their own session identity too.
-
-These changes do not constitute full remote editor integration. See the file
-identity boundaries below.
-
-## Native remote file and user-terminal panels (since 0.5.0)
-
-Open an SSH workspace Session and select the official **工作区文件** (Workspace files)
-or **新建终端** (New terminal) on the sidebar start page. The plugin routes these
-native panels to the current remote workspace. No model prompt is required.
-
-- Browse directories lazily and use native read-only file previews, including
-  Unicode/space paths. Each directory is bounded to 1,000 entries with explicit
-  truncation. Remote watches are unsupported; refresh after external edits.
-- A real remote PTY supports raw keyboard input, Tab, Ctrl-C, resizing, and
-  multiple tabs. The native TerminalController owns exclusive input attachments,
-  screen recovery, and session ownership; no local shell stands in for remote execution.
-- **Human terminals run with the SSH account's permissions**, like local human
-  terminals. They do not use model approval/sandbox policy. Model Shell/Terminal
-  sandbox enforcement is unchanged.
-- Agent-scoped execution environments isolate local and different remote
-  sessions. Resume reuses the same authenticated helper session; expired sessions
-  and output-buffer overflow fail explicitly instead of silently spawning anew.
-  Recovery requires the same DSH service process; quitting DSH does not promise
-  restoration of the original terminal.
-- Darwin PTYs reach real EOF with the command PID pinned until cleanup. The
-  controlling terminal hangs up normally when its leader exits; background
-  descendants are not promised continued ownership of that terminal.
-
-Native sidebar services must be present in the DSH composition. Missing sidebar
-services omit the shortcuts; missing individual tabs disable their buttons.
-Neither prevents plugin activation. The file panel is a previewer,
-not a save-capable remote editor. See [ADR-0005](docs/adr/0005-native-remote-panels.md).
-
-## Reliability and interaction improvements in 0.4.0
-
-- Cancelled or expired queued RPCs are never dispatched; already-sent mutations
-  retain their honest ambiguous-outcome semantics.
-- Shell/PTY readers drain retained output after process exit and report truncation.
-- A single-threaded supervisor and guardian pin the owned process group through
-  TERM-to-KILL cleanup, even after its shell exits. Control I/O, stdin, output
-  drainage and release have deadlines.
-- Permanent authentication, host-key, configuration, Python, protocol and unknown
-  errors stop automatic retries; transient network failures retain backoff.
-  Installing/connecting/reconnecting can be stopped, with independent per-host state.
-- The directory picker adds an editable path, Enter navigation, home and refresh.
-- Connection/refresh checks `rg` in the same login shell used by search. Missing
-  dependencies are reported, never auto-installed; refresh after installation
-  rechecks availability without interrupting active tasks.
-
-Cleanup covers the original owned process group and the current PTY foreground
-group. It does not promise full-account process-tree cleanup for services that
-detach with `setsid`/`setpgid`. Restricted execution additionally benefits from
-bubblewrap PID-namespace teardown. Unrelated processes are never killed by name.
-
-## Architecture
-
-The default data plane is now:
-
-```text
-DSH Web on the local machine
-  └─ dsh-ssh-remote
-      └─ system OpenSSH using the original Host alias
-          └─ content-addressed Python helper
-              └─ private per-user Unix-socket daemon
-                  ├─ dirfd-confined filesystem
-                  ├─ process/PTY supervisor
-                  └─ resumable client session
-```
-
-This follows the useful architecture of Codex App Server—a versioned,
-multiplexed remote control channel with health, capabilities, bounded output,
-stable resource IDs, and reconnect—without pretending that the two protocols
-are interchangeable. See the official
-[Codex App Server documentation](https://developers.openai.com/codex/app-server)
-and [ADR-0004](docs/adr/0004-remote-helper-v1.md).
-
-Implemented:
-
-- **OpenSSH is the source of truth.** `Host`, `Include`, `Match`, agent,
-  Keychain, certificates, FIDO/PKCS#11, ProxyJump, ProxyCommand, known_hosts,
-  and host-key policy remain owned by the installed `ssh` command.
-- **Automatic helper installation.** The packaged helper is SHA-256 addressed,
-  uploaded over SSH stdin into a private release directory, and verified before
-  publication. It uses no sudo, curl, postinstall script, or remote package
-  manager.
-- **One Add Workspace flow.** Local directories and concrete SSH aliases share
-  the stock workspace picker. Remote browsing, folder creation, and validation
-  use the helper by default.
-- **Versioned remote files.** Reads use stable stat tokens or strong
-  SHA-256+identity tokens. Writes use a same-directory temporary inode, fsync,
-  guarded publication, no-replace creation, and operation-id deduplication.
-- **Remote shell execution.** Model-facing `ctx.shell` runs before a local
-  sandbox wrapper can be incorrectly copied to another OS. Foreground and
-  background processes retain bounded output and survive a connector reconnect.
-- **Real remote PTYs.** The helper owns the PTY, foreground PGID, signals,
-  output cursor, remote account login shell, resize primitive, TERM→KILL
-  teardown, and resource release.
-- **Remote sandbox enforcement.** `read-only` and `workspace-write` processes
-  use bubblewrap on Linux. If a restricted runner is unavailable, process/PTY
-  startup fails closed; it never silently runs with full account authority.
-- **Recovery and diagnostics.** A private daemon retains workspaces, file-read
-  cursors, processes, and PTYs during the reconnect window. The settings panel
-  shows installing/connecting/connected/degraded/reconnecting/error, helper
-  version, capabilities, errors, Retry, Disconnect, and redacted diagnostics.
-- **Safe compatibility path.** Old DSH-host settings may still use the hardened
-  ssh2/SFTP implementation. It is not selected silently for a failed helper.
-
-## Honest upstream boundaries
-
-Version 0.6.0 targets DSH `0.2.0-rc.2`. Cancelled connection probes
-release daemon connection capacity even when a stream closes with a broken
-pipe; pre-handshake connection failures retain their original error code and
-message. The earlier `dsh-settings`
-register API and the `ShellExecutor` `run`/`start` methods were replaced by the
-standard Cordis `Config` and a single `execute()` method respectively; the
-plugin has been adapted accordingly. Interrupted SSH uploads fail only the
-connection. The public seams still impose these visible limits:
-
-1. A Harness Workspace must be a real local directory. The plugin therefore
-   creates a small local anchor and maps only that anchor and its descendants to
-   `ssh://alias/remote/path`. No source tree is copied into the anchor.
-2. Generic `SubprocessRuntime.spawn()` is synchronous and must return an
-   immediate local PID. Direct consumers of that low-level seam keep the
-   per-process system-SSH compatibility route; normal model shell and terminal
-   surfaces use the helper.
-3. The model terminal tool has no resize verb. The human terminal panel already
-   resizes automatically; the model cannot explicitly request this operation.
-4. DSH history, configuration, plugins, and the agent loop remain local. This
-   plugin is a remote execution/filesystem plane, not a second Harness control
-   plane.
-5. DSH `listDir()` has no paging contract. The standard FS surface fails
-   honestly when a directory exceeds 1,000 entries; the workspace picker uses
-   a bounded directory-only scan. The native file panel has a separate
-   `truncated` contract and displays bounded results with an explicit warning.
-6. Native **Open in a local app / Reveal in Finder**, including the keyboard
-   shortcut, are local-only actions, not SSH editor integration. Their rc.2
-   contracts omit session identity and can open an empty anchor or an unrelated
-   same-named local path. Use in-app previews and the remote terminal for SSH
-   files, not those local-open actions. Hiding a button does not guard the
-   keyboard/menu path. A complete fix requires an upstream session-aware open
-   contract and shortcut guard; see [ADR-0006](docs/adr/0006-reliability-and-file-identity.md).
-   A separate, explicitly labelled VS Code Remote-SSH action can be explored
-   independently; it need not wait for full replacement of the native actions.
-
-Removing the anchor and the last routing hooks requires an upstream first-class
-`{ hostId, remotePath, runtime }` workspace contract.
+![Remote tools: quick open, file transfers and port forwarding](docs/images/remote-tools.png)
 
 ## Requirements
 
-- Local Node.js 22 or newer.
-- DSH `0.2.0-rc.2` or a compatible newer `0.2.x` release is required.
-- A concrete `Host` alias in `~/.ssh/config` that already works with
-  `ssh <alias>` in batch mode.
-- Remote POSIX system with Python 3.8 or newer.
-- DSH remote `glob` / `grep` searches require `rg` (ripgrep) on the remote PATH.
-  The plugin uses that binary and translates workspace roots instead of trying
-  to execute the locally packaged binary on another operating system.
-- Linux bubblewrap (`bwrap`) for `read-only` or `workspace-write` process/PTY
-  confinement. File operations remain dirfd-confined independently.
+Validated with **DSH 0.2.0-rc.2**, macOS / Linux hosts, and a Linux remote. Windows hosts are not validated; forwarding currently requires a macOS / Linux host.
 
-Put User, Port, proxy, and authentication details in OpenSSH config rather than
-encoding them in an `ssh://user@host:port` URI:
+| Purpose | Requirement |
+| --- | --- |
+| Desktop | Official DSH Desktop, which includes its own Node and package manager. |
+| CLI / Web | DSH 0.2.0-rc.2, Node 22+, and `dsh` / `pnpm` on PATH. |
+| Basic SSH connection | Local OpenSSH, a concrete Host alias, non-interactive authentication, and Python 3.8+ on the remote. |
+| File search and `@` completion | Remote `rg` (ripgrep); Git discovery also needs remote Git. |
+| Restricted model commands | Remote Linux and working bubblewrap. Basic browsing and human terminals do not require it. |
 
-```sshconfig
-Host devbox
-  HostName devbox.example.com
-  User you
-  Port 22
-  IdentityFile ~/.ssh/id_ed25519
-  ProxyJump bastion
-```
-
-If a concrete alias is later removed, a persisted workspace fails closed before
-starting a new SSH connection instead of treating the alias as a DNS hostname.
-
-Before using the Web UI, run `ssh devbox` once and verify any new host-key
-fingerprint according to your OpenSSH policy.
-
-Managed helper connections set `BatchMode=yes`. Agent-/Keychain-backed keys,
-certificates, and pre-authorized hardware keys work through OpenSSH, but an
-interactive password, PIN, passphrase, or MFA prompt cannot be completed in the
-Web background connection; prepare the agent/session first.
+Install DSH first using the [official instructions](https://github.com/deepseek-ai/deepseek-harness). Check each plugin Release for verified compatibility with other DSH versions.
 
 ## Install
 
-Run `dsh --version` first: plugin `0.6.0` requires **DSH `0.2.0-rc.2` or a
-compatible newer `0.2.x` release**. DSH `0.1.x`, including `0.1.7-rc.2`, cannot
-use the current main branch. Do not bypass the compatibility check with
-`allow-version`. For Desktop, check the application's bundled engine, not the
-version of a separately installed CLI.
+### Desktop / Web: use the official plugin page
+
+1. Open **Plugins / 插件** in the left sidebar and choose **Add plugin / 添加插件**.
+2. Paste this complete address and click **Install / 安装**:
+
+```text
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz
+```
+
+3. If dependency build approval appears, review the packages listed by the installer and use its approval/retry action. To disable the confirmed optional native builds instead, see [Troubleshooting](docs/TROUBLESHOOTING.md).
+4. Click **Enable now / 立即启用** after installation (listed as `dsh-ssh-remote`), then fully restart that Desktop instance or Web server.
+
+![Inspecting and installing the prebuilt package in the official plugin page](docs/images/install.png)
+
+The package includes built runtime files: no clone or compilation is needed. Installation still downloads runtime dependencies. **The npm package named `dsh-ssh-remote` belongs to another project: use the complete address above.** Desktop and Web use separate profiles and need separate installation.
+
+### CLI: install into the Web profile
 
 ```sh
 dsh --version
-
-# After confirming a compatible DSH version, install from GitHub
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote'
+pnpm --version
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz'
 ```
 
-Use the GitHub address above. The npm package named `dsh-ssh-remote` points to
-another repository, not this project; do not replace the command with
-`dsh plugin --profile web add dsh-ssh-remote`.
-The repository ships `lib/` and this plugin needs no install-time
-`prepare` script or rebuild.
-pnpm 11 may still require a decision for dependencies' optional native builds.
-If it reports `ERR_PNPM_IGNORED_BUILDS`, follow the package/version-specific
-checks below instead of blindly approving this plugin.
+Restart your existing `dsh web` server after installation. Stop it with Ctrl-C in its terminal before starting `dsh web` again. After a blocked-build retry, also check that the bundle is enabled in Plugins. For Desktop, use the application's plugin page.
 
-Restart `dsh web`, open **Settings → Built-in Plugins → SSH Remote**, and connect or browse a host.
-The first connection installs the matching helper automatically.
-
-The official Desktop uses the same Web client and Host plugin interfaces.
-Install `github:CrazyShout/dsh-ssh-remote` through the desktop application's
-plugin manager and restart the application to use SSH Remote settings and the
-remote directory workspace picker. Its bundled engine must be a compatible DSH
-`0.2.x` release, starting at `0.2.0-rc.2`. Desktop distributions may use a different
-profile, so the CLI's `--profile web` command is not a substitute for the
-desktop application's own plugin manager.
-
-### Older DSH versions and installation failures
-
-If you must keep DSH `0.1.x`, preserve your existing working combination first.
-Plugin `0.3.1` is a legacy candidate with declared support for
-`>=0.1.1-rc.2 <0.2.0`, not a claim that every `0.1.x` release has been tested.
-Back up the profile before trying it and pin the commit instead of installing
-the current main branch:
+The fixed Git tag is an alternative source and requires local Git:
 
 ```sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#1432649a3227b78bc1309100333ec4887bb571e2'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.10.2'
 ```
 
-On failure, open `pnpm.log` at the **diagnostics path printed by DSH** and find
-the first actual error:
+You can also download the release `.tgz` and install its **absolute local path** through the same UI or CLI. Use the release's `SHA256SUMS` to verify the downloaded package.
 
-- `installation rejected` / `incompatible with dsh`: resolve the DSH/plugin
-  version mismatch first. Approving build scripts cannot fix API incompatibility.
-- `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` or `ERR_PNPM_IGNORED_BUILDS`: check the
-  exact package and version named in the log; it may be another dependency.
-  Review that package's scripts before granting an exact approval, never a
-  blanket approval.
-- Git, network, registry, or permission errors: address that error rather than
-  changing build permissions.
+## First connection: five steps
 
-If the actual error is `Ignored build scripts: cpu-features@0.0.10, ssh2@1.17.0`,
-**merge** these settings into that profile's `pnpm-workspace.yaml`, then retry
-the original Git install command:
+1. Reuse an existing concrete alias in your local `~/.ssh/config`, or add a minimal one:
 
-```yaml
-allowBuilds:
-  'cpu-features@0.0.10': false
-  'ssh2@1.17.0': false
-```
+   ```sshconfig
+   Host devbox
+     HostName your-server.example.com
+     User your-user
+   ```
 
-Keep unrelated fields and other packages' decisions; do not duplicate the
-`allowBuilds` key or replace the whole file. The default Web path is
-`~/.dsh/profiles/web/pnpm-workspace.yaml`; with a custom `DSH_HOME`, use the
-profile containing the reported diagnostics instead. `false` **denies** these
-builds, not approves them. These versions only build optional native features;
-`ssh2` can use its JavaScript/Node crypto implementation, and the default system
-OpenSSH helper does not depend on these native modules. This policy was tested
-in an isolated pnpm `11.22.0` / DSH `0.2.0-rc.2` profile. Reassess other
-dependency versions instead of copying version numbers blindly. Do not disable
-script checks globally or skip all builds needed by other plugins in the same
-profile.
+2. Run `ssh devbox`, verify the host fingerprint on first connection, and confirm login works. Type `exit` to return. See [connection troubleshooting](docs/TROUBLESHOOTING.md) for encrypted keys, passwords and MFA.
+3. In DSH choose **Add workspace / 添加工作区 → devbox**, browse or enter a remote path, then open the folder.
+4. The first connection deploys the matching Python helper automatically. **Settings → Built-in plugins → SSH Remote** also provides connect, retry and diagnostics.
+5. Open **Workspace files / 工作区文件** to preview a file, then **New terminal / 新建终端** and run `pwd`. Verify the remote directory. No model message is needed.
 
-DSH `0.1.7-rc.2` and `0.2.0-rc.2` append a generic “git-hosted plugins …
-prepare … allowBuilds” hint after failed Git installs. **That hint alone does
-not identify the cause** or prove this plugin has a `prepare` script. When
-filing an issue, include the original command, component versions, and the log
-around the first error. Redact tokens, credentials, and private paths before
-sharing it.
+Keep custom `Port`, `IdentityFile` and `ProxyJump` settings in OpenSSH; do not duplicate them in the plugin. Background connections use `BatchMode=yes`: ensure `ssh -o BatchMode=yes devbox true` succeeds after preparing your SSH agent or login session.
 
-## Security model
+## Everyday use
 
-- JSONL frames are limited to 1 MiB; stdout is protocol-only and stderr is a
-  bounded, credential-redacted diagnostic tail.
-- The helper runtime directory is owner-only (`0700`) and its Unix socket is
-  `0600`. Resume requires both the stable client ID and a constant-time checked
-  random token.
-- `workspace/open` is the only filesystem request accepting an absolute path.
-  Later requests use relative paths beneath an open root fd; `..`, NUL, and
-  symlink traversal are rejected.
-- File and process mutations carry stable `operationId` values. A disconnected
-  mutation is replayed at most once, only after the same server session was
-  cryptographically resumed.
-- Output, resources, active requests, operation journals, and retention are all
-  bounded. Completed journal entries expire only after the resume-safety window.
-- The plugin never changes `~/.ssh/config`, private keys, or known_hosts.
+| Task | Entry point |
+| --- | --- |
+| Browse and preview files | Native **Workspace files / 工作区文件** |
+| Edit and save text | Preview-tab menu **编辑远程文本**, or **编辑** beside a quick-open result |
+| Find a file | **SSH · host → 快速打开**, or native `@` completion |
+| Run commands | Native **New terminal / 新建终端** |
+| See cwd, exit status and terminal context | Terminal-tab menu **查看 SSH 终端状态** |
+| Open TensorBoard, Jupyter or a development website | **远程工具 → 端口转发** |
+| Upload/download files and folders | **远程工具 → 文件传输** |
 
-POSIX does not offer a universal atomic “rename only if this pathname still
-references inode X” operation. The helper serializes its own writes, verifies
-identity/content immediately before publish, and publishes atomically, but an
-arbitrary non-cooperating external writer can still race in the final
-check-to-rename interval. The helper reports
-`externalWriterRaceFree: false` instead of overstating the guarantee.
+Blank Sessions show the SSH badge above the composer. The native sidebar start page also offers **远程工具**. Local Sessions retain their normal file and terminal behavior.
 
-## Development
+The text editor supports complete UTF-8 files up to **256 KiB**. Transfers support **1 TiB per file/batch**: small real samples and simulated boundaries were tested, not TB-scale performance. Save editor drafts before restarting; transfers require source/destination reauthorization after restart. Human terminals run with the SSH account's permissions.
+
+DSH's Finder/local-application actions still refer to the local machine. Use the native preview and remote editor for SSH files. See [technical reference](docs/TECHNICAL.md) for limits, permissions and recovery guarantees.
+
+## Update, roll back and remove
+
+- **Update:** copy the desired package address from [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases). Follow the rc.2 plugin page's advice to remove the old plugin, then install and enable the new version. Web CLI users can repeat the `add` command above in the same profile to replace the version. Restart afterwards. Save drafts and pause transfers first; a restart ends live human terminals.
+- **Roll back to 0.10.1:** install the verified commit below in the plugin page or with the Web command, then restart. This source requires Git.
 
 ```sh
-npm ci
-npm run test:helper
-npm test
-npm run build
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#abff63bafd0959820ec2d9976803f5cdbdc77580'
 ```
 
-CI covers Node 22/24 and Python 3.8/3.9/3.10/3.12. `lib/` is committed because DSH
-can install the repository directly without running a package build script.
+- **Disable:** switch off the bundle in the plugin page, retaining its files and settings; restart if requested by DSH.
+- **Remove:** use the corresponding application's plugin page. For Web, stop the server and run:
 
-Design records:
+```sh
+dsh plugin --profile web remove dsh-ssh-remote
+```
 
-- [ADR-0003: Codex remote parity boundary](docs/adr/0003-codex-remote-parity.md)
-- [ADR-0004: Remote helper v1](docs/adr/0004-remote-helper-v1.md)
+Removal affects only that profile's plugin; it does not delete remote projects, local conversation history or SSH configuration. Existing remote workspaces need the plugin to work; reinstalling can reuse their saved mappings.
 
-## License
+## Help and development
 
-MIT
+- [Troubleshooting](docs/TROUBLESHOOTING.md): install errors, dependency builds, authentication and missing remote tools.
+- [Report an issue](https://github.com/CrazyShout/dsh-ssh-remote/issues) with plugin/DSH versions, Desktop or Web, installation source and the first actual error. Omit credentials.
+- [Technical reference and development](docs/TECHNICAL.md), [roadmap](docs/ROADMAP.md), [release procedure](docs/RELEASING.md), [changelog](CHANGELOG.md).
+
+MIT License.
