@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "DeepSeek Harness SSH remote workspaces with a versioned system-OpenSSH helper runtime and compatibility fallback.",
   "type": "module",
   "main": "lib/index.js",
@@ -19,6 +19,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./transfers": { "types": "./shared/transfers.d.ts" },
+    "./terminal-state": { "types": "./shared/terminal-state.d.ts" },
+    "./terminal-state-schema": { "types": "./shared/terminal-state-schema.d.ts", "default": "./shared/terminal-state-schema.js" },
     "./transfer-schema": { "types": "./shared/transfer-schema.d.ts", "default": "./shared/transfer-schema.js" }
   },
   "files": [
@@ -118,7 +120,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "vitest run",
-    "test:helper": "PYTHONPYCACHEPREFIX=/tmp/dsh-ssh-remote-pycache python3 -m py_compile helper/dsh_remote_helper.py helper/dsh_transfer.py"
+    "test:helper": "PYTHONPYCACHEPREFIX=/tmp/dsh-ssh-remote-pycache python3 -m py_compile helper/dsh_remote_helper.py helper/dsh_transfer.py helper/dsh_terminal_state.py"
   },
   "engines": {
     "node": ">=22"

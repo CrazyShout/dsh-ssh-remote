@@ -3,6 +3,8 @@ import { editorInvocations } from './editor-schema.js';
 import { fileSearchInvocations } from './file-search-schema.js';
 import { portForwardInvocations } from './port-forward-schema.js';
 import { transferInvocations } from 'dsh-ssh-remote/transfer-schema';
+import { terminalStateInvocations } from 'dsh-ssh-remote/terminal-state-schema';
+import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
 import type {} from './transfer-types.js';
 
 interface HelperStatus {
@@ -68,6 +70,7 @@ export interface RemoteWorkspaceInfo {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespaceMap {
+    sshRemoteTerminalState: TerminalStateRemote;
     sshRemote: {
       config: () => Promise<RemoteResult<ConfigResult>>;
       statuses: () => Promise<RemoteResult<Record<string, HelperStatus>>>;
@@ -220,6 +223,7 @@ export const TYPERT_REMOTE = {
     ...fileSearchInvocations,
     ...portForwardInvocations,
     ...transferInvocations,
+    ...terminalStateInvocations,
   ],
 } as unknown as TypertRemoteContribution;
 

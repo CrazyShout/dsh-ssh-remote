@@ -13,6 +13,7 @@ import { RemoteHelperRpcError } from './helper/rpc-client.js';
 import type { RemotePathResolver } from './runtime-router.js';
 import { formatSshUri, parseSshUri } from './types.js';
 import { openRemoteUserTerminal, RemoteUserTerminalAllocationError, type RemoteUserTerminal } from './user-pty.js';
+import type { TerminalStateManager } from './terminal-state.js';
 
 interface AgentRoute {
   readonly agent: Agent;
@@ -30,6 +31,7 @@ export function installRemoteUserSubprocessRouter(
   subprocess: SubprocessRuntime,
   helpers: RemoteHelperProvider,
   resolveRemotePath: RemotePathResolver,
+  terminalState?: TerminalStateManager,
 ): { dispose(): Promise<void> } {
   const originals = {
     spawn: subprocess.spawn,
@@ -177,8 +179,10 @@ export function installRemoteUserSubprocessRouter(
     const uri = remoteCwd(this, spec.cwd);
     if (uri === undefined) return originals.spawnTerminal.call(this, spec);
     const signal = spec.signal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, spec.signal]);
-    const allocation = openRemoteUserTerminal(uri, { ...spec, signal }, helpers, terminal => terminals.delete(terminal))
+    const observation = terminalState?.reserve(uri);
+    const allocation = openRemoteUserTerminal(uri, { ...spec, signal }, helpers, terminal => { terminals.delete(terminal); observation?.closed(); }, observation)
       .then(async (terminal) => {
+        observation?.attached(terminal);
         terminals.add(terminal);
         if (disposed || signal.aborted) {
           await terminal.terminate();
@@ -186,6 +190,7 @@ export function installRemoteUserSubprocessRouter(
         }
         return terminal;
       }).catch(error => {
+        observation?.failed();
         if (error instanceof RemoteUserTerminalAllocationError) retainFailedAllocation(error);
         throw error;
       });

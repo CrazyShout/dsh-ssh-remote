@@ -36,7 +36,7 @@ import termios
 # DSH_BUNDLED_EXTENSIONS
 
 PROTOCOL = "1"
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -59,6 +59,17 @@ ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SENSITIVE_ENV_PATTERN = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 PROCESS_RESERVED = object()
 TRANSFER_MODULE_LOCK = threading.Lock()
+
+
+def terminal_state_module() -> Any:
+    with TRANSFER_MODULE_LOCK:
+        module = sys.modules.get('dsh_terminal_state')
+        if module is None:
+            spec = importlib.util.spec_from_file_location('dsh_terminal_state', os.path.join(os.path.dirname(__file__), 'dsh_terminal_state.py'))
+            module = importlib.util.module_from_spec(spec)
+            exec(compile(spec.loader.get_source('dsh_terminal_state'), spec.origin, 'exec'), module.__dict__)
+            sys.modules['dsh_terminal_state'] = module
+        return module
 
 
 def build_id() -> str:
@@ -457,6 +468,7 @@ class Server:
             "session": {"resume": self.resume_supported},
             "environment": {"check": True, "resolveExecutable": True},
             "transfers": {"version": 1, "maxBytes": 1099511627776, "maxChunkBytes": 262144, "persistent": True},
+            "shellState": {"version": 1, "channel": "nonblocking-private-pipe", "persistent": False},
         }
 
     def workspace(self, params: Dict[str, Any]) -> Workspace:
@@ -803,6 +815,10 @@ class Server:
         if method == "fs/write": return self.write(p)
         if method == "process/start": return self.guarded(p.get("operationId"), p, lambda: self.start_process(p))
         if method == "process/read": return self.process(p).read(p)
+        if method == "process/shellState":
+            record = self.process(p)
+            if record.shell_observation is None: raise RpcError("E_UNSUPPORTED", "terminal has no shell observation hook")
+            return record.shell_observation.snapshot(record.returncode is not None)
         if method in ("process/write", "process/resize"):
             if "afterSeq" in p:
                 record = self.process(p)
@@ -1115,7 +1131,8 @@ class Server:
                 workspace_fd = ws.dup_root(); inherited_fds = (workspace_fd,)
                 command = [str(workspace_fd) if value == "__DSH_WORKSPACE_FD__" else value for value in command]
             record = ProcessRecord(process_id, command, cwd, supplied, tty, stdin_mode, inherited_fds,
-                                   inside_sandbox=ws.access != "danger-full-access")
+                                   inside_sandbox=ws.access != "danger-full-access",
+                                   shell_observation=p.get('shellObservation') is True and isinstance(tty, dict) and ws.access == 'danger-full-access')
         except Exception:
             with self.resources_lock:
                 if self.processes.get(process_id) is PROCESS_RESERVED: self.processes.pop(process_id, None)
@@ -1307,7 +1324,7 @@ class InputLane:
 class ProcessRecord:
     def __init__(self, process_id: str, argv: List[str], cwd: str, supplied_env: Any, tty: Any,
                  stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False,
-                 output_consumer: Any = None):
+                 output_consumer: Any = None, shell_observation: bool = False):
         self.output_consumer = output_consumer
         self.process_id, self.tty = process_id, isinstance(tty, dict)
         self.lock, self.changed = threading.Lock(), threading.Condition(threading.Lock())
@@ -1324,6 +1341,12 @@ class ProcessRecord:
         self.stdin: Any = None; self.stdout_stream: Any = None; self.stderr_stream: Any = None
         self.readers = 1 if self.tty else 2
         env = process_environment(supplied_env)
+        self.shell_observation = terminal_state_module().ShellObservation(argv, env) if shell_observation else None
+        shell_fd = -1
+        if self.shell_observation is not None:
+            argv, env = self.shell_observation.argv, self.shell_observation.env
+            shell_fd = self.shell_observation.pipe_write
+            if shell_fd >= 0: inherited_fds += (shell_fd,)
         endpoint, remote_endpoint = socket.socketpair()
         self.control = SupervisorChannel(endpoint, self._supervisor_event)
         slave: Optional[int] = None
@@ -1347,6 +1370,7 @@ class ProcessRecord:
             runner = [sys.executable, os.path.abspath(__file__), "supervise-exec",
                       "--control-fd", str(remote_endpoint.fileno())]
             if self.tty: runner += ["--tty-master-fd", str(self.master)]
+            if shell_fd >= 0: runner += ["--shell-state-fd", str(shell_fd)]
             if inside_sandbox:
                 split = argv.index("--")
                 inner = [sys.executable, os.path.abspath(__file__), "supervise-exec", "--control-fd", "3"]
@@ -1389,11 +1413,13 @@ class ProcessRecord:
                 assert self.stdout_stream is not None and self.stderr_stream is not None
                 self._start_reader(self.stdout_stream.fileno(), "stdout")
                 self._start_reader(self.stderr_stream.fileno(), "stderr")
+            if self.shell_observation is not None: self.shell_observation.launched()
             remote_endpoint.close(); self.control.start()
             if not self.ready.wait(15): raise RpcError("E_SUPERVISOR_TIMEOUT", "remote process startup timed out")
             if self.start_error is not None: raise self.start_error
             if self.pid <= 0: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed during startup")
         except Exception as exc:
+            if self.shell_observation is not None: self.shell_observation.close()
             remote_endpoint.close(); self.control.close()
             self.io_stopping.set()
             for reader in self.reader_threads: reader.join(0.5)
@@ -1489,9 +1515,16 @@ class ProcessRecord:
                 if used >= maximum: break
             status = self.status()
             output_closed = self.returncode is not None and self.readers == 0 and next_seq >= self.seq
-            return {"chunks": selected, "earliestSeq": str(self.earliest), "nextSeq": str(next_seq),
+            result = {"chunks": selected, "earliestSeq": str(self.earliest), "nextSeq": str(next_seq),
                     "truncated": after < self.earliest - 1, "exited": output_closed, "closed": output_closed,
                     "exitCode": status["exitCode"], "signal": status["signal"]}
+            # A small optional checkpoint preserves observations before the
+            # official output pump retires a fast-exiting process. Live reads
+            # still have their independent shellState RPC; no output is parsed.
+            if self.shell_observation is not None:
+                try: result['shellState'] = self.shell_observation.snapshot(self.returncode is not None)
+                except Exception: pass  # Observation must never fail task output.
+            return result
 
     def write(self, p: Dict[str, Any]) -> Dict[str, Any]:
         try: data = base64.b64decode(p.get("data", ""), validate=True)
@@ -1579,6 +1612,7 @@ class ProcessRecord:
                     except subprocess.TimeoutExpired: errors.append(RpcError("E_CLEANUP_TIMEOUT", "process supervisor did not exit after release"))
             finally:
                 self.control.close()
+                if self.shell_observation is not None: self.shell_observation.close()
                 self.io_stopping.set()
                 for reader in self.reader_threads: reader.join(0.5)
                 readers_stopped = all(not reader.is_alive() for reader in self.reader_threads)
@@ -2112,8 +2146,9 @@ class ProcessSupervisor:
     PTYs instead retain the real task's unreaped PID so its controlling session
     can end normally. Both prevent reuse rather than racing killpg(pgid, 0).
     """
-    def __init__(self, control_fd: int, tty_master_fd: Optional[int]):
+    def __init__(self, control_fd: int, tty_master_fd: Optional[int], shell_state_fd: Optional[int] = None):
         self.control = socket.socket(fileno=control_fd); self.tty = tty_master_fd is not None
+        self.shell_fds = set() if shell_state_fd is None else {shell_state_fd}
         self.tty_master_fd = tty_master_fd
         self.pid = 0; self.guardian = 0; self.guard_write = -1; self.code: Optional[int] = None
         self.group_owned = False; self.generation = 0; self.deadline: Optional[Tuple[int, float]] = None
@@ -2138,7 +2173,7 @@ class ProcessSupervisor:
         if self.pid == 0:
             try:
                 os.setpgid(0, 0)
-                close_fds_except({0, 1, 2, gate_read, error_write})
+                close_fds_except({0, 1, 2, gate_read, error_write} | self.shell_fds)
                 if os.read(gate_read, 1) != b"1": os._exit(127)
                 os.close(gate_read)
                 for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGPIPE"):
@@ -2215,7 +2250,7 @@ class ProcessSupervisor:
                         finally: os._exit(0)
                     _, guard_status = os.waitpid(guard_broker, 0)
                     if guard_status != 0: raise OSError(errno.EIO, "process group guardian broker failed")
-                    close_fds_except({0, 1, 2, gate_read, error_write})
+                    close_fds_except({0, 1, 2, gate_read, error_write} | self.shell_fds)
                     if os.read(gate_read, 1) != b"1": os._exit(127)
                     os.close(gate_read)
                     for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGPIPE"):
@@ -2371,13 +2406,13 @@ class ProcessSupervisor:
         finally: selector.close()
 
 
-def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Optional[str], argv: List[str]) -> int:
+def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Optional[str], argv: List[str], shell_state_fd: Optional[int] = None) -> int:
     if argv and argv[0] == "--": argv = argv[1:]
     if stdio_fds is not None:
         for target, source in enumerate(int(value) for value in stdio_fds.split(",")):
             os.dup2(source, target)
         for fd in {int(value) for value in stdio_fds.split(",")}: os.close(fd)
-    supervisor = ProcessSupervisor(control_fd, tty_master_fd)
+    supervisor = ProcessSupervisor(control_fd, tty_master_fd, shell_state_fd)
     try:
         if not argv: raise RpcError("E_INVALID_PARAMS", "process argv is empty")
         supervisor.start(argv); supervisor.run(); return 0
@@ -2433,14 +2468,14 @@ def main() -> int:
     connect = sub.add_parser("connect"); connect.add_argument("--stdio", action="store_true"); connect.add_argument("--socket"); connect.add_argument("--direct", action="store_true")
     daemon = sub.add_parser("daemon"); daemon.add_argument("--socket"); daemon.add_argument("--idle-timeout", type=float, default=600)
     pty_exec = sub.add_parser("pty-exec"); pty_exec.add_argument("--slave-fd", type=int, required=True); pty_exec.add_argument("argv", nargs=argparse.REMAINDER)
-    supervised = sub.add_parser("supervise-exec"); supervised.add_argument("--control-fd", type=int, required=True); supervised.add_argument("--tty-master-fd", type=int); supervised.add_argument("--stdio-fds"); supervised.add_argument("argv", nargs=argparse.REMAINDER)
+    supervised = sub.add_parser("supervise-exec"); supervised.add_argument("--control-fd", type=int, required=True); supervised.add_argument("--tty-master-fd", type=int); supervised.add_argument("--stdio-fds"); supervised.add_argument("--shell-state-fd", type=int); supervised.add_argument("argv", nargs=argparse.REMAINDER)
     sandbox_exec = sub.add_parser("sandbox-exec"); sandbox_exec.add_argument("--control-fd", type=int, required=True); sandbox_exec.add_argument("--tty-master-fd", type=int); sandbox_exec.add_argument("--stdio-fds", required=True); sandbox_exec.add_argument("argv", nargs=argparse.REMAINDER)
     version = sub.add_parser("version"); version.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "version":
         print(json.dumps({"version": VERSION, "buildId": build_id(), "protocol": {"min": 1, "max": 1}}) if args.json else VERSION); return 0
     if args.command == "pty-exec": return run_pty_exec(args.slave_fd, args.argv)
-    if args.command == "supervise-exec": return run_supervised(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv)
+    if args.command == "supervise-exec": return run_supervised(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv, args.shell_state_fd)
     if args.command == "sandbox-exec": return run_sandbox_exec(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv)
     if args.command == "daemon": return run_daemon(runtime_socket(args.socket), max(30, args.idle_timeout))
     if not args.stdio: parser.error("connect requires --stdio")

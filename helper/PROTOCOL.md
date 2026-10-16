@@ -471,6 +471,29 @@ outside it; idle shutdown is rechecked under the lock after cleanup.
 
 ## Security boundary
 
+### Optional human shell observations (0.10.0)
+
+`capabilities.shellState = { version: 1, channel: "nonblocking-private-pipe", persistent: false }`.
+For a new danger-full-access PTY only, `process/start` accepts `shellObservation:true`.
+Custom shell args, old shells and failed initialization retain raw terminal behavior
+and report an explicit reason. Existing/model PTYs are not injected automatically.
+
+`process/shellState { processId }` is read-only and returns `{ instance, sequence,
+revision, state, reason, cwd, current, recent }`. State is starting/prompt/running/
+unsupported/unknown/exited. Current/recent commands include nullable text, cwd,
+start timestamp, elapsed milliseconds, nullable exit code and an uncertainty flag.
+Unknown/gapped data does not assert a completed exit. Only the observed prompt
+ends a foreground command; background descendants and nested shells remain separate.
+Data is bounded and volatile, not terminal output or a trusted authorization signal.
+Observed PTY `process/read` responses may also contain this bounded `shellState`
+checkpoint so a Host can retain the last observation before process release.
+The dedicated state RPC remains available independently of output backpressure;
+legacy clients ignore the optional field.
+See [ADR-0009](../docs/adr/0009-observed-human-terminal-state.md) for hook/version,
+privacy, cancellation and public-controller integration boundaries.
+
+### Unix account boundary
+
 The helper runs without sudo as the SSH account. System OpenSSH remains solely
 responsible for host keys, authentication, ProxyJump, certificates, and agent
 use. The Python helper improves path binding and lifecycle behavior but cannot

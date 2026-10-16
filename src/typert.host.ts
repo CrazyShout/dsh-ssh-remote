@@ -3,6 +3,7 @@ import { editorInvocations } from './editor-schema.js';
 import { fileSearchInvocations } from './file-search-schema.js';
 import { portForwardInvocations } from './port-forward-schema.js';
 import { transferInvocations } from '../shared/transfer-schema.js';
+import { terminalStateInvocations } from '../shared/terminal-state-schema.js';
 
 const string = z.string();
 const helperStatus = z.object({
@@ -103,6 +104,7 @@ export const TYPERT = {
     ...fileSearchInvocations,
     ...portForwardInvocations,
     ...transferInvocations,
+    ...terminalStateInvocations,
   ],
   model: { services: [], events: [], objects: [] },
 };

@@ -11,6 +11,8 @@ import type {
 import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemoteHelperClient, RemoteHelperSessionCallOptions } from './helper/rpc-client.js';
 import { parseSshUri } from './types.js';
+import type { ShellSnapshot } from '../shared/terminal-state.js';
+import { shellSnapshotSchema } from '../shared/terminal-state-schema.js';
 
 const READ_BYTES = 64 * 1024;
 const INPUT_CHUNK_BYTES = 64 * 1024;
@@ -28,6 +30,7 @@ interface ProcessStatus {
 }
 
 interface ProcessRead {
+  shellState?: ShellSnapshot;
   chunks: Array<{ seq: string; stream: string; data: string }>;
   nextSeq: string;
   truncated: boolean;
@@ -58,6 +61,7 @@ export async function openRemoteUserTerminal(
   spec: SubprocessTerminalSpawnSpec,
   helpers: RemoteHelperProvider,
   onClosed: (terminal: RemoteUserTerminal) => void = () => {},
+  observation?: { output(data: Buffer): void; state?(snapshot: ShellSnapshot): void },
 ): Promise<RemoteUserTerminal> {
   validateSpawn(spec);
   spec.signal?.throwIfAborted();
@@ -80,6 +84,7 @@ export async function openRemoteUserTerminal(
       cwd: parsed.path.replace(/^\/+/, ''), argv: [...spec.argv],
       env: { ...spec.env, TERM: spec.terminalType }, stdin: 'pipe',
       tty: { rows: spec.rows, cols: spec.cols, term: spec.terminalType },
+      ...(observation && (client.capabilities.shellState as { version?: number } | undefined)?.version === 1 ? { shellObservation: true } : {}),
     }, { signal: spec.signal, timeoutMs: 30_000, mutation: true });
     if (started.processId !== allocation.processId || !Number.isSafeInteger(started.pid) || started.pid <= 0) {
       throw new Error('remote helper returned an invalid user terminal process');
@@ -89,7 +94,7 @@ export async function openRemoteUserTerminal(
       workspaceId: allocation.workspaceId, operationId: `close:${allocation.workspaceId}`,
     }, { timeoutMs: 5_000, mutation: true }));
     spec.signal?.throwIfAborted();
-    return new RemoteUserTerminal(helpers, allocation, started, spec.graceMs, onClosed);
+    return new RemoteUserTerminal(helpers, allocation, started, spec.graceMs, onClosed, observation);
   } catch (error) {
     if (!attempted) throw error;
     try { await rollback(helpers, allocation); }
@@ -138,6 +143,7 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     started: ProcessStatus,
     private readonly graceMs: number,
     private readonly onClosed: (terminal: RemoteUserTerminal) => void,
+    private readonly observation?: { output(data: Buffer): void; state?(snapshot: ShellSnapshot): void },
   ) {
     this.pid = started.pid;
     this.done = new Promise((resolve, reject) => { this.resolveOutcome = resolve; this.rejectOutcome = reject; });
@@ -148,6 +154,15 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
     if (!started.running) this.observeOutcome(started);
     this.pump = this.pumpOutput();
     this.outcomeWatch = this.watchOutcome();
+  }
+
+  async shellState(signal: AbortSignal): Promise<ShellSnapshot> {
+    if ((this.allocation.client.capabilities.shellState as { version?: number } | undefined)?.version !== 1 || !this.observation) {
+      return { instance: '', sequence: '-1', revision: 0, state: 'unsupported', reason: '旧 helper 或终端未启用状态感知，请新建受支持的终端。', cwd: null, current: null, recent: [] };
+    }
+    return shellSnapshotSchema.parse(await this.call('process/shellState', { processId: this.allocation.processId }, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(3_000)]), timeoutMs: 3_000,
+    }));
   }
 
   write(data: string): Promise<void> {
@@ -316,12 +331,15 @@ export class RemoteUserTerminal implements SubprocessTerminalHandle {
         if (result.truncated) throw new Error('remote terminal output buffer overflowed during disconnection; reopen this terminal');
         if (!Array.isArray(result.chunks) || typeof result.nextSeq !== 'string') throw new Error('invalid remote terminal output');
         this.cursor = result.nextSeq;
+        try { if (result.shellState) this.observation?.state?.(shellSnapshotSchema.parse(result.shellState)); } catch {}
         // Outcome is independent of output backpressure. The controller still
         // drains the output stream before publishing its final screen state.
         if (result.exitCode !== null || result.signal !== null) this.observeOutcome(result);
         for (const chunk of result.chunks) {
           const data = Buffer.from(chunk.data, 'base64');
           if (data.length === 0) continue;
+          // Observation cannot consume, delay, or fail the official output lane.
+          try { this.observation?.output(data); } catch {}
           this.revision += 1;
           if (!this.output.write(data)) await waitForDrain(this.output, this.pumpLifetime.signal);
         }

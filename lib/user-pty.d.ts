@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import type { SubprocessOutcome, SubprocessTerminalActivity, SubprocessTerminalForeground, SubprocessTerminalHandle, SubprocessTerminalSignal, SubprocessTerminalSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemoteHelperClient } from './helper/rpc-client.js';
+import type { ShellSnapshot } from '../shared/terminal-state.js';
 interface ProcessStatus {
     pid: number;
     processId: string;
@@ -22,7 +23,10 @@ export declare class RemoteUserTerminalAllocationError extends AggregateError {
     constructor(spawnError: unknown, cleanupError: unknown, retryCleanup: () => Promise<void>);
 }
 /** Human terminals deliberately use the SSH user's permissions, like DSH's local user terminal. */
-export declare function openRemoteUserTerminal(uri: string, spec: SubprocessTerminalSpawnSpec, helpers: RemoteHelperProvider, onClosed?: (terminal: RemoteUserTerminal) => void): Promise<RemoteUserTerminal>;
+export declare function openRemoteUserTerminal(uri: string, spec: SubprocessTerminalSpawnSpec, helpers: RemoteHelperProvider, onClosed?: (terminal: RemoteUserTerminal) => void, observation?: {
+    output(data: Buffer): void;
+    state?(snapshot: ShellSnapshot): void;
+}): Promise<RemoteUserTerminal>;
 /**
  * Raw helper PTY handle consumed by the OFFICIAL human TerminalController.
  * That controller owns session authorization, exclusive input attachments,
@@ -33,6 +37,7 @@ export declare class RemoteUserTerminal implements SubprocessTerminalHandle {
     private readonly allocation;
     private readonly graceMs;
     private readonly onClosed;
+    private readonly observation?;
     readonly output: PassThrough;
     readonly done: Promise<SubprocessOutcome>;
     readonly pid: number;
@@ -60,7 +65,11 @@ export declare class RemoteUserTerminal implements SubprocessTerminalHandle {
     private cleanup;
     private resolveOutcome;
     private rejectOutcome;
-    constructor(helpers: RemoteHelperProvider, allocation: Allocation, started: ProcessStatus, graceMs: number, onClosed: (terminal: RemoteUserTerminal) => void);
+    constructor(helpers: RemoteHelperProvider, allocation: Allocation, started: ProcessStatus, graceMs: number, onClosed: (terminal: RemoteUserTerminal) => void, observation?: {
+        output(data: Buffer): void;
+        state?(snapshot: ShellSnapshot): void;
+    } | undefined);
+    shellState(signal: AbortSignal): Promise<ShellSnapshot>;
     write(data: string): Promise<void>;
     resize(cols: number, rows: number): Promise<void>;
     inspectForeground(): Promise<SubprocessTerminalForeground | undefined>;

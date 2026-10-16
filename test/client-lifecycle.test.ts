@@ -128,6 +128,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
       'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTransfers,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteTerminalState,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -159,6 +160,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sessions,inputTriggers',
       'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTransfers,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteTerminalState,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',
