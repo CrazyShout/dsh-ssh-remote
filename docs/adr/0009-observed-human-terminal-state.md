@@ -1,6 +1,6 @@
 # ADR-0009: Observed human terminal state
 
-Status: implemented for 0.10.0; acceptance/merge recorded separately. DSH remains
+Status: implemented and accepted for 0.10.0 on 2026-10-16; final merge is tracked in PR #22. DSH remains
 0.2.0-rc.2. Transfer manifest/capability v1 is unchanged and remains restart-readable.
 
 ## Identity and ownership
@@ -94,4 +94,12 @@ The minimum Bash 4.4 is built only in an isolated test directory, not installed.
 Opt-in SSH smoke uses a synthetic HOME and temporary workspace and verifies same
 terminal instance across transport loss. Transfer upgrade smoke writes only 28 bytes
 and verifies the 0.9.0 confirmed offset survives 0.10.0, without automatic resume.
-Web/Desktop acceptance and cross-platform CI must be completed before merging.
+Web/Desktop acceptance and cross-platform CI are merge gates. On 2026-10-16,
+Desktop was normally restarted with the candidate, and validated command status,
+Unicode cwd, interactive Ctrl-C, the native tab menu, context preview, changed-draft
+refusal and explicit insertion preserving the original draft. No model request was
+sent. Remote file preview/quick open and native mention candidates were checked;
+local workspaces did not show SSH actions. Synthetic drafts/terminal were cleared
+and the prior user conversation restored. Web also tested final metadata retention
+when a terminal exits before its status panel is opened. CI includes the isolated
+Bash 4.4 floor and the existing Node/Python/macOS/Linux matrix.
