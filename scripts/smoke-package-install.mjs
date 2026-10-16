@@ -16,8 +16,10 @@ assert(values.package, 'Usage: node scripts/smoke-package-install.mjs --package 
 assert(isAbsolute(values.package) || values.package.startsWith('https://'), 'Use an absolute package path or HTTPS release URL');
 const root = await mkdtemp(join(tmpdir(), 'dsh-package-install-'));
 const home = join(root, 'home');
+const workspace = join(root, 'workspace');
 const artifacts = values.out ? resolve(values.out) : join(root, 'evidence');
 await mkdir(home, { mode: 0o700 }); await mkdir(artifacts, { recursive: true, mode: 0o700 });
+await mkdir(workspace, { mode: 0o700 });
 const env = { ...process.env, DSH_HOME: home, CI: 'true' };
 const profile = join(home, 'profiles', 'web');
 const manifestPath = join(profile, 'package.json');
@@ -27,7 +29,7 @@ const report = { home, artifacts, nodeVersion: process.version, platform: proces
 const redact = value => value.replace(/([?&]token=)[^\s"'<>]+/gu, '$1[redacted]');
 async function cli(args, allowFailure = false) {
   let result;
-  try { result = { ...await run(values.dsh, args, { env, timeout: 240_000, maxBuffer: 12 * 1024 * 1024 }), exitCode: 0 }; }
+  try { result = { ...await run(values.dsh, args, { env, cwd: workspace, timeout: 240_000, maxBuffer: 12 * 1024 * 1024 }), exitCode: 0 }; }
   catch (error) { result = { stdout: error.stdout ?? '', stderr: error.stderr ?? '', exitCode: error.code }; }
   const log = `${result.stdout}\n${result.stderr}`;
   await writeFile(join(artifacts, `${String(++sequence).padStart(2, '0')}-${args[0].replaceAll(/\W/gu, '')}.log`), redact(log), { mode: 0o600 });
@@ -68,10 +70,11 @@ async function install(spec, version) {
   for (const file of ['lib/index.js', 'lib/client.js', 'helper/dsh_remote_helper.py', 'helper/dsh_transfer.py', 'helper/dsh_terminal_state.py']) {
     assert((await readFile(join(installedPath, file))).length > 0);
   }
-  report.checks.push(`installed ${version} from ${spec.startsWith('https:') ? 'release URL' : 'archive'}`);
+  const source = spec.startsWith('github:') ? 'pinned Git source' : spec.startsWith('https:') ? 'release URL' : 'archive';
+  report.checks.push(`installed ${version} from ${source}`);
 }
 async function boot(enabled) {
-  const child = spawn(values.dsh, ['web', '--host', '127.0.0.1', '--port', '0', '--no-open'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(values.dsh, ['web', '--host', '127.0.0.1', '--port', '0', '--no-open'], { env, cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', error;
   child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
   child.on('error', failure => { error = failure; });
@@ -115,7 +118,7 @@ async function boot(enabled) {
 try {
   report.dshVersion = (await cli(['--version'])).stdout.trim();
   assert.equal(report.dshVersion, '0.2.0-rc.2');
-  await writeFile(join(home, 'workspace-sentinel.txt'), 'KEEP_PROJECT_DATA', { mode: 0o600 });
+  await writeFile(join(workspace, 'workspace-sentinel.txt'), 'KEEP_PROJECT_DATA', { mode: 0o600 });
   if (values.previous) await install(values.previous, values['previous-version']);
   await install(values.package, values.version); await boot(true);
   if (values.previous) {
@@ -134,7 +137,7 @@ try {
   assert(!removed.dependencies?.['dsh-ssh-remote']);
   assert(!removed.dsh.profile.bundles.includes('dsh-ssh-remote'));
   await boot(false);
-  assert.equal(await readFile(join(home, 'workspace-sentinel.txt'), 'utf8'), 'KEEP_PROJECT_DATA');
+  assert.equal(await readFile(join(workspace, 'workspace-sentinel.txt'), 'utf8'), 'KEEP_PROJECT_DATA');
   report.checks.push('disable, remove and preserve workspace data');
   if (values.keep) { await install(values.package, values.version); report.checks.push('retained installed profile for UI acceptance'); }
   if (!values.package.startsWith('https:')) report.packageSha256 = createHash('sha256').update(await readFile(values.package)).digest('hex');
