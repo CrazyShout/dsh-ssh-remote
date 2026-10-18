@@ -36,7 +36,7 @@ import termios
 # DSH_BUNDLED_EXTENSIONS
 
 PROTOCOL = "1"
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -454,6 +454,7 @@ class Server:
             "filesystem": {
                 "confinement": "dirfd-no-follow", "internalSymlinks": False,
                 "strongVersion": "sha256-stat-v1",
+                "readRange": {"version": 1, "maxBytes": 196608, "versionKind": "stat-v1"},
                 "discovery": {"version": 1, "maxEntries": 50000, "maxPathBytes": 8388608,
                               "maxPageBytes": 131072, "deadlineMs": 15000},
                 "chunkedWrite": {"supported": True, "maxBytes": MAX_WRITE, "maxChunkBytes": MAX_WRITE_CHUNK},
@@ -748,6 +749,24 @@ class Server:
             ws = self.workspace(p); data, st, version = self.read_bytes(ws, p.get("path", ""), min(requested, MAX_INLINE_READ))
             return {"encoding": "base64", "data": base64.b64encode(data).decode(), "metadata": meta(st, version),
                     "version": version, "statVersion": stat_version(st)}
+        if method == "fs/readRange":
+            offset, length = p.get("offset"), p.get("length")
+            if type(offset) is not int or not 0 <= offset <= 9007199254740991 or type(length) is not int or not 0 <= length <= 196608:
+                raise RpcError("E_INVALID_PARAMS", "range requires a safe offset and length <= 192 KiB")
+            ws = self.workspace(p); fd = ws.open_file(p.get("path", ""))
+            try:
+                before = os.fstat(fd)
+                if not statmod.S_ISREG(before.st_mode): raise RpcError("E_NOT_FILE", "target is not a regular file")
+                version = stat_version(before)
+                expected = p.get("expectedStatVersion")
+                if expected is not None and expected != version: raise RpcError("E_VERSION_MISMATCH", "file changed between range reads")
+                os.lseek(fd, offset, os.SEEK_SET)
+                data = os.read(fd, length)
+                if stat_version(os.fstat(fd)) != version: raise RpcError("E_VERSION_MISMATCH", "file changed during range read")
+                return {"offset": offset, "data": base64.b64encode(data).decode(), "encoding": "base64",
+                        "eof": offset + len(data) >= before.st_size, "statVersion": version}
+            except OSError as exc: raise fail_os(exc)
+            finally: os.close(fd)
         if method == "fs/readOpen":
             def open_read() -> Dict[str, Any]:
                 hid = valid_id(p.get("handleId") or secrets.token_hex(16), "handleId")

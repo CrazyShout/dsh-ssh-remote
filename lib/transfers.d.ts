@@ -10,7 +10,7 @@ export declare class TransferManager {
     private readonly resolve;
     private readonly invalidate;
     readonly store: TransferStore;
-    private readonly queues;
+    private readonly scheduler;
     private readonly runs;
     private readonly busyFiles;
     private readonly timer;

@@ -500,3 +500,15 @@ use. The Python helper improves path binding and lifecycle behavior but cannot
 claim Rust `openat2` confinement, pidfd supervision, or isolation from a
 malicious process running as the same Unix UID. Those remain native-helper
 capabilities and must not be inferred when absent from `server/hello`.
+
+
+### Optional direct ranges (0.11.0)
+
+Capability: `filesystem.readRange = { version: 1, maxBytes: 196608, versionKind: "stat-v1" }`.
+Read-only `fs/readRange` accepts workspaceId, confined relative path, safe nonnegative offset,
+length in [0, 196608], and optional expectedStatVersion. It returns offset, base64 data, eof
+and statVersion. It opens the regular file under the workspace dirfd, seeks directly, and
+checks fstat before/after. Each subsequent block must pass the initial statVersion.
+This token is NOT a content hash; no partial digest is returned as a whole-file version.
+No retained handle or mutation journal entry is allocated. Older helpers retain sequential
+readOpen/readNext fallback. Durable transfer format v1 and process/PTY lifetimes are unchanged.

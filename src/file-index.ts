@@ -1,3 +1,5 @@
+import { prepareCandidate, rankPrepared, type PreparedCandidate } from './file-ranking.js';
+export { rankCandidates } from './file-ranking.js';
 import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -24,7 +26,8 @@ export interface FileIndexResult extends FileIndexStatus {
   candidates: FileReferenceCandidate[];
 }
 interface Snapshot {
-  entries: FileReferenceCandidate[];
+  entries: PreparedCandidate[];
+  memoryBytes: number;
   complete: boolean;
   pathBytes: number;
   unsupported: number;
@@ -128,7 +131,7 @@ export class RemoteFileIndex {
       signal.throwIfAborted();
       if (this.root(scope) !== rootUri || client.sessionId !== current.session) throw new Error('工作区或远程连接身份已改变，请重新搜索。');
       return { ...this.describe(current), sessionId: scope.sessionId, rootUri,
-        candidates: rankCandidates(current.snapshot?.entries ?? [], query, 50, ignored) };
+        candidates: rankPrepared(current.snapshot?.entries ?? [], query, 50, ignored) };
     } finally {
       current.waiters--;
       if (!current.waiters && current.build) {
@@ -160,7 +163,7 @@ export class RemoteFileIndex {
     clearTimeout(victim.abandon); this.entries.delete(victim.key);
   }
   private trimBytes(keep: Entry): void {
-    const total = () => [...this.entries.values()].reduce((sum, e) => sum + (e.snapshot?.pathBytes ?? 0), 0);
+    const total = () => [...this.entries.values()].reduce((sum, e) => sum + (e.snapshot?.memoryBytes ?? 0), 0);
     for (const victim of [...this.entries.values()].filter(e => e !== keep).sort((a, b) => a.lastUsed - b.lastUsed)) {
       if (total() <= MAX_CACHE_BYTES) break;
       victim.snapshot = undefined; victim.invalidated = true;
@@ -191,7 +194,7 @@ export class RemoteFileIndex {
       await call('fs/discoverOpen', { workspaceId, discoveryId, operationId: discoveryId, includeIgnored: entry.ignored },
         { signal, mutation: true, timeoutMs: 5_000 });
       let cursor = 0, bytes = 0, unsupported = 0;
-      const entries: FileReferenceCandidate[] = [];
+      const entries: PreparedCandidate[] = []; let memoryBytes = 0, memoryFull = false;
       const seen = new Set<string>();
       const deadline = this.now() + 20_000;
       while (true) {
@@ -201,16 +204,18 @@ export class RemoteFileIndex {
         if (Buffer.byteLength(JSON.stringify(page.entries)) > 131_072) throw new Error('远端文件发现分页超过字节限制。');
         for (const candidate of page.entries) {
           validateCandidate(candidate);
-          bytes += Buffer.byteLength(candidate.path);
-          if (entries.length >= MAX_ENTRIES || bytes > MAX_BYTES || seen.has(candidate.path)) throw new Error('远端文件发现超出协议容量或路径重复。');
-          seen.add(candidate.path); entries.push(candidate);
+          if (entries.length >= MAX_ENTRIES || seen.has(candidate.path)) throw new Error('远端文件发现超出协议容量或路径重复。');
+          const prepared = prepareCandidate(candidate);
+          if (memoryBytes + prepared.bytes > MAX_BYTES) { memoryFull = true; break; }
+          memoryBytes += prepared.bytes; bytes += Buffer.byteLength(candidate.path);
+          seen.add(candidate.path); entries.push(prepared);
           if (!representable(candidate.path)) unsupported++;
         }
         cursor = page.cursor;
-        if (page.eof) {
+        if (page.eof || memoryFull) {
           if (page.error) throw new Error(`${page.error.code}: ${page.error.message}`);
-          return { entries, pathBytes: bytes, unsupported, complete: page.complete, time: this.now(),
-            message: page.complete ? (unsupported ? `${unsupported} 个文件名不能安全表示为 DSH 引用或预览地址。` : '')
+          return { entries, memoryBytes, pathBytes: bytes, unsupported, complete: page.complete && !memoryFull, time: this.now(),
+            message: page.complete && !memoryFull ? (unsupported ? `${unsupported} 个文件名不能安全表示为 DSH 引用或预览地址。` : '')
               : `索引不完整（${page.reason === 'timeout' ? '扫描超时' : '达到容量上限'}）；未找到不代表文件不存在，可输入完整路径直接打开。` };
         }
         if (this.now() >= deadline) throw new Error('远程索引超时。已保留上次结果，可输入完整路径。');
@@ -260,20 +265,6 @@ function validateCandidate(candidate: FileReferenceCandidate) {
 }
 function validateQuery(query: string) {
   if (typeof query !== 'string' || query.length > 4096 || query.includes('\0') || query.split('/').includes('..')) throw new Error('搜索路径无效或包含上级跳转。');
-}
-/** Shared deterministic matching for native completion and quick open. */
-export function rankCandidates(entries: FileReferenceCandidate[], input: string, limit = 50, includeHidden = false): FileReferenceCandidate[] {
-  const query = input.toLocaleLowerCase();
-  const hidden = includeHidden || query.startsWith('.') || query.includes('/.');
-  const rows = entries.filter(row => hidden || !row.path.split('/').some(p => p.startsWith('.'))).map(row => {
-    const path = row.path.toLocaleLowerCase(), name = path.split('/').pop()!;
-    let score = !query ? (path.includes('/') ? 0 : 100) : name === query ? 1000 : name.startsWith(query) ? 900
-      : name.includes(query) ? 700 : path.includes(query) ? 500 : 0;
-    if (!score && query) { let at = 0; for (const ch of path) if (ch === query[at]) at++; if (at === query.length) score = 300; }
-    return { row, score: score + (score && row.kind === 'directory' ? 25 : 0) };
-  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.row.path.length - b.row.path.length
-    || (a.row.path < b.row.path ? -1 : a.row.path > b.row.path ? 1 : 0));
-  return rows.slice(0, limit).map(x => x.row);
 }
 function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();

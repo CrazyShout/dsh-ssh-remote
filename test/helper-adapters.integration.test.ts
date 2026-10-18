@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,38 @@ async function remoteFixture(): Promise<{
 }
 
 describe('real TypeScript ↔ Python helper adapters', () => {
+  it('seeks directly, checks every range version, and retains correct old-helper fallback', async () => {
+    const fixture = await remoteFixture(), raw = fixture.helper.clientValue;
+    const bytes = Buffer.alloc(700_000, 65); bytes.fill(66, 600_000);
+    await writeFile(join(fixture.root, 'range.bin'), bytes);
+    const fs = new HelperRemoteFileSystem(fixture.helper, fixture.resolveAnchor);
+    const target = await fs.resolve('range.bin', { cwd: fixture.uri });
+    const original = raw.call;
+    const call = vi.spyOn(raw, 'call');
+    expect(Buffer.from(await fs.readByteRange(target, { offset: 600_000, length: 100 }))).toEqual(bytes.subarray(600_000, 600_100));
+    expect(call.mock.calls.filter(([method]) => method === 'fs/readRange')).toHaveLength(1);
+    expect(call.mock.calls.some(([method]) => method === 'fs/readNext')).toBe(false);
+    call.mockClear();
+    expect(Buffer.from(await fs.readByteRange(target, { offset: 50, length: 300_000 }))).toEqual(bytes.subarray(50, 300_050));
+    const ranges = call.mock.calls.filter(([method]) => method === 'fs/readRange');
+    expect(ranges).toHaveLength(2); expect(ranges[1][1]?.expectedStatVersion).toMatch(/^s1:/);
+    expect(ranges.every(([, args]) => Number(args?.length) <= 192 * 1024)).toBe(true);
+    let count = 0;
+    call.mockImplementation(async (...args: any[]) => {
+      if (args[0] === 'fs/readRange' && ++count === 2) await writeFile(join(fixture.root, 'range.bin'), Buffer.alloc(bytes.length, 67));
+      return original.apply(raw, args as any);
+    });
+    await expect(fs.readByteRange(target, { offset: 0, length: 300_000 })).rejects.toThrow(/changed/);
+    call.mockImplementation(original); call.mockClear();
+    await writeFile(join(fixture.root, 'range.bin'), bytes);
+    const capability = raw.capabilities.filesystem as Record<string, unknown>, range = capability.readRange;
+    delete capability.readRange;
+    try {
+      expect(Buffer.from(await fs.readByteRange(target, { offset: 600_000, length: 100 }))).toEqual(bytes.subarray(600_000, 600_100));
+      expect(call.mock.calls.some(([method]) => method === 'fs/readRange')).toBe(false);
+      expect(call.mock.calls.filter(([method]) => method === 'fs/readNext').length).toBeGreaterThan(1);
+    } finally { capability.readRange = range; call.mockRestore(); }
+  });
   it('supports versioned create/read/stream/edit/list and rejects a stale write', async () => {
     const fixture = await remoteFixture();
     const fs = new HelperRemoteFileSystem(fixture.helper, fixture.resolveAnchor);

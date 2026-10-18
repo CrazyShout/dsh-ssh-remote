@@ -94,8 +94,19 @@ export class TransferStore {
     const entries = await this.read<TransferEntry[]>(job.id, `manifest-${Math.floor(index / TRANSFER_PAGE)}`);
     const entry = entries[index % TRANSFER_PAGE]; validateTransferEntries([entry]); return entry;
   }
-  async file(job: StoredTransfer, index: number): Promise<TransferFile> {
-    const entry = await this.manifest(job, index);
+  /** Request-scoped immutable pages. Receipts remain fresh, never cached. */
+  async *scan(job: StoredTransfer, start = 0, end = job.appended): AsyncGenerator<TransferFile> {
+    let page = -1, entries: TransferEntry[] = [];
+    for (let index = start; index < end; index++) {
+      const next = Math.floor(index / TRANSFER_PAGE);
+      if (next !== page) { entries = await this.read(job.id, `manifest-${next}`); validateTransferEntries(entries); page = next; }
+      const entry = entries[index % TRANSFER_PAGE];
+      if (!entry) throw new Error('传输清单页缺少目录项。');
+      yield await this.file(job, index, entry);
+    }
+  }
+  async file(job: StoredTransfer, index: number, entry = undefined as TransferEntry | undefined): Promise<TransferFile> {
+    entry ??= await this.manifest(job, index);
     const base: TransferFile = { ...entry, index, id: `${job.id}-${index}`, state: entry.kind === 'excluded' ? 'skipped' : 'queued', offset: 0 };
     try {
       const saved = await this.read<Partial<TransferFile>>(job.id, `file-${index}`);

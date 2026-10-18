@@ -293,6 +293,27 @@ export class HelperRemoteFileSystem {
     try {
       scope = await this.scope(uri, '/', 'read-only', signal);
       signal?.throwIfAborted();
+      const capability = scope.client.capabilities?.filesystem as { readRange?: { version?: number } } | undefined;
+      if (capability?.readRange?.version === 1) {
+        const chunks: Buffer[] = []; let total = 0, statVersion: string | undefined;
+        const session = scope.client.sessionId;
+        while (total < length) {
+          signal?.throwIfAborted();
+          if (scope.client.sessionId !== session) throw new Error('Remote session changed during range read');
+          const requested = Math.min(STREAM_CHUNK_BYTES, length - total);
+          const result: { offset: number; data: string; eof: boolean; statVersion: string } = await scope.client.call('fs/readRange', {
+            workspaceId: scope.workspaceId, path: scope.path, offset: offset + total, length: requested,
+            ...(statVersion === undefined ? {} : { expectedStatVersion: statVersion }),
+          }, { signal, timeoutMs: 30_000 });
+          const chunk = Buffer.from(result.data, 'base64');
+          if (result.offset !== offset + total || chunk.length > requested || !result.statVersion?.startsWith('s1:')
+            || (statVersion !== undefined && statVersion !== result.statVersion) || (!result.eof && !chunk.length)
+            || scope.client.sessionId !== session) throw new Error('Invalid or changed remote byte range');
+          statVersion = result.statVersion; chunks.push(chunk); total += chunk.length;
+          if (result.eof) break;
+        }
+        return new Uint8Array(Buffer.concat(chunks, total));
+      }
       opened = await scope.client.call<HelperReadOpenResult>('fs/readOpen', {
         workspaceId: scope.workspaceId,
         path: scope.path,
