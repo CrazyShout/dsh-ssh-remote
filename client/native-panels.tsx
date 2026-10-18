@@ -1,4 +1,7 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { sections, usePageVisible, type Workbench } from './workbench.js';
+import { helperStateLabel } from './connection-ui.js';
+import type { HelperHostStatus, RemoteResult } from 'dsh-ssh-remote/ssh';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client';
@@ -6,7 +9,7 @@ import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-ui-conversati
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type {} from '@deepseek-ai/dsh-client-ui-session/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client';
-import { Button, IconDownloadOutlineRegular, IconGlobeOutlineRegular, IconLinkOutlineRegular, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import { Button, Menu, SegmentedTabs, IconGlobeOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
 
 type InfoResult =
@@ -19,12 +22,14 @@ interface WorkspaceInfoRemote {
 
 const TOOLS_ID = 'dsh-ssh-remote.tools';
 const tools = [
-  { kind: 'ssh-quick-open', bit: 2, title: '快速打开', description: '查找并预览远端文件', icon: IconSearchOutlineRegular },
-  { kind: 'ssh-transfers', bit: 4, title: '文件传输', description: '上传和下载文件或目录', icon: IconDownloadOutlineRegular },
-  { kind: 'ssh-ports', bit: 8, title: '端口转发', description: '访问远端运行的网页服务', icon: IconLinkOutlineRegular },
+  { kind: 'ssh-quick-open', bit: 2, title: '快速打开', description: '查找并预览远端文件' },
+  { kind: 'ssh-transfers', bit: 4, title: '文件传输', description: '上传和下载文件或目录' },
+  { kind: 'ssh-ports', bit: 8, title: '端口转发', description: '访问远端运行的网页服务' },
 ] as const;
 type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {
+  workbench: Workbench;
+  statuses(): Promise<RemoteResult<Record<string, HelperHostStatus>>>;
   workspaceInfo(path: string): Promise<InfoResult>;
   openPanel(kind: PanelKind): void;
   availablePanels(): number;
@@ -37,14 +42,14 @@ type NativePanelProps = PropsRuntime<'conversation.session.header.utilities'> & 
 type BlankNativePanelProps = PropsRuntime<'conversation.input.dock'> & NativePanelInjected;
 
 /** Additive optional integration: no sidebar/conversation composition is required at boot. */
-export function mountNativePanels(ctx: Context): () => Promise<void> {
+export function mountNativePanels(ctx: Context, workbench: Workbench): () => Promise<void> {
   const fiber = ctx.inject(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions'], scope => {
     const ssh = scope.remote.sshRemote as WorkspaceInfoRemote;
     // Older plugin backends can still serve settings and directory picking.
     if (typeof ssh.workspaceInfo !== 'function') return () => {};
     const workspaceInfo = (path: string) => ssh.workspaceInfo!(path);
     const inject = (sessionId: SessionId): NativePanelInjected => ({
-        workspaceInfo,
+        workspaceInfo, workbench, statuses: () => scope.remote.sshRemote.statuses(),
         openPanel: (kind: PanelKind) => {
           // The public navigator addresses the visible Session. Never open an
           // old occurrence's terminal in the Session that just replaced it.
@@ -80,8 +85,8 @@ export function mountNativePanels(ctx: Context): () => Promise<void> {
         clearTimeout(timeout);
         if (result.ok && result.value) {
           unregister = scope.sidebarRightTabs.register({
-            id: TOOLS_ID, kind: 'ssh-tools', title: () => '远程工具',
-            guide: [{ id: TOOLS_ID, order: 40, title: () => '远程工具', icon: IconGlobeOutlineRegular }],
+            id: TOOLS_ID, kind: 'ssh-tools', title: () => '远程工作台',
+            guide: [{ id: TOOLS_ID, order: 40, title: () => '远程工作台', icon: IconGlobeOutlineRegular }],
           });
         }
       }, () => { if (revision === generation) clearTimeout(timeout); });
@@ -168,42 +173,59 @@ export function NativePanelActions(props: NativePanelProps) {
 }
 
 export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected) {
+  const { tab } = props.useTabInfo();
   const { key, info, pending } = useRemoteWorkspace(props);
-  const [failure, setFailure] = useState<{ key: string; kind: PanelKind; message: string } | null>(null);
-  const panels = useSyncExternalStore(props.subscribePanels, props.availablePanels, props.availablePanels);
-  const open = (kind: PanelKind) => {
-    setFailure(null);
-    try { props.openPanel(kind); }
-    catch (error) { setFailure({ key, kind, message: error instanceof Error ? error.message : String(error) }); }
-  };
-  return <section aria-label="远程工具" style={{ containerType: 'inline-size', containerName: 'dsh-ssh-tools', height: '100%', minWidth: 0, overflow: 'auto' }}>
-    <style>{'.dsh-ssh-tools-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}@container dsh-ssh-tools (min-width:520px){.dsh-ssh-tools-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}'}</style>
-    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {info ? <>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>远程工具</h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: 'var(--dsw-alias-label-secondary)', fontSize: 13 }}>
-            <span aria-hidden="true" style={{ display: 'flex', flexShrink: 0 }}><IconGlobeOutlineRegular size={16} /></span>
-            <span title={info.alias} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>SSH · {info.alias}</span>
-          </div>
-          <div title={info.remotePath} style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' }}>{info.remotePath}</div>
+  useSyncExternalStore(props.workbench.subscribe, props.workbench.snapshot, props.workbench.snapshot);
+  const selected = props.workbench.selected(props.sessionId);
+  const navigation = tab.navigation;
+  const requested = navigation?.params && 'section' in navigation.params ? navigation.params.section : undefined;
+  useEffect(() => {
+    if (requested && sections.some(section => section.id === requested)) props.workbench.select(props.sessionId, requested);
+  }, [props.workbench, props.sessionId, tab.id, navigation?.revision, requested]);
+  const visible = usePageVisible(tab.visible);
+  const [menu, setMenu] = useState(false), [width, setWidth] = useState(0);
+  const [connection, setConnection] = useState<{ key: string; value: HelperHostStatus }>();
+  const container = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = container.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width));
+    observer.observe(element); return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!visible || !info) return;
+    let live = true, timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try { const result = await props.statuses(); if (live && result.ok && result.value[info.alias]) setConnection({ key, value: result.value[info.alias] }); }
+      catch { /* Existing connection status remains visible; actions report their own errors. */ }
+      if (live) timer = setTimeout(poll, 5000);
+    };
+    void poll(); return () => { live = false; clearTimeout(timer); };
+  }, [visible, key, info?.alias, props.statuses]);
+  const choose = (section: typeof selected) => { props.workbench.select(props.sessionId, section); setMenu(false); };
+  const tabs = sections.map(section => ({ value: section.id, label: section.title, id: `${tab.id}-tab-${section.id}`, panelId: `${tab.id}-panel-${section.id}` }));
+  const status = connection?.key === key ? connection.value : undefined;
+  return <section ref={container} aria-label="远程工作台" className="dsh-ssh-workbench"
+    style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden', color: 'var(--dsw-alias-label-primary)', fontSize: 13 }}>
+    <style>{`.dsh-ssh-workbench *{box-sizing:border-box}.dsh-ssh-workbench textarea,.dsh-ssh-workbench select{font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;max-width:100%;min-width:0}.dsh-ssh-workbench textarea,.dsh-ssh-workbench select{padding:8px}.dsh-ssh-workbench small,.dsh-ssh-workbench summary{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-ssh-workbench summary{cursor:pointer}.dsh-ssh-workbench [role=alert]{color:var(--dsw-alias-label-error);overflow-wrap:anywhere}.dsh-ssh-workbench progress{width:100%;height:5px;accent-color:var(--dsw-alias-brand-primary,#4d7fff)}`}</style>
+    {info ? <>
+      <header style={{ padding: '16px 16px 12px', display: 'grid', gap: 8, borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <IconGlobeOutlineRegular size={16} />
+          <strong title={info.alias} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>SSH · {info.alias}</strong>
+          <small role="status" style={{ flexShrink: 0 }}>{status ? helperStateLabel(status.status) : '读取状态…'}</small>
         </div>
-        <div className="dsh-ssh-tools-grid">
-          {tools.map(tool => <div key={tool.kind} style={{ minWidth: 0 }}>
-            <Button variant="outline" aria-label={tool.title} disabled={(panels & tool.bit) === 0}
-              title={(panels & tool.bit) === 0 ? '工具尚未加载' : undefined}
-              onClick={() => open(tool.kind)}
-              style={{ width: '100%', height: 'auto', minHeight: 76, padding: 14, gap: 12, justifyContent: 'flex-start', textAlign: 'left', whiteSpace: 'normal' }}>
-              <span aria-hidden="true" style={{ display: 'flex', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' }}><tool.icon size={20} /></span>
-              <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>{tool.title}</span>
-                <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-secondary)' }}>{tool.description}</span>
-              </span>
-            </Button>
-            {failure?.key === key && failure.kind === tool.kind && <p role="alert" style={{ fontSize: 12, color: 'var(--dsw-alias-label-error)' }}>{failure.message}</p>}
-          </div>)}
-        </div>
-      </> : <p role="status" style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>{pending ? '正在读取工作区…' : '当前会话没有可用的 SSH 工作区。'}</p>}
-    </div>
+        <div title={info.remotePath} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>{info.remotePath}</div>
+        {width >= 520
+          ? <SegmentedTabs label="远程工作台分区" items={tabs as [typeof tabs[number], ...typeof tabs]} value={selected} onChange={choose} />
+          : <Menu open={menu} onClose={() => setMenu(false)} selectedId={selected} items={sections.map(section => ({ id: section.id, label: section.title }))}
+              onSelect={id => choose(id as typeof selected)} anchor={<Button size="sm" variant="outline" aria-label="选择工作台分区" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>{sections.find(section => section.id === selected)!.title} ▾</Button>} />}
+      </header>
+      {sections.map(section => <div key={section.id} id={`${tab.id}-panel-${section.id}`} role="tabpanel"
+        aria-label={section.title} aria-labelledby={width >= 520 ? `${tab.id}-tab-${section.id}` : undefined}
+        hidden={selected !== section.id} style={{ flex: 1, minHeight: 0, overflow: 'auto', display: selected === section.id ? 'block' : 'none' }}>
+        {props.workbench.render(section.id, { ...props, active: visible && selected === section.id })}
+      </div>)}
+    </> : <p role="status" style={{ padding: 16 }}>{pending ? '正在读取工作区…' : '当前会话没有可用的 SSH 工作区。'}</p>}
   </section>;
 }

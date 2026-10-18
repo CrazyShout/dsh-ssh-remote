@@ -1,5 +1,16 @@
 # Changelog / 更新记录
 
+## 0.11.0
+
+- Breaking: remove SSH2/SFTP and legacy terminal backend exports; add explicit, backed-up OpenSSH configuration migration and guarded rollback.
+- Consolidate quick open, transfers, forwarding and terminal observations in one responsive workbench; preserve native files, terminals and draft protection.
+- Real cross-file concurrency with per-file ordering, stop barriers and fresh durable receipts; manifest pages read once per scan.
+- Direct capability-negotiated range reads, prepared Top-K ranking, visibility-driven polling and progress throttling.
+- Canonical DSH_HOME anchor recovery, shared wire metadata and split client responsibilities. Helper 0.11.0; transfer format v1 unchanged.
+- Explicit DSH 0.2.1-rc.2 compatibility, dual-SDK checks and both official terminal input protocols. Existing 0.2.0-rc.2 support remains.
+- Restore old auxiliary tabs through receiver-bound public navigation, carrying the target section; hidden tabs do not steal focus. Stable service faces avoid redundant queries on parent renders.
+- Acceptance and release remain gated by the versioned acceptance record; no TB throughput claim.
+
 ## 0.10.2 — 2026-10-17
 
 - 中文：提供预构建 GitHub Release 安装包；重写安装与首次连接指南，分离排错和技术参考；新增真实安装包、升级、回退和卸载验收。DSH 仍为 0.2.0-rc.2，helper 仍为 0.10.0，内容哈希不变。

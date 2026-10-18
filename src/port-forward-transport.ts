@@ -42,7 +42,6 @@ export function probeArguments(socket: string, spec: ForwardSpec): string[] {
 /** Runs in a child guardian: parent IPC disconnect disposes this entire owner. */
 export class OpenSshForward {
   private directory?: string;
-  private master?: ChildProcess;
   private readonly children = new Map<ChildProcess, Promise<void>>();
   private diagnostics = '';
   private stopped = false;
@@ -64,7 +63,7 @@ export class OpenSshForward {
     this.directory = await mkdtemp('/tmp/dsh-ports-');
     await chmod(this.directory, 0o700);
     this.checkActive();
-    const child = this.master = this.spawn(masterArguments(this.spec, this.socket, capabilities.sessionTypeSupported));
+    const child = this.spawn(masterArguments(this.spec, this.socket, capabilities.sessionTypeSupported));
     child.stderr?.on('data', chunk => {
       const text = String(chunk); this.diagnostics = redactHelperDiagnostic((this.diagnostics + text).slice(-8192));
       const notice = /administratively prohibited/iu.test(text) ? '最近一次连接被 SSH 服务端拒绝转发；请检查 AllowTcpForwarding / PermitOpen。'

@@ -6,3 +6,4 @@ node_modules/
 coverage/
 .npm-cache/
 dist/
+profile_output/

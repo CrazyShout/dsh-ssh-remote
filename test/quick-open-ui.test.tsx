@@ -2,12 +2,12 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { IndexMenuRefresh, QuickOpenPane, safePreviewPath } from '../client/quick-open.js';
+import { IndexMenuRefresh, ReferenceIndexStatus, QuickOpenPane, safePreviewPath } from '../client/quick-open.js';
 import type { FileIndexResult, FileIndexStatus } from '../client/file-search-types.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
   return { Button: ({ children, variant: _variant, size: _size, ...props }: any) => h('button', props, children),
-    Input: (props: any) => h('input', props) };
+    FileTypeIcon: () => null, Input: ({ className, ...props }: any) => h('span', { className }, h('input', props)) };
 });
 const state = (overrides: Partial<FileIndexResult> = {}): FileIndexResult => ({
   sessionId: 'a', rootUri: 'ssh://host/work', generation: 1, state: 'ready', stale: false,
@@ -25,12 +25,58 @@ async function render() {
   return { remote, container, root, open, close: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 describe('quick open interaction and native menu refresh', () => {
+  it('stretches the public Input wrapper without relying on styles on the inner input', async () => {
+    vi.useFakeTimers(); const f = await render();
+    const form = f.container.querySelector('form')!;
+    expect(form.style.gridTemplateColumns).toBe('minmax(0, 1fr) auto');
+    expect(form.firstElementChild?.tagName).toBe('SPAN');
+    expect(form.querySelector('input')?.style.width).toBe('100%');
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    expect(f.container.textContent).toContain('已索引 1 项');
+    await f.close();
+  });
+  it('navigates results by keyboard and cancels queries when hidden', async () => {
+    vi.useFakeTimers(); const f = await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    const input = f.container.querySelector('[role="combobox"]')!;
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    expect(f.container.querySelector('[role="option"]')?.getAttribute('aria-selected')).toBe('true');
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', false, expect.any(AbortSignal));
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+    await act(async () => f.root.render(createElement(QuickOpenPane, { sessionId: 'a', remote: f.remote, open: f.open, active: false })));
+    const calls = f.remote.query.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(f.remote.query).toHaveBeenCalledTimes(calls);
+    await f.close();
+  });
+  it('makes zero index polls with a closed menu and aborts when it closes or the page hides', async () => {
+    vi.useFakeTimers();
+    let menu = { open: false, hit: { trigger: '@' } }, changed = () => {};
+    const controller = { menu: { getSnapshot: () => menu, subscribe: (listener: () => void) => { changed = listener; return () => {}; } }, refreshOpenMenu: vi.fn() };
+    const remote = { status: vi.fn(async () => ok(state())) } as any;
+    const props = { sessionId: 'a', useSessions: (select: any) => select({ byId: { a: { cwd: '/anchor' } } }), remote,
+      workspaceInfo: vi.fn(async () => ok({ alias: 'host' })), controller: () => controller } as any;
+    const element = document.createElement('div'), root = createRoot(element);
+    await act(async () => root.render(createElement(ReferenceIndexStatus, props)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(remote.status).not.toHaveBeenCalled(); expect(element.textContent).toBe('');
+    await act(async () => { menu = { ...menu, open: true }; changed(); });
+    expect(remote.status).toHaveBeenCalledTimes(1);
+    const signal = remote.status.mock.calls[0][2];
+    await act(async () => { menu = { ...menu, open: false }; changed(); });
+    expect(signal.aborted).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(remote.status).toHaveBeenCalledTimes(1); expect(element.textContent).toBe('');
+    await act(async () => root.unmount());
+  });
   it('debounces, previews by default, edits only explicitly, and scopes includeIgnored/refresh', async () => {
     vi.useFakeTimers(); const f = await render();
     expect(f.remote.query).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(151); });
     const buttons = () => [...f.container.querySelectorAll('button')];
-    await act(async () => buttons().find(b => b.textContent === '中文 space.txt')!.click());
+    await act(async () => (f.container.querySelector('[role="option"]') as HTMLElement).click());
     expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', false, expect.any(AbortSignal));
     await act(async () => buttons().find(b => b.textContent === '编辑')!.click());
     expect(f.open).toHaveBeenLastCalledWith('中文 space.txt', true, expect.any(AbortSignal));

@@ -3,7 +3,8 @@ import type { TransferFile, TransferFileResult, TransferPage, TransferRemote, Tr
 import { CHUNK_BYTES, DownloadStaging, bindDownloadDirectory, cleanupLocalStaging, removeCleanupReceipt, downloadPath, hashFile, hexHash, localDirectory, readLocalChunk,
   validateLocalManifest, type LocalDirectory, type LocalFile } from './transfer-local.js';
 
-interface State { jobs: TransferSummary[]; page?: TransferPage; selected: LocalFile[]; error: string; listError: string; notice: string; busy: boolean; active?: string; progress?: { path: string; bytes: number; size: number; phase: string } }
+interface Progress { path: string; bytes: number; size: number; phase: string }
+interface State { jobs: TransferSummary[]; page?: TransferPage; selected: LocalFile[]; error: string; listError: string; notice: string; busy: boolean; active?: string; progress?: Progress[]; transferredBytes?: number; totalBytes?: number; failures?: Array<{ path: string; message: string }> }
 interface Execution { id: string; run: string; stop: AbortController; promise: Promise<void>; }
 export async function transferResult<T>(promise: Promise<RemoteResult<T>>): Promise<T> {
   let timeout: ReturnType<typeof setTimeout>;
@@ -18,6 +19,10 @@ export class TransferModel {
   private readonly listeners = new Set<() => void>();
   private executor?: Execution;
   private disposed = false;
+  private readonly readers = new Set<AbortController>();
+  private readonly views = new Set<symbol>();
+  private progressTimer?: ReturnType<typeof setTimeout>;
+  private pendingProgress?: Partial<State>;
   private revision = 0;
   private errorRevision = 0;
   private readonly folders = new Map<string, LocalDirectory>();
@@ -28,23 +33,35 @@ export class TransferModel {
   }
   snapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
-  private update(patch: Partial<State>) { if (this.disposed) return; this.state = { ...this.state, ...patch }; for (const fn of this.listeners) fn(); }
+  private update(patch: Partial<State>) { if (this.disposed) return; clearTimeout(this.progressTimer); this.progressTimer = undefined;
+    this.state = { ...this.state, ...this.pendingProgress, ...patch }; this.pendingProgress = undefined; for (const fn of this.listeners) fn(); }
   report(error: unknown) { this.errorRevision++; this.update({ error: error instanceof Error ? error.message : String(error) }); }
   select(files: LocalFile[]) { if (this.executor) throw new Error('请先暂停当前传输。'); validateLocalManifest(files); this.update({ selected: files, error: '', notice: '本地源已选择；请核对清单，然后建立计划或继续原任务。' }); }
   private put(page: TransferPage) {
     this.update({ jobs: [page.job, ...this.state.jobs.filter(job => job.id !== page.job.id)], page });
   }
+  cancelReads() { for (const reader of this.readers) reader.abort(); this.readers.clear(); }
+  observeView(visible: boolean): () => void {
+    if (!visible) return () => {};
+    const token = Symbol(); this.views.add(token);
+    if (this.views.size === 1) void this.refresh();
+    return () => { this.views.delete(token); if (!this.views.size) this.cancelReads(); };
+  }
   async refresh() {
+    const reader = new AbortController(); this.readers.add(reader);
     const revision = this.revision;
     try {
-      const jobs = await transferResult(this.remote.list(this.sessionId, new AbortController().signal));
-      if (revision === this.revision) this.update({ jobs, listError: '' });
-    } catch (error) { if (revision === this.revision) this.update({ listError: String(error) }); }
+      const jobs = await transferResult(this.remote.list(this.sessionId, reader.signal));
+      if (!reader.signal.aborted && revision === this.revision) this.update({ jobs, listError: '' });
+    } catch (error) { if (!reader.signal.aborted && revision === this.revision) this.update({ listError: String(error) }); }
+    finally { this.readers.delete(reader); }
   }
   async page(id: string, cursor = 0) {
+    const reader = new AbortController(); this.readers.add(reader);
     const revision = ++this.revision;
-    try { const page = await transferResult(this.remote.page(this.sessionId, id, cursor, new AbortController().signal)); if (revision === this.revision) this.put(page); }
-    catch (error) { if (revision === this.revision) this.report(error); }
+    try { const page = await transferResult(this.remote.page(this.sessionId, id, cursor, reader.signal)); if (!reader.signal.aborted && revision === this.revision) this.put(page); }
+    catch (error) { if (!reader.signal.aborted && revision === this.revision) this.report(error); }
+    finally { this.readers.delete(reader); }
   }
   async plan(direction: 'upload' | 'download', target: string) {
     if (this.state.busy || this.executor) return;
@@ -81,7 +98,7 @@ export class TransferModel {
     if (folder) this.folders.set(job.id, folder);
     const stop = new AbortController(), run = crypto.randomUUID();
     const execution: Execution = { id: job.id, run, stop, promise: Promise.resolve() };
-    this.executor = execution; this.revision++; this.update({ active: job.id, error: '', notice: '' });
+    this.executor = execution; this.revision++; this.update({ active: job.id, error: '', notice: '', progress: [], failures: [], transferredBytes: 0, totalBytes: job.totalBytes });
     execution.promise = this.execute(execution, job, replace, folder, onlyIndex);
     return execution.promise;
   }
@@ -90,10 +107,15 @@ export class TransferModel {
     let claimed = false, heartbeat: ReturnType<typeof setInterval> | undefined, heartbeatPending = false;
     const send = (action: 'begin' | 'verify' | 'finish', index: number, extra: { sha256?: string; offset?: number; replace?: boolean } = {}) =>
       transferResult(this.remote.file(this.sessionId, { id, run, index, action, ...extra }));
-    const notify = (file: TransferFile, bytes: number, phase: string) => this.update({ progress: { path: file.path, bytes, size: file.size ?? 0, phase } });
+    const progress = new Map<number, Progress>(), offsets = new Map<number, number>();
+    let transferredBytes = 0;
     try {
       const manifest = await this.manifest(id, signal), source = new Map(this.state.selected.map(file => [file.entry.path, file]));
       job = manifest.job;
+      for (const file of manifest.entries) if (file.kind === 'file') {
+        const offset = file.state === 'complete' ? file.size! : file.offset;
+        offsets.set(file.index, offset); transferredBytes += offset;
+      }
       const pending = manifest.entries.filter(file => !['complete', 'skipped'].includes(file.state) && (onlyIndex === undefined || file.index === onlyIndex || file.kind === 'directory'));
       if (job.direction === 'upload') for (const file of pending) {
         const local = source.get(file.path);
@@ -117,7 +139,14 @@ export class TransferModel {
         await send('begin', file.index);
       }
       const files = pending.filter(file => file.kind === 'file'); let cursor = 0;
-      const worker = async () => {
+      const worker = async (slot: number) => {
+        const notify = (file: TransferFile, bytes: number, phase: string) => {
+          progress.set(slot, { path: file.path, bytes, size: file.size ?? 0, phase });
+          if (phase === '传输' || phase === '完成') { transferredBytes += bytes - (offsets.get(file.index) ?? 0); offsets.set(file.index, bytes); }
+          this.pendingProgress = { progress: [...progress.values()], transferredBytes, totalBytes: job.totalBytes };
+          if (phase === '完成') this.update({});
+          else this.progressTimer ??= setTimeout(() => this.update({}), 100);
+        };
         while (cursor < files.length) {
           signal.throwIfAborted(); const file = files[cursor++]; let staging: DownloadStaging | undefined;
           try {
@@ -132,7 +161,7 @@ export class TransferModel {
               result = await send('begin', file.index, { offset: staging.offset });
             }
             while (result.state === 'verifying') { signal.throwIfAborted(); notify(file, result.verifyOffset ?? 0, '校验续传前缀'); result = await send('verify', file.index); }
-            if (result.file.state === 'complete') continue;
+            if (result.file.state === 'complete') { notify(file, file.size!, '完成'); continue; }
             if (staging && (result.file.offset !== staging.offset || result.prefix !== staging.digest)) throw new Error('远端与本地下载前缀不一致。');
             let offset = result.file.offset;
             while (offset < file.size!) {
@@ -157,11 +186,14 @@ export class TransferModel {
           } catch (error) {
             // Close durable chunks even on Pause. Never acknowledge an unclosed write stream.
             if (staging) await staging.checkpoint().catch(checkpointError => this.report(checkpointError));
+            if ((error as Error)?.name !== 'AbortError') this.update({ failures: [
+              ...(this.state.failures ?? []).filter(row => row.path !== file.path), { path: file.path, message: String(error) },
+            ] });
             stop.abort(error); throw error;
           }
         }
       };
-      const outcomes = await Promise.allSettled([worker(), worker()]);
+      const outcomes = await Promise.allSettled([worker(0), worker(1)]);
       const failure = outcomes.find(outcome => outcome.status === 'rejected'); if (failure?.status === 'rejected') throw failure.reason;
       this.update({ notice: onlyIndex === undefined ? '所选任务已传输并完成 SHA-256 校验。' : '本次所选项已处理；其他未完成项保留。' });
     } catch (error) { if ((error as Error)?.name !== 'AbortError') this.report(error); }
@@ -218,7 +250,7 @@ export class TransferModel {
     this.folders.delete(job.id); this.executionIds.delete(job.id); this.update({ jobs: this.state.jobs.filter(row => row.id !== job.id), page: undefined,
       ...(errorRevision === this.errorRevision ? { error: '' } : {}), notice: '暂存及任务记录已清理，已完成文件保留。' });
   }
-  async dispose() { await this.pause(); this.disposed = true; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this.beforeUnload); this.listeners.clear(); this.folders.clear(); }
+  async dispose() { this.cancelReads(); await this.pause(); clearTimeout(this.progressTimer); this.disposed = true; if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this.beforeUnload); this.listeners.clear(); this.folders.clear(); }
 }
 async function boundedResponse(response: Response, signal: AbortSignal): Promise<Uint8Array> {
   const reader = response.body?.getReader(); if (!reader) throw new Error('下载响应没有数据流。');

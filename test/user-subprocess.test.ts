@@ -56,7 +56,7 @@ function setup() {
 describe('Agent-scoped human subprocess routing', () => {
   it('declares scope as a runtime peer so linked plugin loaders share the host scope identity', () => {
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-    expect(manifest.peerDependencies['@deepseek-ai/dsh-scope']).toBe('>=0.2.0-rc.2 <0.3.0');
+    expect(manifest.peerDependencies['@deepseek-ai/dsh-scope']).toBe('>=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0');
   });
 
   it('selects each remote environment concurrently and preserves local Agent boundaries', async () => {

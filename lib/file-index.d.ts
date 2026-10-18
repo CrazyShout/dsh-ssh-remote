@@ -1,3 +1,4 @@
+export { rankCandidates } from './file-ranking.js';
 import type { FileReferenceCandidate, FileReferenceService } from '@deepseek-ai/dsh-file-reference';
 import type { WorkspaceFileScope } from '@deepseek-ai/dsh-api-workspace-files';
 import type { RemoteHelperProvider } from './helper-fs.js';
@@ -39,7 +40,5 @@ export declare class RemoteFileIndex {
     dispose(): Promise<void>;
 }
 export declare function representable(path: string): boolean;
-/** Shared deterministic matching for native completion and quick open. */
-export declare function rankCandidates(entries: FileReferenceCandidate[], input: string, limit?: number, includeHidden?: boolean): FileReferenceCandidate[];
 export declare function installRemoteFileReferencesRouter(service: Pick<FileReferenceService, 'list'>, index: RemoteFileIndex, resolve: RemotePathResolver): () => void;
 //# sourceMappingURL=file-index.d.ts.map

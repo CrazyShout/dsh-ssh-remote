@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { posix } from 'node:path';
+import { TransferScheduler } from './transfer-scheduler.js';
 import { Context } from '@deepseek-ai/cordis';
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths';
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
@@ -11,10 +11,10 @@ import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemoteHelperClient } from './helper/rpc-client.js';
 import type { RemotePathResolver } from './runtime-router.js';
 import { parseSshUri } from './types.js';
-import { TransferStore, TRANSFER_LIMIT, TRANSFER_CHUNK, TRANSFER_PAGE, TRANSFER_RETENTION, TRANSFER_MAX_ENTRIES,
+import { TransferStore, TRANSFER_CHUNK, TRANSFER_PAGE, TRANSFER_RETENTION, TRANSFER_MAX_ENTRIES,
   transferId, transferBytes, transferPath, validateTransferEntries, type StoredTransfer } from './transfer-store.js';
 
-interface Channel { client: RemoteHelperClient; session: string; workspaceId: string; installation: string; }
+interface Channel { client: RemoteHelperClient; session: string; workspaceId: string; installation: string; rootUri: string; }
 interface Execution extends Channel { run: string; job: string; active: Set<number>; lastActivity: number; remaining: number; }
 interface RemoteFile { state: string; offset: number; verifyOffset?: number; prefix?: string; sha256?: string; }
 const digest = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
@@ -27,7 +27,7 @@ const supported = (client: RemoteHelperClient) => {
 
 export class TransferManager {
   readonly store: TransferStore;
-  private readonly queues = new Map<string, Promise<unknown>>();
+  private readonly scheduler = new TransferScheduler();
   private readonly runs = new Map<string, Execution>();
   private readonly busyFiles = new Set<string>();
   private readonly timer: ReturnType<typeof setInterval>;
@@ -38,7 +38,7 @@ export class TransferManager {
     this.store = new TransferStore(directory);
     this.timer = setInterval(() => {
       for (const run of this.runs.values()) if (Date.now() - run.lastActivity > 40_000) {
-        void this.exclusive(run.job, () => this.pauseOwned(run)).catch(() => {});
+        void this.exclusive(run.job, () => this.pauseOwned(run), true).catch(() => {});
       }
     }, 5000); this.timer.unref?.();
   }
@@ -56,11 +56,9 @@ export class TransferManager {
     const { schema: _schema, installation: _installation, sessionId: _session, ...view } = job;
     return { ...view, live: this.runs.has(job.id) };
   }
-  private exclusive<T>(id: string, action: () => Promise<T>): Promise<T> {
+  private exclusive<T>(id: string, action: () => Promise<T>, stopQueued = false): Promise<T> {
     transferId(id);
-    const previous = this.queues.get(id) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(action); this.queues.set(id, next);
-    void next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); }).catch(() => {}); return next;
+    return this.scheduler.control(id, action, stopQueued);
   }
   private async channel(rootUri: string): Promise<Channel> {
     if (this.disposed) throw new Error('传输服务正在关闭。');
@@ -69,7 +67,7 @@ export class TransferManager {
     const identity = await client.call<{ installation: string }>('transfer/identity');
     if (!/^[0-9a-f]{48}$/u.test(identity.installation)) throw new Error('远端安装身份无效。');
     const workspaceId = randomUUID(), parsed = parseSshUri(rootUri);
-    const channel = { client, session, workspaceId, installation: identity.installation };
+    const channel = { client, session, workspaceId, installation: identity.installation, rootUri };
     try {
       const result = await this.call<{ path: string }>(channel, 'workspace/open', {
         workspaceId, operationId: workspaceId, path: parsed.path, access: 'workspace-write',
@@ -113,10 +111,10 @@ export class TransferManager {
   async page(scope: WorkspaceFileScope, id: string, cursor = 0): Promise<TransferPage> {
     const job = await this.owned(scope, id); transferBytes(cursor, job.appended);
     const entries: TransferFile[] = []; let bytes = 0, index = cursor;
-    for (; index < Math.min(job.appended, cursor + TRANSFER_PAGE); index++) {
-      const item = await this.store.file(job, index), size = Buffer.byteLength(JSON.stringify(item));
+    for await (const item of this.store.scan(job, cursor, Math.min(job.appended, cursor + TRANSFER_PAGE))) {
+      const size = Buffer.byteLength(JSON.stringify(item));
       if (entries.length && bytes + size > 128 * 1024) break;
-      entries.push(item); bytes += size;
+      entries.push(item); bytes += size; index++;
     }
     return { job: this.summary(job), entries, next: index, done: index === job.appended };
   }
@@ -197,6 +195,14 @@ export class TransferManager {
     execution.lastActivity = Date.now(); return execution;
   }
   async control(scope: WorkspaceFileScope, request: TransferControl): Promise<TransferPage> {
+    if (request.action === 'pause' || request.action === 'cancel') {
+      transferId(request.id); transferId(request.run);
+      const run = this.runs.get(request.id);
+      if (run) {
+        if (run.rootUri !== this.root(scope)) throw new Error('此任务属于其他 SSH 工作区。');
+        if (run.run !== request.run) throw new Error('任务正在另一个窗口执行，请在那里停止。');
+      } else await this.owned(scope, request.id);
+    }
     return this.exclusive(request.id, async () => {
       const job = await this.owned(scope, request.id); transferId(request.run);
       if (request.action === 'forget') {
@@ -220,7 +226,7 @@ export class TransferManager {
             if (channel.installation !== job.installation) throw new Error('SSH alias 指向的远端安装身份已改变，拒绝续传。');
             await this.call(channel, 'transfer/job', { jobId: job.id, owner: request.run, action: 'claim' });
             let remaining = 0;
-            for (let i = 0; i < job.count; i++) if (!['complete', 'skipped'].includes((await this.store.file(job, i)).state)) remaining++;
+            for await (const file of this.store.scan(job)) if (!['complete', 'skipped'].includes(file.state)) remaining++;
             this.runs.set(job.id, { ...channel, run: request.run, job: job.id, active: new Set(), lastActivity: Date.now(), remaining });
           } catch (error) { await this.closeChannel(channel).catch(() => {}); throw error; }
         }
@@ -260,7 +266,7 @@ export class TransferManager {
         void ownChannel;
       } else throw new Error('无效任务操作。');
       const result = await this.page(scope, job.id); if (request.action === 'resume') result.run = request.run; return result;
-    });
+    }, request.action === 'pause' || request.action === 'cancel');
   }
   private async pauseOwned(run: Execution): Promise<void> {
     if (this.runs.get(run.job) !== run) return;
@@ -280,7 +286,7 @@ export class TransferManager {
   }
   private remotePath(job: StoredTransfer, file: TransferEntry): string { return job.direction === 'upload' ? [job.target, file.path].filter(Boolean).join('/') : file.path; }
   async file(scope: WorkspaceFileScope, request: TransferFileRequest): Promise<TransferFileResult> {
-    return this.exclusive(request.id, async () => {
+    return this.scheduler.file(request.id, request.index, async () => {
       const job = await this.owned(scope, request.id), run = this.running(job, request.run), file = await this.store.file(job, request.index);
       const wasComplete = ['complete', 'skipped'].includes(file.state);
       const args = { id: file.id, owner: run.run }; let result: RemoteFile | undefined;
@@ -298,6 +304,7 @@ export class TransferManager {
             file.state = 'complete';
           } else {
             if (!run.active.has(file.index) && this.busyFiles.size >= 2) throw new Error('同时最多传输两个文件。');
+            run.active.add(file.index); this.busyFiles.add(`${job.id}:${file.index}`);
             if (job.direction === 'upload') {
               if (!request.sha256 || !/^[0-9a-f]{64}$/u.test(request.sha256)) throw new Error('缺少完整源文件 SHA-256。');
               if (file.sha256 && file.sha256 !== request.sha256) throw new Error('重新选择的源文件内容已改变，拒绝拼接。');
@@ -310,7 +317,6 @@ export class TransferManager {
             }
             // Persist admission before dispatch: a lost open response remains visible to Cancel.
             file.state = 'verifying'; await this.store.saveFile(job, file);
-            run.active.add(file.index); this.busyFiles.add(`${job.id}:${file.index}`);
             result = await this.call<RemoteFile>(run, 'transfer/open', { ...args, jobId: job.id, path, direction: job.direction,
               size: file.size!, ...(job.direction === 'upload' ? { sha256: file.sha256, replaceVersion: file.replaceVersion } : { version: file.version }) });
             if (result.state !== 'complete') result = await this.call<RemoteFile>(run, 'transfer/claim', { ...args, ...(job.direction === 'download' ? { offset: transferBytes(request.offset ?? 0, file.size!) } : {}) });
@@ -343,7 +349,7 @@ export class TransferManager {
     await this.closeChannel(run); this.runs.delete(job.id); job.state = 'complete'; job.updated = Date.now(); await this.store.write(job.id, 'job', job);
   }
   async upload(scope: WorkspaceFileScope, id: string, index: number, runId: string, offset: number, bytes: Uint8Array, expectedHash: string, signal?: AbortSignal): Promise<TransferFile> {
-    return this.exclusive(id, async () => {
+    return this.scheduler.file(id, index, async () => {
       const job = await this.owned(scope, id), run = this.running(job, runId), file = await this.store.file(job, index);
       if (job.direction !== 'upload' || !run.active.has(index) || bytes.length > TRANSFER_CHUNK || digest(bytes) !== expectedHash) throw new Error('上传执行身份、分块大小或校验失败。');
       transferBytes(offset, file.size!);
@@ -352,7 +358,7 @@ export class TransferManager {
     });
   }
   async download(scope: WorkspaceFileScope, id: string, index: number, runId: string, offset: number, signal?: AbortSignal): Promise<{ bytes: Uint8Array; sha256: string }> {
-    return this.exclusive(id, async () => {
+    return this.scheduler.file(id, index, async () => {
       const job = await this.owned(scope, id), run = this.running(job, runId), file = await this.store.file(job, index);
       if (job.direction !== 'download' || !run.active.has(index)) throw new Error('下载执行身份失效。');
       transferBytes(offset, file.size!);
@@ -365,7 +371,7 @@ export class TransferManager {
   }
   async dispose() {
     this.disposed = true; clearInterval(this.timer);
-    await Promise.allSettled([...this.runs.values()].map(run => this.exclusive(run.job, () => this.pauseOwned(run))));
+    await Promise.allSettled([...this.runs.values()].map(run => this.exclusive(run.job, () => this.pauseOwned(run), true)));
   }
 }
 

@@ -89,6 +89,8 @@ class DurableTransfers:
         os.chmod(self.path, 0o700)
         self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         self.hashes = {}; self.scans = {}; self.lock = threading.RLock()
+        self.admission = threading.Condition(self.lock)
+        self.readers = 0; self.writer = False; self.waiting_writers = 0; self.closed = False
         self.scan_lock = threading.Lock(); self.scans_pending = {}
         with self.locked('installation-identity'):
             try: self.installation = self.load('installation-identity')['id']
@@ -98,7 +100,10 @@ class DurableTransfers:
         self.sweep_offset = 0
 
     def close(self):
-        with self.lock:
+        with self.admission:
+            self.closed = True
+            self.admission.notify_all()
+            while self.readers or self.writer: self.admission.wait()
             with self.scan_lock:
                 for _, event in self.scans_pending.values(): event.set()
                 self.scans.clear()
@@ -106,16 +111,52 @@ class DurableTransfers:
             self.hashes.clear()
 
     @contextlib.contextmanager
-    def locked(self, key):
+    def record_lock(self, key):
+        """Caller holds store.lock SH/EX; never unlink while shared owners exist."""
         require(bool(ID.fullmatch(key)), 'E_INVALID_PARAMS', 'invalid transfer identity')
-        with self.lock:
+        fd = os.open(key + '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
+        try:
+            require(stat.S_ISREG(os.fstat(fd).st_mode) and os.fstat(fd).st_uid == os.getuid(), 'E_IDENTITY', 'unsafe record lock')
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally: os.close(fd)
+
+    @contextlib.contextmanager
+    def locked(self, key, shared=False):
+        require(bool(ID.fullmatch(key)), 'E_INVALID_PARAMS', 'invalid transfer identity')
+        with self.admission:
+            if not shared: self.waiting_writers += 1
+            try:
+                while not self.closed and (self.writer or (self.waiting_writers if shared else self.readers)):
+                    self.admission.wait()
+                require(not self.closed, 'E_RETIRED', 'transfer store closed')
+                if shared: self.readers += 1
+                else: self.writer = True
+            finally:
+                if not shared: self.waiting_writers -= 1
+        try:
             fd = os.open('store.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
             try:
                 require(stat.S_ISREG(os.fstat(fd).st_mode) and os.fstat(fd).st_uid == os.getuid(), 'E_IDENTITY', 'unsafe transfer lock')
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                yield
+                # 0.10.x takes EX on this same gate. SH permits 0.11 data lanes
+                # to overlap without ever racing an older helper's transaction.
+                fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+                if shared:
+                    with self.record_lock(key): yield
+                else:
+                    try: yield
+                    finally:
+                        # EX excludes even pending record openers in other helpers.
+                        # No unlinked lock inode can split two owners' lock domain.
+                        try: os.unlink(key + '.lock', dir_fd=self.fd)
+                        except FileNotFoundError: pass
             except BlockingIOError: raise TransferError('E_BUSY', 'transfer is owned by another operation')
             finally: os.close(fd)
+        finally:
+            with self.admission:
+                if shared: self.readers -= 1
+                else: self.writer = False
+                self.admission.notify_all()
 
     def load(self, key):
         fd = os.open(key + '.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
@@ -209,7 +250,7 @@ class DurableTransfers:
                 return {'created': True}
             finally: root.close()
         key = p.get('id'); require(isinstance(key, str) and bool(ID.fullmatch(key)), 'E_INVALID_PARAMS', 'invalid transfer id')
-        with self.locked(key):
+        with self.locked(key, shared=method in ('write', 'read')):
             if method == 'open': return self.open(key, p)
             try: r = self.load(key)
             except FileNotFoundError:
@@ -494,9 +535,10 @@ class DurableTransfers:
 
     def job_owner(self, r, p, cleanup=False):
         if not r.get('jobId'): return
-        job = self.load('job-' + r['jobId'])
-        require((job['state'] == 'active' or cleanup and job['state'] == 'cleanup') and job['root'] == r['root'] and job['rootIdentity'] == r['rootIdentity'], 'E_LEASE', 'claim the owning job first')
-        self.lease(job, p); job['updated'] = time.time(); self.save(job['id'], job)
+        with self.record_lock('job-' + r['jobId']):
+            job = self.load('job-' + r['jobId'])
+            require((job['state'] == 'active' or cleanup and job['state'] == 'cleanup') and job['root'] == r['root'] and job['rootIdentity'] == r['rootIdentity'], 'E_LEASE', 'claim the owning job first')
+            self.lease(job, p); job['updated'] = time.time(); self.save(job['id'], job)
 
     def capacity(self):
         with os.scandir(self.path) as entries: count = sum(1 for _, item in zip(range(20002), entries))

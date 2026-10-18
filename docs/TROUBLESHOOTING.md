@@ -69,6 +69,8 @@ DSH `0.1.7-rc.2` 和 `0.2.0-rc.2` 会在 Git 安装失败后附带通用的
 
 ## English
 
+0.11.0 no longer depends on ssh2/cpu-features. The exact optional-build workaround below applies only when rolling back to 0.10.2. Do not attribute other plugins’ build prompts to this version. Legacy hosts require the [explicit migration](MIGRATION-0.11.md).
+
 Start with the first error, not the last generic hint. Check the running DSH profile and restart after installation. Desktop carries its own runtime; a separate CLI installation does not update it.
 
 - Download: if GitHub is unreachable, download the release .tgz elsewhere and install its absolute local path. Runtime dependencies still require network access.

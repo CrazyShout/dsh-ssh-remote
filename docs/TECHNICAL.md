@@ -45,12 +45,11 @@
 - **恢复和诊断**：私有 daemon 会在恢复窗口内保留 workspace、文件读取 cursor、进程和
   PTY。设置页展示安装中、连接中、已连接、能力受限、重连中、错误，以及版本、能力、
   Retry、Disconnect 和已脱敏诊断。
-- **显式兼容路径**：旧 DSH host 设置仍可使用加固后的 ssh2/SFTP 实现；helper 失败后
-  不会静默切换过去。
+- **单一后端**：旧 SSH2/SFTP 实现已移除。旧 host 设置仅供显式[迁移向导](MIGRATION-0.11.md)导入，不作为运行后端。
 
 ## 当前 DSH 上游边界
 
-当前版本面向 DSH `0.2.0-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
+当前版本面向 DSH `0.2.0-rc.2` 和 `0.2.1-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
 连接计数；握手阶段的连接级错误保留原始错误代码和提示。早期版本的 `dsh-settings` register API 和
 `ShellExecutor` 的 `run`/`start` 接口已分别被标准 Cordis `Config` 和单一
 `execute()` 方法取代，插件已随之适配。SSH 上传中断只会令本次连接失败。
@@ -92,7 +91,7 @@ Harness 会把精确映射保存在 `$DSH_HOME/ssh-workspace-anchors.json`，anc
   后，断线 mutation 才允许最多重放一次。
 - 输出、资源、并发请求、operation journal 和 retention 全部有硬上限；完成记录只会在
   超过恢复安全窗口后过期。
-- 插件不会修改 `~/.ssh/config`、私钥或 known_hosts。
+- 只有用户明确确认迁移时才写入独立 SSH 配置片段及 Include；启动和升级不写入。私钥内容与 known_hosts 不变。
 
 POSIX 没有通用的「仅当路径仍指向 inode X 时 rename」原语。helper 会串行化自身写入、
 在发布前复核身份和内容并原子发布，但任意不合作的外部 writer 仍可能卡入最后一次检查到
@@ -170,12 +169,11 @@ Implemented:
   cursors, processes, and PTYs during the reconnect window. The settings panel
   shows installing/connecting/connected/degraded/reconnecting/error, helper
   version, capabilities, errors, Retry, Disconnect, and redacted diagnostics.
-- **Safe compatibility path.** Old DSH-host settings may still use the hardened
-  ssh2/SFTP implementation. It is not selected silently for a failed helper.
+- **One backend.** SSH2/SFTP is removed. Legacy host settings are an import source for the explicit [migration wizard](MIGRATION-0.11.md), never a runtime fallback.
 
 ## Honest upstream boundaries
 
-Version The current plugin targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version The current plugin targets DSH `0.2.0-rc.2` and `0.2.1-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`

@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { loadHelperAsset } from '../lib/helper/installer.js';
 
 export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
-export const expectedHelperSha256 = '07a6170d3d248855992c320d1c9e55c1fd21c26c690e6a8f1c6de57d3659a3dc';
+export const expectedHelperSha256 = '3c3b35a6a6c20703053cb06d8ee770031d92266750d7909bc41e96087f8d09be';
 
 function exportPaths(value) {
   if (typeof value === 'string') return [value.replace(/^\.\//u, '')];
@@ -30,6 +30,8 @@ export function validatePackage(manifest, files, expectedVersion = manifest.vers
     assert.equal(manifest.scripts?.[name], undefined, `Unexpected install lifecycle: ${name}`);
   }
   assert(!files.some(path => path.startsWith('node_modules/') || path.startsWith('src/') || path.startsWith('test/')));
+  assert(!manifest.dependencies?.ssh2 && !manifest.dependencies?.['cpu-features'], 'Legacy native SSH dependencies must not return');
+  assert(!shipped.has('lib/connection.js') && !shipped.has('lib/fs.js'), 'Legacy SFTP runtime must not ship');
 }
 
 export function packRelease({ output = join(repositoryRoot, 'dist'), version } = {}) {
@@ -43,12 +45,12 @@ export function packRelease({ output = join(repositoryRoot, 'dist'), version } =
   }));
   validatePackage(manifest, packed.files.map(file => file.path), version);
   const helper = loadHelperAsset();
-  assert.equal(helper.sha256, expectedHelperSha256, '0.10.2 must preserve helper bytes');
+  assert.equal(helper.sha256, expectedHelperSha256, 'Helper asset differs from the reviewed 0.11.0 build');
   const archive = join(target, packed.filename);
   const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const report = { name: manifest.name, version: manifest.version, filename: packed.filename,
     sha256, size: packed.size, unpackedSize: packed.unpackedSize, entryCount: packed.entryCount,
-    dshVersion: '0.2.0-rc.2', helperVersion: '0.10.0', helperSha256: helper.sha256,
+    dshVersion: '0.2.0-rc.2', dshVersions: ['0.2.0-rc.2', '0.2.1-rc.2'], helperVersion: '0.11.0', helperSha256: helper.sha256,
     commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim() };
   writeFileSync(join(target, 'SHA256SUMS'), `${sha256}  ${packed.filename}\n`);
   writeFileSync(join(target, 'release-manifest.json'), JSON.stringify(report, null, 2) + '\n');

@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { stripVTControlCharacters } from 'node:util';
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { TerminalController, WebTerminalInfo } from '@deepseek-ai/dsh-api-terminal-controller';
 import type { WorkspaceFileScope } from '@deepseek-ai/dsh-api-workspace-files';
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';

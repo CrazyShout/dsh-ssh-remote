@@ -1,6 +1,5 @@
 import type { TerminalBackend, TerminalBackendSession, TerminalBackendSpawnSpec, TerminalReadRequest, TerminalReadResult, TerminalSendOperation, TerminalSendRequest, TerminalSessionStatus, TerminalSignal, TerminalSignalResult } from '@deepseek-ai/dsh-terminal';
 import type SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy';
-import type { SshConnectionManager } from './connection.js';
 import type { RemotePathResolver } from './runtime-router.js';
 /** Minimal RPC client surface consumed by the terminal backend. */
 export interface RemoteHelperClient {
@@ -75,23 +74,10 @@ export declare class RemoteTerminalBackend implements TerminalBackend {
     private readonly helpers;
     private readonly resolveRemotePath;
     private readonly sandboxPolicy;
-    constructor(helpers: RemoteHelperProvider | SshConnectionManager, resolveRemotePath: RemotePathResolver, sandboxPolicy?: Pick<SandboxPolicyService, 'resolve'>);
+    constructor(helpers: RemoteHelperProvider, resolveRemotePath: RemotePathResolver, sandboxPolicy?: Pick<SandboxPolicyService, 'resolve'>);
     spawn(spec: TerminalBackendSpawnSpec): Promise<TerminalBackendSession>;
     private remoteUri;
     dispose(): Promise<void>;
 }
-/**
- * Compatibility backend that opens a raw ssh2 login shell. It does not provide
- * helper-backed sandboxing or verified foreground-process signalling and must
- * therefore be selected explicitly by legacy compositions.
- */
-export declare class LegacySsh2RemoteTerminalBackend implements TerminalBackend {
-    private readonly connections;
-    private readonly resolveRemotePath;
-    readonly type = "ssh";
-    constructor(connections: SshConnectionManager, resolveRemotePath: RemotePathResolver);
-    spawn(spec: TerminalBackendSpawnSpec): Promise<TerminalBackendSession>;
-}
-/** Explicit short name for the compatibility backend. */
-export { LegacySsh2RemoteTerminalBackend as Ssh2RemoteTerminalBackend };
+export {};
 //# sourceMappingURL=terminal.d.ts.map

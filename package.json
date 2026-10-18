@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.10.2",
-  "description": "DeepSeek Harness SSH remote workspaces with a versioned system-OpenSSH helper runtime and compatibility fallback.",
+  "version": "0.11.0",
+  "description": "DeepSeek Harness SSH remote workspaces powered by system OpenSSH and a versioned Python helper.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -18,10 +18,27 @@
     "./remote": "./lib/typert.remote-client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
-    "./transfers": { "types": "./shared/transfers.d.ts" },
-    "./terminal-state": { "types": "./shared/terminal-state.d.ts" },
-    "./terminal-state-schema": { "types": "./shared/terminal-state-schema.d.ts", "default": "./shared/terminal-state-schema.js" },
-    "./transfer-schema": { "types": "./shared/transfer-schema.d.ts", "default": "./shared/transfer-schema.js" }
+    "./transfers": {
+      "types": "./shared/transfers.d.ts"
+    },
+    "./terminal-state": {
+      "types": "./shared/terminal-state.d.ts"
+    },
+    "./terminal-state-schema": {
+      "types": "./shared/terminal-state-schema.d.ts",
+      "default": "./shared/terminal-state-schema.js"
+    },
+    "./transfer-schema": {
+      "types": "./shared/transfer-schema.d.ts",
+      "default": "./shared/transfer-schema.js"
+    },
+    "./ssh-schema": { "types": "./shared/ssh-schema.d.ts", "default": "./shared/ssh-schema.js" },
+    "./migration": {
+      "types": "./shared/migration.d.ts"
+    },
+    "./ssh": {
+      "types": "./shared/ssh.d.ts"
+    }
   },
   "files": [
     "lib",
@@ -54,21 +71,20 @@
   "dependencies": {
     "@noble/hashes": "2.4.0",
     "@deepseek-ai/schemastery": "^3.18.0",
-    "ssh2": "^1.16.0",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-atomic-write": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-fs": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-sandbox": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-sandbox-policy": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-scope": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-shell": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-terminal": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3.0"
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-fs": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-sandbox": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-sandbox-policy": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-scope": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-shell": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-terminal": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -109,7 +125,6 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.3.7",
-    "@types/ssh2": "^1.15.0",
     "esbuild": "^0.28.2",
     "jsdom": "^26.1.0",
     "react": "^18.2.0",
@@ -139,7 +154,6 @@
     "dsh-plugin",
     "ssh",
     "remote",
-    "sftp",
     "workspace"
   ]
 }

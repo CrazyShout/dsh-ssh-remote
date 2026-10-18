@@ -6,7 +6,7 @@ on:
       version:
         description: Package version to release from main
         required: true
-        default: '0.10.2'
+        default: '0.11.0'
 
 permissions:
   contents: read
@@ -50,4 +50,4 @@ jobs:
       - name: Pack and create draft
         run: |
           npm run release:pack -- --version "$RELEASE_VERSION" --out "$RUNNER_TEMP/release"
-          gh release create "v$RELEASE_VERSION" --draft --target "$GITHUB_SHA" --title "v$RELEASE_VERSION — Easier installation" --notes-file "docs/releases/$RELEASE_VERSION.md" "$RUNNER_TEMP/release/dsh-ssh-remote-$RELEASE_VERSION.tgz" "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/release/release-manifest.json"
+          gh release create "v$RELEASE_VERSION" --draft --target "$GITHUB_SHA" --title "v$RELEASE_VERSION — Unified remote workbench" --notes-file "docs/releases/$RELEASE_VERSION.md" "$RUNNER_TEMP/release/dsh-ssh-remote-$RELEASE_VERSION.tgz" "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/release/release-manifest.json"

@@ -1,10 +1,9 @@
 import { Context } from '@deepseek-ai/cordis';
 import { type LegacySshConfig } from './registry.js';
 export type { DiscoveredSshHost, HelperHostDiagnostics, HelperHostStatus, HelperHostStatuses, RemoteDirectoryEntry, RemoteDirectoryListing, SshConfig, SshHostEntry, SshWorkspaceAnchor, RemoteWorkspaceInfo, } from './registry.js';
-export { LegacySsh2RemoteTerminalBackend, Ssh2RemoteTerminalBackend } from './terminal.js';
 export declare const name = "dsh-ssh-remote";
 export declare const inject: string[];
-/** Legacy SSH host fallback consumed through the standard Cordis Config. */
+/** Legacy SSH host import source consumed through the standard Cordis Config. */
 export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
     hosts: import("@deepseek-ai/schemastery").default<({
         name?: string | null | undefined;

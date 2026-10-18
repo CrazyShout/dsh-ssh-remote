@@ -25,7 +25,9 @@ export declare class TransferStore {
     job(id: string): Promise<StoredTransfer>;
     list(): Promise<StoredTransfer[]>;
     manifest(job: StoredTransfer, index: number): Promise<TransferEntry>;
-    file(job: StoredTransfer, index: number): Promise<TransferFile>;
+    /** Request-scoped immutable pages. Receipts remain fresh, never cached. */
+    scan(job: StoredTransfer, start?: number, end?: number): AsyncGenerator<TransferFile>;
+    file(job: StoredTransfer, index: number, entry?: TransferEntry | undefined): Promise<TransferFile>;
     saveFile(job: StoredTransfer, entry: TransferFile): Promise<void>;
     forget(id: string): Promise<void>;
 }
