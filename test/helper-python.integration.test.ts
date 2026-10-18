@@ -903,6 +903,7 @@ print(json.dumps(observed))
       expect(() => nodeProcess.kill(immediate.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
     }
 
+    await expect(rpc.request('health/status')).resolves.toMatchObject({ processes: 0 });
     const cappedStarts = await Promise.allSettled(Array.from({ length: 40 }, (_, index) => rpc.request('process/start', {
       workspaceId: danger.workspaceId, cwd: '', processId: `capped-${index}`, operationId: `start-capped-${index}`,
       argv: ['/bin/sleep', '30'], stdin: 'closed',
@@ -910,8 +911,8 @@ print(json.dumps(observed))
     const startedAtLimit = cappedStarts
       .map((result, index) => ({ result, index }))
       .filter((item): item is { result: PromiseFulfilledResult<any>; index: number } => item.result.status === 'fulfilled');
-    expect(startedAtLimit).toHaveLength(32);
     const rejectedAtLimit = cappedStarts.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(startedAtLimit, JSON.stringify(rejectedAtLimit.map(result => ({ code: result.reason.code, message: result.reason.message })))).toHaveLength(32);
     expect(rejectedAtLimit).toHaveLength(8);
     expect(rejectedAtLimit.map(result => ({ code: result.reason.code, message: result.reason.message })))
       .toEqual(Array.from({ length: 8 }, () => ({ code: 'E_RESOURCE_LIMIT', message: expect.any(String) })));

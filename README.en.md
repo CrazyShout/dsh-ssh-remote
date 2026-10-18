@@ -34,7 +34,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.0/dsh-ssh-r
 3. Version 0.11.0 removes `ssh2` / `cpu-features` and their native build prompts. Review any other dependency prompts in the official installer; do not globally allow unknown build scripts.
 4. Click **Enable now / 立即启用** after installation (listed as `dsh-ssh-remote`), then fully restart that Desktop instance or Web server.
 
-![Inspecting and installing the prebuilt package in the official plugin page](docs/images/install.png)
+![Pasting a pinned release address into the official plugin installer](docs/images/install.png)
 
 The package includes built runtime files: no clone or compilation is needed. Installation still downloads runtime dependencies. **The npm package named `dsh-ssh-remote` belongs to another project: use the complete address above.** Desktop and Web use separate profiles and need separate installation.
 
@@ -105,6 +105,8 @@ DSH's Finder/local-application actions still refer to the local machine. Use the
 ```sh
 dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz'
 ```
+
+The 0.10.2 rollback package was validated with DSH 0.2.0-rc.2, not the newer Desktop prerelease. Do not silently downgrade an application that has already opened newer data merely to roll back a plugin.
 
 - **Disable:** switch off the bundle in the plugin page, retaining its files and settings; restart if requested by DSH.
 - **Remove:** use the corresponding application's plugin page. For Web, stop the server and run:

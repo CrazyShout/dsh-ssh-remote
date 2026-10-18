@@ -11,6 +11,8 @@ Release packages are built with the repository's committed `lib/`, not on the us
 
 For 0.11.0, keep v0.10.2 immutable. The helper changes to 0.11.0; pin the reviewed combined asset hash in the pack validator. Preserve transfer manifest v1 and check actual old-package resume. No automatic SSH migration is allowed in acceptance; configuration writes use private fixtures.
 
+Keep the release build pinned to the oldest supported SDK. `node scripts/check-dsh-sdk.mjs 0.2.1-rc.2` installs the newer SDK into a temporary source copy and checks Host/Client types plus the full suite without changing the source lockfile. Package-install CI covers both DSH versions on macOS/Linux and Node 22/24. For an independent newer CLI use `--dsh /absolute/path/to/dsh --dsh-version 0.2.1-rc.2`; never upgrade the user's global CLI just to run acceptance. The v0.10.2 rollback package is validated on DSH 0.2.0-rc.2, not the newer prerelease.
+
 ## Draft and publish
 
 1. Merge the reviewed change into `main` after CI succeeds.

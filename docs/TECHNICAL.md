@@ -49,7 +49,7 @@
 
 ## 当前 DSH 上游边界
 
-当前版本面向 DSH `0.2.0-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
+当前版本面向 DSH `0.2.0-rc.2` 和 `0.2.1-rc.2`。取消的连接探测即使遇到 broken pipe，也会回收 daemon
 连接计数；握手阶段的连接级错误保留原始错误代码和提示。早期版本的 `dsh-settings` register API 和
 `ShellExecutor` 的 `run`/`start` 接口已分别被标准 Cordis `Config` 和单一
 `execute()` 方法取代，插件已随之适配。SSH 上传中断只会令本次连接失败。
@@ -173,7 +173,7 @@ Implemented:
 
 ## Honest upstream boundaries
 
-Version The current plugin targets DSH `0.2.0-rc.2`. Cancelled connection probes
+Version The current plugin targets DSH `0.2.0-rc.2` and `0.2.1-rc.2`. Cancelled connection probes
 release daemon connection capacity even when a stream closes with a broken
 pipe; pre-handshake connection failures retain their original error code and
 message. The earlier `dsh-settings`

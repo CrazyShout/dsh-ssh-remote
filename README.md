@@ -34,7 +34,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.0/dsh-ssh-r
 3. 0.11.0 已移除 `ssh2` / `cpu-features`，不再需要这两个包的原生构建。若出现其他依赖提示，按官方安装器核对；不要全局允许未知脚本。
 4. 安装完成后点击 **立即启用**（插件列表中名称为 `dsh-ssh-remote`），然后完整重启当前 Desktop 或 Web 服务。
 
-![在官方插件页面检查并安装预构建包](docs/images/install.png)
+![在官方插件页面粘贴固定版本安装地址](docs/images/install.png)
 
 这是预构建安装包，无需克隆仓库或运行编译命令；安装仍会联网下载运行依赖。**npm 上同名的 `dsh-ssh-remote` 属于其他项目，请使用本页完整地址。** Desktop 与 Web 有各自的 profile，需要分别安装。
 
@@ -105,6 +105,8 @@ DSH 的 Finder / 本机应用打开入口仍是本机操作；远端文件请使
 ```sh
 dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz'
 ```
+
+0.10.2 回退包的已验收基线是 DSH 0.2.0-rc.2；不要把它当作新版 Desktop 的通用回退方案，也不要为回退插件擅自降级已打开过数据的桌面应用。
 
 - **停用**：在插件页面关闭该组合包，保留安装文件和配置；按界面提示重启。
 - **卸载**：在对应应用的插件页面卸载。Web 也可以停止服务后运行：
