@@ -9,6 +9,7 @@
 - Canonical DSH_HOME anchor recovery, shared wire metadata and split client responsibilities. Helper 0.11.0; transfer format v1 unchanged.
 - Explicit DSH 0.2.1-rc.2 compatibility, dual-SDK checks and both official terminal input protocols. Existing 0.2.0-rc.2 support remains.
 - Restore old auxiliary tabs through receiver-bound public navigation, carrying the target section; hidden tabs do not steal focus. Stable service faces avoid redundant queries on parent renders.
+- Bind quick-open candidates to their exact query and ignore-mode identity so fast Enter cannot activate an old result while the next search is pending.
 - Acceptance and release remain gated by the versioned acceptance record; no TB throughput claim.
 
 ## 0.10.2 — 2026-10-17
