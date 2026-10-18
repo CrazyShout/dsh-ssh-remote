@@ -77,7 +77,7 @@ async function fixture() {
   // Exercise the actual Cordis service face used by injected production
   // adapters. Its bound methods are not reference-equal across property reads.
   const files = context.workspaceFiles;
-  cleanups.push(installRemoteFileSystemRouter(fs, {} as never, resolveAnchor, helper));
+  cleanups.push(installRemoteFileSystemRouter(fs, resolveAnchor, helper));
   const restore = installRemoteWorkspaceFilesRouter(files, helper, resolveAnchor);
   cleanups.push(restore);
   const scope: WorkspaceFileScope = { sessionId: 'fixture-session' as WorkspaceFileScope['sessionId'], workspaceRoot: anchor };

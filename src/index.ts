@@ -37,12 +37,11 @@ export type {
   SshWorkspaceAnchor,
   RemoteWorkspaceInfo,
 } from './registry.js';
-export { LegacySsh2RemoteTerminalBackend, Ssh2RemoteTerminalBackend } from './terminal.js';
 
 export const name = 'dsh-ssh-remote';
 export const inject = ['fs', 'subprocess'];
 
-/** Legacy SSH host fallback consumed through the standard Cordis Config. */
+/** Legacy SSH host import source consumed through the standard Cordis Config. */
 export const Config = LegacySshRemoteSettingsSchema;
 
 export function apply(ctx: Context, config: LegacySshConfig) {
@@ -62,7 +61,6 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const referencesFiber = ctx.inject(['fileReferences'], scope => installRemoteFileReferencesRouter(scope.fileReferences, fileIndex, resolveRemotePath));
   const restoreFileSystem = installRemoteFileSystemRouter(
     ctx.fs,
-    service.connections,
     resolveRemotePath,
     helpers,
   );

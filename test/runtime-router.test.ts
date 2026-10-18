@@ -4,6 +4,7 @@ import {
   installRemoteFileSystemRouter,
   installRemoteSubprocessRouter,
 } from '../src/runtime-router.js';
+import { AnchorRegistry } from '../src/anchors.js';
 import { SshRemoteService } from '../src/registry.js';
 
 function fakeFileSystem() {
@@ -25,30 +26,20 @@ function fakeFileSystem() {
 }
 
 
-function fakeConnections() {
-  const sftp = {
-    realpath(path: string, callback: (error: Error | undefined, resolved: string) => void) {
-      callback(undefined, path);
-    },
-    lstat(_path: string, callback: (error: Error | undefined) => void) {
-      callback(Object.assign(new Error('no such file'), { code: 2 }));
-    },
-    createReadStream(path: string, options: { start: number; end: number }) {
-      const total = options.end - options.start + 1;
-      const buf = Buffer.alloc(total, 0x41);
-      const stream = new (require('stream').Readable)({ read() { this.push(buf); this.push(null); } });
-      return stream;
-    },
-  };
-  return {
-    async transport() {
-      return {
-        async sftp<T>(operation: (value: typeof sftp) => Promise<T>): Promise<T> {
-          return operation(sftp);
-        },
-      };
-    },
-  };
+function fakeHelpers() {
+  return { client: async () => ({ capabilities: { filesystem: { readRange: { version: 1 } } }, sessionId: 'test', call: async (method: string, p: any) => {
+    if (method === 'workspace/open') return { workspaceId: p.workspaceId, path: p.path, access: p.access };
+    if (method === 'fs/canonicalize') return { path: p.path };
+    if (method === 'fs/readRange') return { offset: p.offset, data: Buffer.alloc(p.length, 65).toString('base64'), statVersion: 's1:test', eof: false };
+    throw new Error(method);
+  } }) };
+}
+function fakeAnchors() {
+  const registry = Object.create(AnchorRegistry.prototype);
+  Object.assign(registry, { root: '/anchors', spellings: ['/anchors'], entries: new Map([['/anchors/project', {
+    anchorPath: '/anchors/project', uri: 'ssh://gpu/home/atlas/project', remotePath: '/home/atlas/project',
+  }]]) });
+  return registry;
 }
 
 describe('remote Workspace routing', () => {
@@ -56,10 +47,7 @@ describe('remote Workspace routing', () => {
     const service = Object.create(SshRemoteService.prototype) as SshRemoteService & {
       anchors: Map<string, unknown>;
     };
-    service.anchors = new Map([['/anchors/project', {
-      anchorPath: '/anchors/project',
-      uri: 'ssh://gpu/home/atlas/project',
-    }]]);
+    service.anchors = fakeAnchors();
 
     expect(service.resolveRemotePath('/anchors/project')).toBe('ssh://gpu/home/atlas/project');
     expect(service.resolveRemotePath('/anchors/project/src')).toBe('ssh://gpu/home/atlas/project/src');
@@ -70,8 +58,8 @@ describe('remote Workspace routing', () => {
     const stop = vi.fn(async () => {});
     const watch = vi.fn(async () => stop);
     const fs = { ...fakeFileSystem(), watch };
-    const restore = installRemoteFileSystemRouter(fs as never, fakeConnections() as never,
-      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined);
+    const restore = installRemoteFileSystemRouter(fs as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined, fakeHelpers() as never);
     const changed = vi.fn();
     const signal = new AbortController().signal;
     const remote = await fs.resolve('/anchors/project');
@@ -86,9 +74,7 @@ describe('remote Workspace routing', () => {
 
   it('publishes exact remote identity without opening SSH or guessing anchor names', async () => {
     const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
-    Object.defineProperty(service, 'anchors', { value: new Map([['/anchors/project', {
-      anchorPath: '/anchors/project', uri: 'ssh://gpu/home/atlas/project',
-    }]]) });
+    Object.defineProperty(service, 'anchors', { value: fakeAnchors() });
     await expect(service.workspaceInfo('/anchors/project')).resolves.toEqual({
       alias: 'gpu', remotePath: '/home/atlas/project', uri: 'ssh://gpu/home/atlas/project',
     });
@@ -104,8 +90,8 @@ describe('remote Workspace routing', () => {
     const fs = fakeFileSystem();
     const restore = installRemoteFileSystemRouter(
       fs as never,
-      fakeConnections() as never,
       (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+      fakeHelpers() as never,
     );
 
     const remote = await fs.resolve('src/index.ts', { cwd: '/anchors/project' } as never);
@@ -126,10 +112,10 @@ describe('remote Workspace routing', () => {
     };
     const restore = installRemoteFileSystemRouter(
       fs as never,
-      fakeConnections() as never,
       path => path.startsWith('/anchors/project')
         ? `ssh://gpu/home/atlas/project${path.slice('/anchors/project'.length)}`
         : undefined,
+      fakeHelpers() as never,
     );
     expect(fs.processPathFromHostPath('/anchors/project/src')).toBe('/home/atlas/project/src');
     expect(fs.processPathFromHostPath('/tmp/local')).toBe('/tmp/local');
@@ -142,8 +128,8 @@ describe('remote Workspace routing', () => {
     Object.defineProperty(fs, 'sandboxMode', { value: 'workspace-write' });
     const restore = installRemoteFileSystemRouter(
       fs as never,
-      fakeConnections() as never,
       (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+      fakeHelpers() as never,
     );
     try {
       const inside = await fs.resolve('notes.txt', { cwd: '/anchors/project' } as never);
@@ -169,8 +155,8 @@ describe('remote Workspace routing', () => {
     originalReadByteRange.mockResolvedValue(localResult);
     const restore = installRemoteFileSystemRouter(
       fs as never,
-      fakeConnections() as never,
       (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+      fakeHelpers() as never,
     );
     try {
       // Local path: original provider answers.
@@ -199,6 +185,7 @@ describe('remote Workspace routing', () => {
     const restore = installRemoteSubprocessRouter(
       runtime as never,
       (path) => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+      fakeHelpers() as never,
     );
 
     runtime.spawn({
@@ -270,6 +257,7 @@ describe('OpenSSH process invocation', () => {
       path => path === '/Users/me/.dsh/ssh-workspace-anchors/project'
         ? 'ssh://gpu/home/atlas/project'
         : undefined,
+      fakeHelpers() as never,
     );
     expect(invocation.at(-1)).toContain('/home/atlas/project');
     expect(invocation.at(-1)).not.toContain('/Users/me/.dsh/ssh-workspace-anchors/project');

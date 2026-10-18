@@ -6,9 +6,7 @@ import type {
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
-import { createRemoteFileSystemAdapter } from './fs.js';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
-import type { SshConnectionManager } from './connection.js';
 import { parseSshUri, type SshUri } from './types.js';
 
 type AnyFunction = (...args: any[]) => any;
@@ -28,17 +26,14 @@ function isSshTarget(value: unknown): boolean {
 /**
  * Add exact SSH URI routing to DSH's filesystem service. Local paths always
  * call the original provider; only direct SSH URIs and paths beneath a
- * persisted remote Workspace anchor use SFTP.
+ * persisted remote Workspace anchor use the helper.
  */
 export function installRemoteFileSystemRouter(
   fs: FileSystem,
-  connections: SshConnectionManager,
   resolveRemotePath: RemotePathResolver,
-  helpers?: RemoteHelperProvider,
+  helpers: RemoteHelperProvider,
 ): () => void {
-  const remote = helpers === undefined
-    ? createRemoteFileSystemAdapter(connections)
-    : new HelperRemoteFileSystem(helpers, resolveRemotePath);
+  const remote = new HelperRemoteFileSystem(helpers, resolveRemotePath);
   const originals = new Map<string, AnyFunction>();
   const remember = (name: string) => {
     const original = (fs as unknown as Record<string, AnyFunction>)[name];

@@ -15,8 +15,6 @@ import type {
   TerminalSignalResult,
 } from '@deepseek-ai/dsh-terminal';
 import type SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy';
-import type { ClientChannel } from 'ssh2';
-import type { SshConnectionManager } from './connection.js';
 import type { RemotePathResolver } from './runtime-router.js';
 import { parseSshUri } from './types.js';
 
@@ -106,33 +104,6 @@ class BoundedTextBuffer {
   }
 }
 
-function posixShellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
-/** Race one unpublished setup operation against its owner signal. */
-function raceAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal === undefined) return operation;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (settle: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      settle();
-    };
-    const onAbort = (): void => {
-      finish(() => reject(signal.reason ?? new Error('remote terminal setup aborted')));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(
-      value => finish(() => resolve(value)),
-      reason => finish(() => reject(reason)),
-    );
-  });
-}
-
 function waitBounded(operation: Promise<void>, timeoutMs: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
@@ -166,47 +137,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/**
- * An allocated channel that never became a session still needs the same
- * bounded graceful-close/destroy lifecycle as a published terminal. Keep an
- * error listener installed while retiring it so a late transport error cannot
- * become an unhandled EventEmitter error.
- */
-async function retireUnpublishedChannel(channel: ClientChannel): Promise<void> {
-  let closeObserved = false;
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  const onClose = (): void => {
-    if (closeObserved) return;
-    closeObserved = true;
-    resolveClosed();
-  };
-  const onError = (): void => {
-    // Cleanup is best effort; the setup/cancellation error remains primary.
-  };
-  channel.on('close', onClose);
-  channel.on('error', onError);
-  let endFailed = false;
-  try {
-    try {
-      channel.end();
-    } catch {
-      endFailed = true;
-    }
-    if (!endFailed && await waitBounded(closed, CLOSE_DEADLINE_MS)) return;
-    try {
-      channel.destroy();
-    } catch {
-      return;
-    }
-    await waitBounded(closed, DESTROY_JOIN_MS);
-  } finally {
-    channel.removeListener('close', onClose);
-    channel.removeListener('error', onError);
-  }
-}
-
-/** One live send over the ssh2 shell channel. */
+/** One live send over the helper output pump. */
 class RemoteSendOperation implements TerminalSendOperation {
   readonly done: Promise<TerminalSendResult>;
   private readonly viewport = new BoundedTextBuffer(OUTPUT_MAX_BYTES);
@@ -801,11 +732,11 @@ export class RemoteTerminalBackend implements TerminalBackend {
   private readonly sandboxPolicy: Pick<SandboxPolicyService, 'resolve'> | undefined;
 
   constructor(
-    helpers: RemoteHelperProvider | SshConnectionManager,
+    helpers: RemoteHelperProvider,
     resolveRemotePath: RemotePathResolver,
     sandboxPolicy?: Pick<SandboxPolicyService, 'resolve'>,
   ) {
-    this.helpers = helpers as RemoteHelperProvider;
+    this.helpers = helpers;
     this.resolveRemotePath = resolveRemotePath;
     this.sandboxPolicy = sandboxPolicy;
   }
@@ -814,7 +745,7 @@ export class RemoteTerminalBackend implements TerminalBackend {
     spec.signal?.throwIfAborted();
     if (this.sandboxPolicy === undefined || typeof this.helpers.client !== 'function') {
       throw new Error(
-        'remote terminal helper backend is not wired; use LegacySsh2RemoteTerminalBackend explicitly for compatibility',
+        'remote terminal helper backend is not wired',
       );
     }
     const cwdUri = this.remoteUri(spec.cwd);
@@ -958,232 +889,3 @@ async function rollbackHelperProcess(
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, 'remote helper terminal rollback failed');
 }
-
-/** Backend-owned compatibility ssh2 PTY session. */
-class LegacySsh2TerminalBackendSession implements TerminalBackendSession {
-  motd = '';
-  pid = undefined as number | undefined;
-  private readonly scrollback = new BoundedTextBuffer(OUTPUT_MAX_BYTES);
-  private statusValue: TerminalSessionStatus = { kind: 'running' };
-  private active: RemoteSendOperation | undefined;
-  private closing = false;
-  private closeObserved = false;
-  private closePromise: Promise<void> | undefined;
-  private readonly closed: Promise<void>;
-  private resolveClosed!: () => void;
-
-  constructor(private readonly channel: ClientChannel) {
-    this.closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
-    channel.on('data', this.onData);
-    channel.on('exit', this.onExit);
-    channel.on('close', this.onClose);
-    channel.on('error', this.onError);
-  }
-
-  /** Queue the initial cwd change after all channel listeners are installed. */
-  enterDirectory(path: string): void {
-    if (!path.startsWith('/')) throw new Error(`remote terminal cwd must be absolute: ${path}`);
-    this.channel.write(`cd ${posixShellQuote(path)} || exit $?\r`);
-  }
-
-  private readonly onData = (data: Buffer | Uint8Array | string): void => {
-    const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
-    this.scrollback.append(text);
-    this.active?.append(text);
-  };
-
-  private readonly onExit = (code: number | null, signal?: string): void => {
-    this.statusValue = typeof code === 'number'
-      ? { kind: 'exited', exitCode: code, signal: null }
-      : { kind: 'exited', exitCode: null, signal: normalizeExitSignal(signal) };
-  };
-
-  private readonly onError = (error: Error): void => {
-    if (this.statusValue.kind === 'running') {
-      this.statusValue = { kind: 'exited', exitCode: null, signal: null };
-    }
-    this.closing = true;
-    this.active?.fail(error);
-  };
-
-  private readonly onClose = (): void => {
-    if (this.closeObserved) return;
-    this.closeObserved = true;
-    this.closing = true;
-    if (this.statusValue.kind === 'running') {
-      this.statusValue = { kind: 'exited', exitCode: null, signal: null };
-    }
-    this.active?.settle('session_exit');
-    this.resolveClosed();
-    this.channel.removeListener('data', this.onData);
-    this.channel.removeListener('exit', this.onExit);
-    this.channel.removeListener('close', this.onClose);
-    this.channel.removeListener('error', this.onError);
-  };
-
-  startSend(request: TerminalSendRequest): TerminalSendOperation {
-    if (this.closing || this.statusValue.kind === 'exited') throw new Error('PTY session has exited');
-    if (this.active !== undefined) throw new Error('PTY session already has an active send');
-    request.signal?.throwIfAborted();
-    const operation = new RemoteSendOperation(
-      () => this.channel.signal('INT'),
-      () => {
-        if (this.active === operation) this.active = undefined;
-      },
-      () => this.statusValue,
-      request.signal,
-    );
-    this.active = operation;
-    try {
-      if (request.text) this.channel.write(request.text);
-      if (request.submit) this.channel.write('\r');
-    } catch (error) {
-      operation.fail(error);
-    }
-    operation.armIdle();
-    return operation;
-  }
-
-  read(request: TerminalReadRequest): TerminalReadResult {
-    const offset = request.offset ?? 0;
-    const count = request.count ?? 500;
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new Error('PTY read offset must be a non-negative safe integer');
-    }
-    if (!Number.isSafeInteger(count) || count <= 0) {
-      throw new Error('PTY read count must be a positive safe integer');
-    }
-    const snapshot = this.scrollback.snapshot();
-    const lines = snapshot.text.length === 0 ? [] : snapshot.text.split('\n');
-    const totalLines = lines.length;
-    if (offset >= totalLines) {
-      return { text: '', totalLines, lineBegin: offset, lineEnd: offset, truncated: snapshot.truncated };
-    }
-    const end = totalLines - offset;
-    const start = Math.max(0, end - count);
-    const text = lines.slice(start, end).join('\n');
-    const returnedLines = text.length === 0 ? 0 : text.split('\n').length;
-    return {
-      text,
-      totalLines,
-      lineBegin: offset,
-      lineEnd: offset + returnedLines,
-      truncated: snapshot.truncated,
-    };
-  }
-
-  async signal(signal: TerminalSignal): Promise<TerminalSignalResult> {
-    if (this.closing || this.statusValue.kind === 'exited') throw new Error('PTY session has exited');
-    throw new Error(
-      `remote SSH PTY cannot verify a foreground process group for ${signal}; `
-      + 'explicit terminal_signal requires the Phase 2 remote helper',
-    );
-  }
-
-  status(): TerminalSessionStatus {
-    return this.statusValue;
-  }
-
-  close(_reason: string): Promise<void> {
-    if (this.closeObserved) return Promise.resolve();
-    if (this.closePromise !== undefined) return this.closePromise;
-    this.closing = true;
-    if (this.statusValue.kind === 'running') {
-      this.statusValue = { kind: 'exited', exitCode: null, signal: null };
-    }
-    const closing = this.closeOnce().catch((error: unknown) => {
-      if (this.closePromise === closing) this.closePromise = undefined;
-      throw error;
-    });
-    this.closePromise = closing;
-    return closing;
-  }
-
-  private async closeOnce(): Promise<void> {
-    try {
-      this.channel.end();
-    } catch (error) {
-      this.active?.fail(error);
-      this.channel.destroy();
-      throw error;
-    }
-    if (await this.waitForClose(CLOSE_DEADLINE_MS)) return;
-    this.channel.destroy();
-    if (await this.waitForClose(DESTROY_JOIN_MS)) return;
-    const error = new Error(`remote PTY channel did not close within ${CLOSE_DEADLINE_MS + DESTROY_JOIN_MS}ms`);
-    this.active?.fail(error);
-    throw error;
-  }
-
-  private waitForClose(timeoutMs: number): Promise<boolean> {
-    if (this.closeObserved) return Promise.resolve(true);
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        resolve(false);
-      }, timeoutMs);
-      void this.closed.then(() => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-  }
-}
-
-/**
- * Compatibility backend that opens a raw ssh2 login shell. It does not provide
- * helper-backed sandboxing or verified foreground-process signalling and must
- * therefore be selected explicitly by legacy compositions.
- */
-export class LegacySsh2RemoteTerminalBackend implements TerminalBackend {
-  readonly type = 'ssh';
-
-  constructor(
-    private readonly connections: SshConnectionManager,
-    private readonly resolveRemotePath: RemotePathResolver,
-  ) {}
-
-  async spawn(spec: TerminalBackendSpawnSpec): Promise<TerminalBackendSession> {
-    spec.signal?.throwIfAborted();
-    const cwd = spec.cwd;
-    const uri = cwd !== undefined && cwd.startsWith('ssh://')
-      ? cwd
-      : cwd !== undefined
-        ? this.resolveRemotePath(cwd)
-        : undefined;
-    if (uri === undefined) throw new Error('remote terminal requires an SSH cwd');
-    const parsed = parseSshUri(uri);
-    const transport = await raceAbort(this.connections.transport(uri), spec.signal);
-    spec.signal?.throwIfAborted();
-    const shell = transport.shell({ cols: 80, rows: 24 });
-    let channel: ClientChannel;
-    try {
-      channel = await raceAbort(shell, spec.signal);
-    } catch (error) {
-      // Allocation may finish after cancellation won the race; retire that
-      // unpublished channel instead of leaking it into the transport pool.
-      if (spec.signal?.aborted === true) {
-        void shell.then((lateChannel) => {
-          void retireUnpublishedChannel(lateChannel);
-        }, () => {});
-      }
-      throw error;
-    }
-    try {
-      spec.signal?.throwIfAborted();
-      const session = new LegacySsh2TerminalBackendSession(channel);
-      session.enterDirectory(parsed.path);
-      return session;
-    } catch (error) {
-      await retireUnpublishedChannel(channel);
-      throw error;
-    }
-  }
-}
-
-/** Explicit short name for the compatibility backend. */
-export { LegacySsh2RemoteTerminalBackend as Ssh2RemoteTerminalBackend };

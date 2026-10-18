@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatSshUri, parseSshUri } from '../src/types.js';
-import { buildOpenSshJumpArgs } from '../src/connection.js';
 import {
   collectSshAliases,
   discoverSshHosts,
@@ -171,37 +170,5 @@ globalknownhostsfile /etc/ssh/ssh_known_hosts
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('ProxyJump delegation', () => {
-  it('builds a multi-hop system OpenSSH forwarding command', () => {
-    expect(buildOpenSshJumpArgs('jump-a,jump-b', 'target.internal', 2222)).toEqual([
-      '-T',
-      '-J',
-      'jump-a',
-      '-W',
-      'target.internal:2222',
-      '--',
-      'jump-b',
-    ]);
-  });
-
-  it('translates an explicit final jump port into OpenSSH -p syntax', () => {
-    expect(buildOpenSshJumpArgs('jump-a,alice@jump-b:2200', 'target.internal', 22)).toEqual([
-      '-T',
-      '-J',
-      'jump-a',
-      '-p',
-      '2200',
-      '-W',
-      'target.internal:22',
-      '--',
-      'alice@jump-b',
-    ]);
-  });
-
-  it('rejects an option-like ProxyJump username', () => {
-    expect(() => buildOpenSshJumpArgs('-Fbad@jump', 'target.internal', 22)).toThrow(/user/u);
   });
 });
