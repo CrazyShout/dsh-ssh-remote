@@ -455,6 +455,21 @@ describe('native remote workspace panel entry points', () => {
     expect(props.openPanel).not.toHaveBeenCalled();
   });
 
+  it('honors legacy navigation after destination mounting without overriding later manual selection', async () => {
+    const base = panelProps();
+    let revision = 1;
+    const props = { ...base, useTabInfo: () => ({ tab: { id: 'restored-tab', visible: true,
+      navigation: { revision, params: { section: 'ports' } } } }) };
+    await render(RemoteToolsPane, props);
+    expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('端口转发内容');
+    await act(async () => base.workbench.select('session-a', 'files'));
+    await render(RemoteToolsPane, props);
+    expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('快速打开内容');
+    revision++;
+    await render(RemoteToolsPane, props);
+    expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('端口转发内容');
+  });
+
   it('removes hub actions immediately on a Session switch and ignores the old lookup', async () => {
     const props = panelProps();
     await render(RemoteToolsPane, props);

@@ -29,6 +29,9 @@ export function safePreviewPath(path: string): string {
 export function mountQuickOpen(ctx: Context, editor: EditorBridge, workbench: Workbench): () => Promise<void> {
   const fiber = ctx.inject(['remote.sshRemoteFiles', 'remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs'], scope => {
     if (!scope.sidebarRightTabs || typeof scope.remote.sshRemoteFiles?.query !== 'function') return () => {};
+    // Cordis may return a fresh service face on each read. Keep one per fiber
+    // so header/status/resize renders do not restart an unchanged query.
+    const remote = scope.remote.sshRemoteFiles;
     const pendingPreviews = new Map<string, AbortController>();
     const open = async (sessionId: string, path: string, editing: boolean, signal: AbortSignal) => {
       signal.throwIfAborted();
@@ -42,7 +45,7 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge, workbench: Wo
         const controller = new AbortController(); pendingPreviews.set(sessionId, controller);
         const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true });
         try {
-          const result = await scope.remote.sshRemoteFiles.preview(sessionId, path, controller.signal);
+          const result = await remote.preview(sessionId, path, controller.signal);
           if (controller.signal.aborted) return;
           if (!result.ok) throw new Error(result.error.message);
           if (result.value.sessionId !== sessionId || scope.sidebarRight.mounted.getSnapshot() !== sessionId) throw new Error('会话已切换，未打开预览。');
@@ -52,7 +55,7 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge, workbench: Wo
       }
     };
     const body = mountWorkbenchSection(scope, workbench, ID, KIND, 'files', props => <QuickOpenPane {...props}
-      remote={scope.remote.sshRemoteFiles} open={(path, editing, signal) => open(props.sessionId, path, editing, signal)} />);
+      remote={remote} open={(path, editing, signal) => open(props.sessionId, path, editing, signal)} />);
     const shortcuts = scope.inject(['shortcuts'], child => child.shortcuts.register({
       id: 'dsh-ssh-remote.quick-open' as ShortcutCommandId,
       label: () => '远程快速打开', aliases: ['SSH', 'remote', 'file'], defaults: {}, regions: ['page', 'editable'], modals: [],

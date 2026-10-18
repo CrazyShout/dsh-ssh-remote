@@ -177,6 +177,11 @@ export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & 
   const { key, info, pending } = useRemoteWorkspace(props);
   useSyncExternalStore(props.workbench.subscribe, props.workbench.snapshot, props.workbench.snapshot);
   const selected = props.workbench.selected(props.sessionId);
+  const navigation = tab.navigation;
+  const requested = navigation?.params && 'section' in navigation.params ? navigation.params.section : undefined;
+  useEffect(() => {
+    if (requested && sections.some(section => section.id === requested)) props.workbench.select(props.sessionId, requested);
+  }, [props.workbench, props.sessionId, tab.id, navigation?.revision, requested]);
   const visible = usePageVisible(tab.visible);
   const [menu, setMenu] = useState(false), [width, setWidth] = useState(0);
   const [connection, setConnection] = useState<{ key: string; value: HelperHostStatus }>();

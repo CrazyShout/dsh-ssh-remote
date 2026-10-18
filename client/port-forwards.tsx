@@ -10,7 +10,8 @@ const ID = 'dsh-ssh-remote.ports';
 export function mountPortForwards(ctx: Context, workbench: Workbench): () => Promise<void> {
   const fiber = ctx.inject(['remote.sshRemotePorts', 'slots', 'sidebarRight', 'sidebarRightTabs'], scope => {
     if (!scope.sidebarRightTabs || typeof scope.remote.sshRemotePorts?.list !== 'function') return () => {};
-    return mountWorkbenchSection(scope, workbench, ID, 'ssh-ports', 'ports', props => <PortForwardPane {...props} remote={scope.remote.sshRemotePorts} />);
+    const remote = scope.remote.sshRemotePorts;
+    return mountWorkbenchSection(scope, workbench, ID, 'ssh-ports', 'ports', props => <PortForwardPane {...props} remote={remote} />);
   });
   return async () => { await fiber.dispose(); };
 }

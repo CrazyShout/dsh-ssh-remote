@@ -15,6 +15,13 @@ export declare const sections: readonly [{
     readonly title: "终端状态";
 }];
 export type WorkbenchSection = typeof sections[number]['id'];
+declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
+    interface SidebarRightTabParamsMap {
+        'ssh-tools': {
+            section: WorkbenchSection;
+        };
+    }
+}
 export type WorkbenchProps = PropsRuntime<'sidebar.right.pane.tab'> & {
     active: boolean;
 };
