@@ -41,6 +41,11 @@ async function send(f: { call: (method: string, params?: any) => Promise<any> },
   }
 }
 describe('durable human transfers', () => {
+  it('overlaps real file transactions while preserving same-file and old-helper exclusion', () => {
+    const result = spawnSync('python3', ['-B', fileURLToPath(new URL('./fixtures/transfer_concurrency.py', import.meta.url)), fileURLToPath(new URL('../helper/dsh_transfer.py', import.meta.url))], { encoding: 'utf8', timeout: 10000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ crossFileOverlap: true, sameFileMaximum: 1, oldHelperExclusion: true, bytes: 8 });
+  });
   it('recovers acknowledged bytes after an actual helper SIGKILL with the retained execution identity', async () => {
     const f = await fixture(), id = randomUUID(), data = Buffer.from('small crash recovery');
     await f.call('open', { id, path: 'crash.txt', direction: 'upload', size: data.length, sha256: sha(data) }); await claim(f, id);

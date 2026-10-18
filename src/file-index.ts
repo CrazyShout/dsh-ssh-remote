@@ -206,7 +206,7 @@ export class RemoteFileIndex {
           validateCandidate(candidate);
           if (entries.length >= MAX_ENTRIES || seen.has(candidate.path)) throw new Error('远端文件发现超出协议容量或路径重复。');
           const prepared = prepareCandidate(candidate);
-          if (memoryBytes + prepared.bytes > MAX_BYTES) { memoryFull = true; break; }
+          if (memoryBytes + prepared.bytes > MAX_CACHE_BYTES || bytes + Buffer.byteLength(candidate.path) > MAX_BYTES) { memoryFull = true; break; }
           memoryBytes += prepared.bytes; bytes += Buffer.byteLength(candidate.path);
           seen.add(candidate.path); entries.push(prepared);
           if (!representable(candidate.path)) unsupported++;

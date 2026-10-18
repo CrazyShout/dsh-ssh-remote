@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { collectSshAliases, resolveOpenSshHost, type SshGRunner } from './ssh-config.js';
@@ -84,9 +84,12 @@ export class SshMigration {
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     const tmp = `${file}.${randomUUID()}.tmp`;
     try {
-      await writeFile(tmp, next, { mode: 0o600, flag: 'wx' });
+      const handle = await open(tmp, 'wx', 0o600);
+      try { await handle.writeFile(next); await handle.sync(); } finally { await handle.close(); }
       if (await snapshot(file) !== expected) throw new Error(`Configuration changed while writing ${file}`);
       await rename(tmp, file);
+      const directory = await open(dirname(file), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
     } finally { await unlink(tmp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
   private async save(journal: Journal): Promise<void> {

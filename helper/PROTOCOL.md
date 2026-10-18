@@ -512,3 +512,10 @@ checks fstat before/after. Each subsequent block must pass the initial statVersi
 This token is NOT a content hash; no partial digest is returned as a whole-file version.
 No retained handle or mutation journal entry is allocated. Older helpers retain sequential
 readOpen/readNext fallback. Durable transfer format v1 and process/PTY lifetimes are unchanged.
+
+Transfer read/write chunks hold a shared v1 store gate plus an exclusive file-record lock;
+control/publication holds the exclusive store gate. Short job-lease checkpoints have their
+own record lock. Existing 0.10.x helpers use the same store gate exclusively and therefore
+cannot race new data lanes. Retired file locks are removed only under the exclusive gate,
+never while another owner may have opened the old lock inode. A local writer-preferred
+admission condition drains data before cleanup/close; durability still precedes acknowledgement.
