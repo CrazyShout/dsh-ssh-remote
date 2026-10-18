@@ -1,10 +1,10 @@
 # dsh-ssh-remote
 
-English | [中文](README.md) · [Download 0.10.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.10.2) · [Changelog](CHANGELOG.md)
+English | [中文](README.md) · [Download 0.11.0](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.11.0) · [Changelog](CHANGELOG.md)
 
 SSH development workspaces for DeepSeek Harness: browse and edit remote files, reference code, open terminals, forward ports, and transfer files. Uses your existing OpenSSH configuration and DSH's native file and terminal panels.
 
-![Remote tools: quick open, file transfers and port forwarding](docs/images/remote-tools.png)
+![Remote workbench: quick open, transfers, ports and terminal status](docs/images/remote-tools.png)
 
 ## Requirements
 
@@ -28,10 +28,10 @@ Install DSH first using the [official instructions](https://github.com/deepseek-
 2. Paste this complete address and click **Install / 安装**:
 
 ```text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.0/dsh-ssh-remote-0.11.0.tgz
 ```
 
-3. If dependency build approval appears, review the packages listed by the installer and use its approval/retry action. To disable the confirmed optional native builds instead, see [Troubleshooting](docs/TROUBLESHOOTING.md).
+3. Version 0.11.0 removes `ssh2` / `cpu-features` and their native build prompts. Review any other dependency prompts in the official installer; do not globally allow unknown build scripts.
 4. Click **Enable now / 立即启用** after installation (listed as `dsh-ssh-remote`), then fully restart that Desktop instance or Web server.
 
 ![Inspecting and installing the prebuilt package in the official plugin page](docs/images/install.png)
@@ -43,7 +43,7 @@ The package includes built runtime files: no clone or compilation is needed. Ins
 ```sh
 dsh --version
 pnpm --version
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.0/dsh-ssh-remote-0.11.0.tgz'
 ```
 
 Restart your existing `dsh web` server after installation. Stop it with Ctrl-C in its terminal before starting `dsh web` again. After a blocked-build retry, also check that the bundle is enabled in Plugins. For Desktop, use the application's plugin page.
@@ -51,7 +51,7 @@ Restart your existing `dsh web` server after installation. Stop it with Ctrl-C i
 The fixed Git tag is an alternative source and requires local Git:
 
 ```sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.10.2'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.0'
 ```
 
 You can also download the release `.tgz` and install its **absolute local path** through the same UI or CLI. Use the release's `SHA256SUMS` to verify the downloaded package.
@@ -73,19 +73,25 @@ You can also download the release `.tgz` and install its **absolute local path**
 
 Keep custom `Port`, `IdentityFile` and `ProxyJump` settings in OpenSSH; do not duplicate them in the plugin. Background connections use `BatchMode=yes`: ensure `ssh -o BatchMode=yes devbox true` succeeds after preparing your SSH agent or login session.
 
+## Upgrade legacy hosts
+
+0.11.0 uses system OpenSSH + the Python helper only. The SFTP backend and both SSH2 terminal exports were removed. Existing OpenSSH aliases need no migration. For old plugin host settings, open **Settings → SSH Remote → 迁移旧 SSH 配置**, review the diff, then explicitly confirm backup, write and connection verification. Nothing edits SSH configuration at startup; private-key contents are never imported. Unmigrated workspaces never fall back to local files. See the bilingual [migration guide](docs/MIGRATION-0.11.md).
+
 ## Everyday use
 
 | Task | Entry point |
 | --- | --- |
 | Browse and preview files | Native **Workspace files / 工作区文件** |
-| Edit and save text | Preview-tab menu **编辑远程文本**, or **编辑** beside a quick-open result |
+| Edit and save text | Preview-tab menu **编辑远程文本**, or **编辑** after selecting a quick-open result |
 | Find a file | **SSH · host → 快速打开**, or native `@` completion |
 | Run commands | Native **New terminal / 新建终端** |
 | See cwd, exit status and terminal context | Terminal-tab menu **查看 SSH 终端状态** |
-| Open TensorBoard, Jupyter or a development website | **远程工具 → 端口转发** |
-| Upload/download files and folders | **远程工具 → 文件传输** |
+| Open TensorBoard, Jupyter or a development website | **远程工作台 → 端口转发** |
+| Upload/download files and folders | **远程工作台 → 文件传输** |
 
-Blank Sessions show the SSH badge above the composer. The native sidebar start page also offers **远程工具**. Local Sessions retain their normal file and terminal behavior.
+Blank Sessions show the SSH badge above the composer. The native sidebar start page also offers **远程工作台**. Local Sessions retain their normal file and terminal behavior.
+
+The workbench combines **quick open, transfers, ports, and terminal status**. Arrow keys select files, Enter previews, and Escape clears selection. Narrow panes use a section menu. Transfers follow select → review → start and keep running when switching sections.
 
 The text editor supports complete UTF-8 files up to **256 KiB**. Transfers support **1 TiB per file/batch**: small real samples and simulated boundaries were tested, not TB-scale performance. Save editor drafts before restarting; transfers require source/destination reauthorization after restart. Human terminals run with the SSH account's permissions.
 
@@ -94,10 +100,10 @@ DSH's Finder/local-application actions still refer to the local machine. Use the
 ## Update, roll back and remove
 
 - **Update:** copy the desired package address from [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases). Follow the rc.2 plugin page's advice to remove the old plugin, then install and enable the new version. Web CLI users can repeat the `add` command above in the same profile to replace the version. Restart afterwards. Save drafts and pause transfers first; a restart ends live human terminals.
-- **Roll back to 0.10.1:** install the verified commit below in the plugin page or with the Web command, then restart. This source requires Git.
+- **Roll back to 0.10.2:** install the previous public archive and restart. Migrated OpenSSH settings remain; use the migration wizard to undo them first if needed.
 
 ```sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#abff63bafd0959820ec2d9976803f5cdbdc77580'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.10.2/dsh-ssh-remote-0.10.2.tgz'
 ```
 
 - **Disable:** switch off the bundle in the plugin page, retaining its files and settings; restart if requested by DSH.

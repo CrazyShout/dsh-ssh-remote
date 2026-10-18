@@ -7,13 +7,19 @@ export class PortForwardModel {
   private reader?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
   private disposed = false;
+  private visible = true;
   private revision = 0;
   constructor(readonly sessionId: string, private readonly remote: PortForwardRemote) {}
   snapshot = () => this.state;
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   private update(patch: Partial<State>) { if (this.disposed) return; this.state = { ...this.state, ...patch }; for (const fn of this.listeners) fn(); }
+  setVisible(visible: boolean) {
+    this.visible = visible;
+    if (visible) void this.refresh();
+    else { clearTimeout(this.timer); this.reader?.abort(); }
+  }
   async refresh(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || !this.visible) return;
     clearTimeout(this.timer); this.reader?.abort();
     const reader = this.reader = new AbortController(), revision = this.revision;
     try {
@@ -29,7 +35,7 @@ export class PortForwardModel {
       }
     } finally {
       reader.abort();
-      if (!this.disposed && this.reader === reader) this.timer = setTimeout(() => void this.refresh(), 1500);
+      if (!this.disposed && this.visible && this.reader === reader) this.timer = setTimeout(() => void this.refresh(), 1500);
     }
   }
   async create(input: Omit<PortForwardInput, 'id'>): Promise<void> {

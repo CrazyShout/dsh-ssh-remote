@@ -1,3 +1,5 @@
+import { type Workbench } from './workbench.js';
+import type { HelperHostStatus, RemoteResult } from 'dsh-ssh-remote/ssh';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
@@ -15,22 +17,21 @@ declare const tools: readonly [{
     readonly bit: 2;
     readonly title: "快速打开";
     readonly description: "查找并预览远端文件";
-    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
 }, {
     readonly kind: "ssh-transfers";
     readonly bit: 4;
     readonly title: "文件传输";
     readonly description: "上传和下载文件或目录";
-    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
 }, {
     readonly kind: "ssh-ports";
     readonly bit: 8;
     readonly title: "端口转发";
     readonly description: "访问远端运行的网页服务";
-    readonly icon: (props: import("@deepseek-ai/dsh-client-ui-primitives").IconProps) => import("react").JSX.Element;
 }];
 type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {
+    workbench: Workbench;
+    statuses(): Promise<RemoteResult<Record<string, HelperHostStatus>>>;
     workspaceInfo(path: string): Promise<InfoResult>;
     openPanel(kind: PanelKind): void;
     availablePanels(): number;
@@ -41,7 +42,7 @@ type NativePanelProps = PropsRuntime<'conversation.session.header.utilities'> & 
 };
 type BlankNativePanelProps = PropsRuntime<'conversation.input.dock'> & NativePanelInjected;
 /** Additive optional integration: no sidebar/conversation composition is required at boot. */
-export declare function mountNativePanels(ctx: Context): () => Promise<void>;
+export declare function mountNativePanels(ctx: Context, workbench: Workbench): () => Promise<void>;
 /** The official header hides its utilities while a real Session is still blank. */
 export declare function BlankNativePanelActions(props: BlankNativePanelProps): import("react").JSX.Element | null;
 export declare function NativePanelActions(props: NativePanelProps): import("react").JSX.Element | null;

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply } from '../client/index.js';
 import { TYPERT_REMOTE } from '../client/typert.remote-client.js';
 import { TYPERT } from '../src/typert.host.js';
+import { Workbench } from '../client/workbench.js';
 import { mountNativePanels } from '../client/native-panels.js';
 
 // The real primitives package ships browser-only CSS imports; at runtime the
@@ -34,6 +35,8 @@ describe('client lifecycle', () => {
     for (const entry of TYPERT.invocations) {
       expect(entry.result.create().safeParse(undefined).success).toBe(false);
       for (const parameter of entry.parameters) {
+        if (parameter.name === 'selections') { expect(parameter.codec.create().parse([])).toEqual([]); continue; }
+        if (entry.method.startsWith('migration') && ['id', 'token'].includes(parameter.name)) { expect(parameter.codec.create().parse('00000000-0000-4000-8000-000000000000')).toContain('00000000'); continue; }
         if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'cursor') { expect(parameter.codec.create().parse(0)).toBe(0); continue; }
         if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
@@ -44,6 +47,8 @@ describe('client lifecycle', () => {
     for (const entry of (TYPERT_REMOTE as any).descriptors) {
       expect(typeof entry.result.create().parse).toBe('function');
       for (const parameter of entry.parameters) {
+        if (parameter.name === 'selections') { expect(parameter.codec.create().parse([])).toEqual([]); continue; }
+        if (entry.method.startsWith('migration') && ['id', 'token'].includes(parameter.name)) { expect(parameter.codec.create().parse('00000000-0000-4000-8000-000000000000')).toContain('00000000'); continue; }
         if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'cursor') { expect(parameter.codec.create().parse(0)).toBe(0); continue; }
         if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
@@ -191,7 +196,7 @@ describe('client lifecycle', () => {
         return { dispose: callback(scope) };
       }),
     };
-    const dispose = mountNativePanels(ctx as never);
+    const dispose = mountNativePanels(ctx as never, new Workbench());
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.session.header.utilities', expect.any(Function));
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.input.dock', expect.any(Function));
     const options = scope.slots.register.mock.calls.map((call: any) => call[0]).find((options: any) => options.name === 'conversation.session.header.utilities');
@@ -222,9 +227,9 @@ describe('client lifecycle', () => {
         register: vi.fn(definition => { tabs.set(definition.kind, definition); return () => tabs.delete(definition.kind); }) },
       slots: { inject: (_name: string, callback: () => unknown) => callback(), register: () => () => {} },
     };
-    const dispose = mountNativePanels({ inject: (_dependencies: string[], callback: (scope: unknown) => unknown) => ({ dispose: callback(scope) }) } as never);
+    const dispose = mountNativePanels({ inject: (_dependencies: string[], callback: (scope: unknown) => unknown) => ({ dispose: callback(scope) }) } as never, new Workbench());
     await vi.waitFor(() => expect(tabs.get('ssh-tools')?.guide).toHaveLength(1));
-    expect(tabs.get('ssh-tools').guide[0].title()).toBe('远程工具');
+    expect(tabs.get('ssh-tools').guide[0].title()).toBe('远程工作台');
     expect(tabs.size).toBe(1);
     selected = 'local'; listeners.forEach(listener => listener());
     expect(tabs.size).toBe(0);
@@ -247,12 +252,12 @@ describe('client lifecycle', () => {
     const pending = new Promise<void>(() => {}) as Promise<void> & { dispose(): void };
     pending.dispose = disposePending;
     const missing = { inject: vi.fn(() => pending) };
-    const dispose = mountNativePanels(missing as never);
+    const dispose = mountNativePanels(missing as never, new Workbench());
     await dispose();
     expect(disposePending).toHaveBeenCalledOnce();
     const slots = { inject: vi.fn() };
     const older = { inject: vi.fn((_dependencies, callback) => ({ dispose: callback({ remote: { sshRemote: {} }, slots }) })) };
-    await mountNativePanels(older as never)();
+    await mountNativePanels(older as never, new Workbench())();
     expect(slots.inject).not.toHaveBeenCalled();
   });
 });

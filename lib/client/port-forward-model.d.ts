@@ -15,11 +15,13 @@ export declare class PortForwardModel {
     private reader?;
     private timer?;
     private disposed;
+    private visible;
     private revision;
     constructor(sessionId: string, remote: PortForwardRemote);
     snapshot: () => State;
     subscribe: (fn: () => void) => () => void;
     private update;
+    setVisible(visible: boolean): void;
     refresh(): Promise<void>;
     create(input: Omit<PortForwardInput, 'id'>): Promise<void>;
     stop(id: string): Promise<void>;

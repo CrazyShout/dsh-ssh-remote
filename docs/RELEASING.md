@@ -6,8 +6,10 @@ Release packages are built with the repository's committed `lib/`, not on the us
 
 1. Update `package.json`, the root version in `package-lock.json`, both READMEs, `CHANGELOG.md`, and the versioned release notes under `docs/releases/`.
 2. Run build and tests separately. Keep the committed build current. Verify the package through `npm run release:pack -- --out /absolute/new/output` and `npm run test:install -- --package /absolute/new/output/dsh-ssh-remote-VERSION.tgz`.
-3. For upgrade/rollback checks, pass `--previous /absolute/dsh-ssh-remote-0.10.1.tgz`. Use `--keep` to retain the isolated installed profile for Web UI checks; the script prints its `home`. Evidence and test profiles stay in temporary directories, never in a user profile. They can be removed after checking the report.
+3. For upgrade/rollback checks, pass `--previous /absolute/dsh-ssh-remote-0.10.2.tgz`. Use `--keep` to retain the isolated installed profile for Web UI checks; the script prints its `home`. Evidence and test profiles stay in temporary directories, never in a user profile. They can be removed after checking the report.
 4. Capture documentation screenshots using an isolated test workspace; never commit real conversation history or credentials. Render both READMEs and verify their local links.
+
+For 0.11.0, keep v0.10.2 immutable. The helper changes to 0.11.0; pin the reviewed combined asset hash in the pack validator. Preserve transfer manifest v1 and check actual old-package resume. No automatic SSH migration is allowed in acceptance; configuration writes use private fixtures.
 
 ## Draft and publish
 

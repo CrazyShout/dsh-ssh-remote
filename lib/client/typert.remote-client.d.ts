@@ -1,70 +1,6 @@
-import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
+import type { SshRemote } from 'dsh-ssh-remote/ssh';
+import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
-interface HelperStatus {
-    status: 'disconnected' | 'installing' | 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error';
-    version: string;
-    sessionId: string;
-    capabilities: Record<string, unknown>;
-    error: string;
-    errorCode?: string;
-    retryable?: boolean;
-    hint?: string;
-    environment?: {
-        search: {
-            available: boolean;
-            path?: string;
-            version?: string;
-            error?: string;
-        };
-    };
-}
-interface HelperDiagnostics extends HelperStatus {
-    alias: string;
-    helperSha256: string;
-    lastConnectedAt: number;
-    lastHealthAt: number;
-    nextRetryAt: number;
-    stderr: string;
-    assetPath: string;
-}
-interface ConfigResult {
-    configPath: string;
-    configExists: boolean;
-    hosts: Array<{
-        alias: string;
-        host: string;
-        port: number;
-        user: string;
-        identityFile: string;
-        proxyJump: string;
-        proxyCommand: string;
-        helper: HelperStatus;
-    }>;
-    legacyHostCount: number;
-}
-interface DirectoryListing {
-    path: string;
-    home: string;
-    crumbs: Array<{
-        name: string;
-        path: string;
-        hidden: boolean;
-    }>;
-    entries: Array<{
-        name: string;
-        path: string;
-        hidden: boolean;
-    }>;
-    truncated: boolean;
-}
-interface WorkspaceAnchor {
-    anchorPath: string;
-    uri: string;
-    alias: string;
-    remotePath: string;
-    title: string;
-    createdAt: number;
-}
 export interface RemoteWorkspaceInfo {
     alias: string;
     remotePath: string;
@@ -73,18 +9,7 @@ export interface RemoteWorkspaceInfo {
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap {
         sshRemoteTerminalState: TerminalStateRemote;
-        sshRemote: {
-            config: () => Promise<RemoteResult<ConfigResult>>;
-            statuses: () => Promise<RemoteResult<Record<string, HelperStatus>>>;
-            workspaceInfo: (path: string) => Promise<RemoteResult<RemoteWorkspaceInfo | null>>;
-            browse: (alias: string, path: string) => Promise<RemoteResult<DirectoryListing>>;
-            createDirectory: (alias: string, parent: string, name: string) => Promise<RemoteResult<string>>;
-            materializeWorkspace: (alias: string, path: string) => Promise<RemoteResult<WorkspaceAnchor>>;
-            connectHost: (alias: string) => Promise<RemoteResult<HelperStatus>>;
-            disconnectHost: (alias: string) => Promise<RemoteResult<HelperStatus>>;
-            retryHost: (alias: string) => Promise<RemoteResult<HelperStatus>>;
-            diagnostics: (alias: string) => Promise<RemoteResult<HelperDiagnostics>>;
-        };
+        sshRemote: SshRemote;
     }
 }
 export declare const TYPERT_REMOTE: TypertRemoteContribution;

@@ -1,6 +1,12 @@
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 import type { TransferPage, TransferRemote, TransferSummary } from './transfer-types.js';
 import { type LocalDirectory, type LocalFile } from './transfer-local.js';
+interface Progress {
+    path: string;
+    bytes: number;
+    size: number;
+    phase: string;
+}
 interface State {
     jobs: TransferSummary[];
     page?: TransferPage;
@@ -10,12 +16,13 @@ interface State {
     notice: string;
     busy: boolean;
     active?: string;
-    progress?: {
+    progress?: Progress[];
+    transferredBytes?: number;
+    totalBytes?: number;
+    failures?: Array<{
         path: string;
-        bytes: number;
-        size: number;
-        phase: string;
-    };
+        message: string;
+    }>;
 }
 export declare function transferResult<T>(promise: Promise<RemoteResult<T>>): Promise<T>;
 /** One model per Session survives pane close. Reload deliberately loses local file permissions. */
@@ -27,6 +34,10 @@ export declare class TransferModel {
     private readonly listeners;
     private executor?;
     private disposed;
+    private readonly readers;
+    private readonly views;
+    private progressTimer?;
+    private pendingProgress?;
     private revision;
     private errorRevision;
     private readonly folders;
@@ -39,6 +50,8 @@ export declare class TransferModel {
     report(error: unknown): void;
     select(files: LocalFile[]): void;
     private put;
+    cancelReads(): void;
+    observeView(visible: boolean): () => void;
     refresh(): Promise<void>;
     page(id: string, cursor?: number): Promise<void>;
     plan(direction: 'upload' | 'download', target: string): Promise<void>;

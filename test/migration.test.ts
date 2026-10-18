@@ -9,7 +9,7 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const host = { name: 'old', host: 'example.invalid', user: 'alice', port: 2202, identityFile: '/private/key with spaces', proxyJump: '' };
 async function fixture(config = 'Host existing\n  HostName existing.invalid\nHost *\n  User fallback\nMatch host never\n  Port 2222\n') {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-migration-')); roots.push(root);
+  const root = await mkdtemp(join(tmpdir(), 'dsh migration space-')); roots.push(root);
   const path = join(root, 'config'); await writeFile(path, config);
   const verify = vi.fn(async () => {}), restore = vi.fn(async () => {});
   return { root, path, verify, restore, migration: new SshMigration(path, join(root, 'backups'), [host], verify, restore) };

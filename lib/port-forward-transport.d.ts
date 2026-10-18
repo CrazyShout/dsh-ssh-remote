@@ -19,7 +19,6 @@ export declare class OpenSshForward {
     private readonly ssh;
     private readonly spawnProcess;
     private directory?;
-    private master?;
     private readonly children;
     private diagnostics;
     private stopped;

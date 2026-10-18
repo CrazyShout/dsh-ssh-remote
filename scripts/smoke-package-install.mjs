@@ -9,12 +9,12 @@ import { parseArgs, promisify } from 'node:util';
 const packageManifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const { values } = parseArgs({ options: {
   package: { type: 'string' }, version: { type: 'string', default: packageManifest.version },
-  previous: { type: 'string' }, 'previous-version': { type: 'string', default: '0.10.1' },
+  previous: { type: 'string' }, 'previous-version': { type: 'string', default: '0.10.2' },
   dsh: { type: 'string', default: 'dsh' }, out: { type: 'string' }, keep: { type: 'boolean', default: false },
 } });
-assert(values.package, 'Usage: node scripts/smoke-package-install.mjs --package <absolute .tgz or HTTPS URL> [--previous <0.10.1.tgz>] [--keep]');
+assert(values.package, 'Usage: node scripts/smoke-package-install.mjs --package <absolute .tgz or HTTPS URL> [--previous <0.10.2.tgz>] [--keep]');
 assert(isAbsolute(values.package) || values.package.startsWith('https://'), 'Use an absolute package path or HTTPS release URL');
-const root = await mkdtemp(join(tmpdir(), 'dsh-package-install-'));
+const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-package-install-')));
 const home = join(root, 'home');
 const workspace = join(root, 'workspace');
 const artifacts = values.out ? resolve(values.out) : join(root, 'evidence');
@@ -39,6 +39,7 @@ async function cli(args, allowFailure = false) {
 async function install(spec, version) {
   const result = await cli(['plugin', '--profile', 'web', 'add', spec], true);
   if (result.exitCode !== 0) {
+    assert(version === '0.10.2', '0.11.0 must install without the removed ssh2 native build prompts');
     assert.match(result.log, /ERR_PNPM_IGNORED_BUILDS/u, 'Unexpected installation failure');
     const workspacePath = join(profile, 'pnpm-workspace.yaml');
     let workspace = await readFile(workspacePath, 'utf8').catch(() => '');

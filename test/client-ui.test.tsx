@@ -3,6 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SshDirectoryFlow, SshRemotePanel } from '../client/index.js';
+import { Workbench, sections } from '../client/workbench.js';
 import { BlankNativePanelActions, NativePanelActions, RemoteToolsPane } from '../client/native-panels.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
@@ -11,6 +12,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
     element('button', props, children);
   return {
     Button: button,
+    Menu: ({ open, anchor, items, onSelect }: any) => element('div', {}, anchor, open && items.map((item: any) => element('button', { key: item.id, onClick: () => onSelect(item.id) }, item.label))),
+    SegmentedTabs: ({ items, onChange }: any) => element('div', {}, items.map((item: any) => element('button', { key: item.value, onClick: () => onChange(item.value) }, item.label))),
     Pill: button,
     Input: (props: any) => element('input', props),
     IconFolderCloseRegular: () => null,
@@ -338,7 +341,11 @@ describe('rendered SSH directory flow', () => {
 
 describe('native remote workspace panel entry points', () => {
   function panelProps(cwd: string | undefined = '/real-saved-anchor') {
+    const workbench = new Workbench();
+    for (const section of sections) workbench.register(section.id, () => createElement('div', {}, `${section.title}内容`));
     return {
+      workbench, statuses: vi.fn(async () => ok({ gpu: { status: 'connected' } })),
+      useTabInfo: () => ({ tab: { id: 'workbench-tab', visible: true } }),
       sessionId: 'session-a',
       useSessions: (selector: any) => selector({ byId: { 'session-a': { cwd } } }),
       workspaceInfo: vi.fn(async () => ok({ alias: 'gpu', remotePath: '/home/test/project', uri: 'ssh://gpu/home/test/project' })),
@@ -436,17 +443,16 @@ describe('native remote workspace panel entry points', () => {
     expect(props.openPanel).toHaveBeenCalledWith('ssh-tools');
   });
 
-  it('opens existing tools in order and displays a failure at its action', async () => {
+  it('keeps all tools in one workbench and remembers the selected section', async () => {
     const props = panelProps();
     await render(RemoteToolsPane, props);
     expect(container.textContent).toContain('/home/test/project');
-    const actions = [...container.querySelectorAll<HTMLButtonElement>('button')];
-    expect(actions.map(action => action.getAttribute('aria-label'))).toEqual(['快速打开', '文件传输', '端口转发']);
-    for (const action of actions) await act(async () => action.click());
-    expect(props.openPanel.mock.calls).toEqual([['ssh-quick-open'], ['ssh-transfers'], ['ssh-ports']]);
-    props.openPanel.mockImplementation(() => { throw new Error('会话已切换'); });
-    await act(async () => actions[1].click());
-    expect(actions[1].parentElement?.querySelector('[role="alert"]')?.textContent).toBe('会话已切换');
+    expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('快速打开内容');
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="选择工作台分区"]')!.click());
+    await click('文件传输');
+    expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('文件传输内容');
+    expect(props.workbench.selected('session-a')).toBe('transfers');
+    expect(props.openPanel).not.toHaveBeenCalled();
   });
 
   it('removes hub actions immediately on a Session switch and ignores the old lookup', async () => {
