@@ -141,7 +141,7 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
   };
   const current = result?.sessionId === sessionId ? result : undefined;
   return <section aria-label="远程快速打开" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10, height: '100%', minWidth: 0 }}>
-    <form onSubmit={event => { event.preventDefault(); choose(query); }} style={{ display: 'flex', gap: 6 }}>
+    <form onSubmit={event => { event.preventDefault(); choose(query); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 6, minWidth: 0 }}>
       <Input aria-label="搜索远程文件" role="combobox" aria-autocomplete="list" aria-expanded={Boolean(current?.candidates.length)} aria-controls={listId}
         aria-activedescendant={selected >= 0 ? `${listId}-${selected}` : undefined} value={query} placeholder="文件名或完整路径"
         onChange={event => { setQuery(event.target.value); setSelected(-1); }}
@@ -152,7 +152,7 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
             setSelected(index => candidates.length ? (index + (event.key === 'ArrowDown' ? 1 : -1) + candidates.length) % candidates.length : -1); }
           else if (event.key === 'Enter' && candidates.length) { event.preventDefault(); const candidate = candidates[selected < 0 ? 0 : selected];
             if (candidate.kind === 'directory') setQuery(`${candidate.path}/`); else choose(candidate.path); }
-        }} style={{ flex: 1, minWidth: 0 }} />
+        }} style={{ width: '100%', minWidth: 0 }} />
       <Button type="submit" disabled={!query}>按路径预览</Button>
     </form>
     <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -163,7 +163,7 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
     <div role="status" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
       {pending ? (current ? '正在更新，以下为旧结果（可能过期）…' : '正在搜索远程文件…') : status?.message}
       {!pending && status?.stale && ' 结果已过期。'}
-      {!pending && status && ` ${status.count} 项${status.complete ? '' : '（索引不完整，未命中不代表不存在）'}`}
+      {!pending && status && ` 已索引 ${status.count} 项${status.complete ? '' : '（索引不完整，未命中不代表不存在）'}`}
       {!pending && status?.unsupported && !status.message ? ` · ${status.unsupported} 个文件名不能安全引用或预览` : ''}
     </div>
     {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', overflowWrap: 'anywhere' }}>{error}</div>}

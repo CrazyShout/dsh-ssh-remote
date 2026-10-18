@@ -7,7 +7,7 @@ import type { FileIndexResult, FileIndexStatus } from '../client/file-search-typ
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
   return { Button: ({ children, variant: _variant, size: _size, ...props }: any) => h('button', props, children),
-    FileTypeIcon: () => null, Input: (props: any) => h('input', props) };
+    FileTypeIcon: () => null, Input: ({ className, ...props }: any) => h('span', { className }, h('input', props)) };
 });
 const state = (overrides: Partial<FileIndexResult> = {}): FileIndexResult => ({
   sessionId: 'a', rootUri: 'ssh://host/work', generation: 1, state: 'ready', stale: false,
@@ -25,6 +25,16 @@ async function render() {
   return { remote, container, root, open, close: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 describe('quick open interaction and native menu refresh', () => {
+  it('stretches the public Input wrapper without relying on styles on the inner input', async () => {
+    vi.useFakeTimers(); const f = await render();
+    const form = f.container.querySelector('form')!;
+    expect(form.style.gridTemplateColumns).toBe('minmax(0, 1fr) auto');
+    expect(form.firstElementChild?.tagName).toBe('SPAN');
+    expect(form.querySelector('input')?.style.width).toBe('100%');
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    expect(f.container.textContent).toContain('已索引 1 项');
+    await f.close();
+  });
   it('navigates results by keyboard and cancels queries when hidden', async () => {
     vi.useFakeTimers(); const f = await render();
     await act(async () => { await vi.advanceTimersByTimeAsync(151); });
