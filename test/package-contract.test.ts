@@ -61,8 +61,8 @@ describe('release and Git installation package contract', () => {
       .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'));
     expect(peers.length).toBeGreaterThan(0);
     for (const [name, range] of peers) {
-      expect(range, name).toBe('>=0.2.0-rc.2 <0.3.0');
-      expect(manifest.devDependencies[name], name).toBe('0.2.0-rc.2');
+      expect(range, name).toBe('>=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0');
+      expect(manifest.devDependencies[name], name).toBe(process.env.DSH_TEST_SDK_VERSION ?? '0.2.0-rc.2');
     }
   });
 });

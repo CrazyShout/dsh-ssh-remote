@@ -388,10 +388,14 @@ describe('real helper user-terminal primitive', () => {
 });
 
 describe('official DSH TerminalController over remote helper PTY', () => {
-  it('keeps its existing create/follow/control/resize/reconnect/close contract', async () => {
+  it('preserves create/input/control/resize/reconnect/close through the installed SDK transport', async () => {
     const f = await fixture(); await writeFile(join(f.root, 'completion-target-file'), 'fixture');
     const ctx = new Context(); new LocalRuntime(ctx);
     ctx.provide('sandboxPolicy', { workspaceRoot: '/fallback', defaultMode: 'read-only' } as never);
+    // 0.2.1 owns cwd in this public service; the old SDK reads the header.
+    // The fixture supplies that authority, not a fake terminal implementation.
+    ctx.provide('workingDirectory', { get: () => '/anchor', ensure: async () => '/anchor' });
+    ctx.provide('invocation', {});
     const agent = { id: 'official-controller-session', session: { header: { cwd: '/anchor' } } } as unknown as Agent;
     const agentScope = createScope(ctx, agent); Object.defineProperty(agent, 'ctx', { value: agentScope.ctx });
     ctx.provide('agents', { list: () => [agent], get: id => id === agent.id ? agent : undefined } as never);
@@ -409,32 +413,33 @@ describe('official DSH TerminalController over remote helper PTY', () => {
     expect(f.helper.calls.find(call => call.method === 'workspace/open')?.params.access).toBe('danger-full-access');
     const a = 'attachment-a' as never; const aLifetime = new AbortController();
     const frames: TerminalFrame[] = []; let output = '';
-    const followerA = controller.follow(agent, id, a, aLifetime.signal);
+    const channelA = terminalChannel(ctx, controller, agent, id, a, aLifetime.signal);
+    const followerA = channelA.frames;
     const consumeA = (async () => {
       for await (const frame of followerA) {
         frames.push(frame); if (frame.type === 'output') output += frame.data;
       }
     })().catch(error => { if (!aLifetime.signal.aborted) throw error; });
     await vi.waitFor(() => expect(frames[0]?.type).toBe('snapshot'));
-    await controller.write(agent, id, a, "printf '%s%s\\n' CONTROLLER_ READY\rpwd\r");
+    await channelA.write("printf '%s%s\\n' CONTROLLER_ READY\rpwd\r");
     await vi.waitFor(() => { expect(output).toContain('CONTROLLER_READY'); expect(output).toContain(f.root); }, { timeout: 3_000 });
-    await controller.resize(agent, id, a, 100, 30);
-    await controller.write(agent, id, a, 'stty size\r');
+    await channelA.resize(100, 30);
+    await channelA.write('stty size\r');
     await vi.waitFor(() => expect(output).toContain('30 100'));
-    await controller.write(agent, id, a, "printf '%s\\n' completion-t\t\r");
+    await channelA.write("printf '%s\\n' completion-t\t\r");
     await vi.waitFor(() => expect(output).toContain('completion-target-file'));
-    await controller.write(agent, id, a, "printf '%s%s\\n' ARROW_ OX\x1b[DK\x1b[3~\r");
+    await channelA.write("printf '%s%s\\n' ARROW_ OX\x1b[DK\x1b[3~\r");
     await vi.waitFor(() => expect(output).toContain('ARROW_OK'));
-    await controller.write(agent, id, a, 'sleep 20\r');
+    await channelA.write('sleep 20\r');
     await new Promise(resolve => setTimeout(resolve, 100));
-    await controller.write(agent, id, a, "\x03printf '%s%s\\n' INTERRUPT_ OK\r");
+    await channelA.write("\x03printf '%s%s\\n' INTERRUPT_ OK\r");
     await vi.waitFor(() => expect(output).toContain('INTERRUPT_OK'), { timeout: 3_000 });
     const b = 'attachment-b' as never; const bLifetime = new AbortController();
-    const followerB = controller.follow(agent, id, b, bLifetime.signal)[Symbol.asyncIterator]();
+    const followerB = terminalChannel(ctx, controller, agent, id, b, bLifetime.signal).frames[Symbol.asyncIterator]();
     const baseline = await followerB.next();
     expect(baseline.value.type).toBe('snapshot');
     expect(baseline.value.screen).toContain('INTERRUPT_OK');
-    await expect(controller.write(agent, id, a, 'old attachment')).rejects.toMatchObject({ code: 'terminal/control-unavailable' });
+    await expect(channelA.write('old attachment')).rejects.toMatchObject({ code: 'terminal/control-unavailable' });
     aLifetime.abort(); await consumeA;
     expect(controller.list(agent.id)[0].state).toBe('running');
     await controller.close(agent, id); await controller.close(agent, id);
@@ -444,3 +449,56 @@ describe('official DSH TerminalController over remote helper PTY', () => {
     await expect(f.helper.raw.call('health/status')).resolves.toMatchObject({ processes: 0, workspaces: 0 });
   }, 20_000);
 });
+
+/** Test harness for the two public transports; production still delegates all
+ * input/control to the native DSH terminal and contains no transport shim. */
+function terminalChannel(ctx: Context, controller: TerminalController, agent: Agent, id: never, attachment: never, signal: AbortSignal) {
+  type Input = { type: 'write'; data: string; sequence: number } | { type: 'resize'; cols: number; rows: number; sequence: number };
+  type Ack = { type: 'ack'; sequence: number; refusal?: string };
+  const api = controller as unknown as TerminalController & {
+    attach?: (agent: Agent, id: never, signal: AbortSignal) => AsyncIterable<TerminalFrame | Ack>;
+  };
+  if (!api.attach) return {
+    frames: controller.follow(agent, id, attachment, signal),
+    write: (data: string) => controller.write(agent, id, attachment, data),
+    resize: (cols: number, rows: number) => controller.resize(agent, id, attachment, cols, rows),
+  };
+  let sequence = 0, ended = false;
+  let waiting: ((value: IteratorResult<Input>) => void) | undefined;
+  const queued: Input[] = [];
+  const pending = new Map<number, { resolve(): void; reject(error: unknown): void }>();
+  const input: AsyncIterableIterator<Input> = {
+    [Symbol.asyncIterator]() { return this; },
+    next() {
+      const value = queued.shift();
+      if (value) return Promise.resolve({ done: false as const, value });
+      if (ended) return Promise.resolve({ done: true as const, value: undefined });
+      return new Promise(resolve => { waiting = resolve; });
+    },
+    async return() {
+      ended = true; waiting?.({ done: true, value: undefined }); waiting = undefined;
+      for (const entry of pending.values()) entry.reject(new Error('test attachment closed'));
+      pending.clear(); return { done: true, value: undefined };
+    },
+  };
+  ctx.set('invocation', { uplink: () => input });
+  const attached = api.attach(agent, id, signal);
+  const frames = (async function* () {
+    for await (const frame of attached) {
+      if (frame.type === 'ack') {
+        const entry = pending.get(frame.sequence); expect(entry).toBeDefined(); pending.delete(frame.sequence);
+        if (frame.refusal) entry!.reject(Object.assign(new Error(frame.refusal), { code: 'terminal/control-unavailable' }));
+        else entry!.resolve();
+      } else yield frame;
+    }
+  })();
+  const send = (command: Omit<Extract<Input, { type: 'write' }>, 'sequence'> | Omit<Extract<Input, { type: 'resize' }>, 'sequence'>) => {
+    const value = { ...command, sequence: ++sequence };
+    return new Promise<void>((resolve, reject) => {
+      pending.set(sequence, { resolve, reject });
+      if (waiting) { const receive = waiting; waiting = undefined; receive({ done: false, value }); }
+      else queued.push(value);
+    });
+  };
+  return { frames, write: (data: string) => send({ type: 'write', data }), resize: (cols: number, rows: number) => send({ type: 'resize', cols, rows }) };
+}

@@ -8,12 +8,12 @@
 
 ## 环境要求
 
-本版本已验收 **DSH 0.2.0-rc.2**，本机 macOS / Linux，远端 Linux。Windows 本机尚未验收；端口转发当前只支持 macOS / Linux 本机。
+兼容基线为 **DSH 0.2.0-rc.2 / 0.2.1-rc.2**；新版 Desktop 使用其自带运行时。验收范围与记录见 [0.11.0 验收记录](docs/releases/0.11.0-acceptance.md)。Windows 本机尚未验收；端口转发当前只支持 macOS / Linux 本机。
 
 | 用途 | 需要准备 |
 | --- | --- |
 | Desktop | 安装官方 DSH Desktop；它自带 Node 和包管理器，不必另外安装。 |
-| CLI / Web | DSH 0.2.0-rc.2、Node 22+，并让 `dsh` 和 `pnpm` 在 PATH 中可用。 |
+| CLI / Web | DSH 0.2.0-rc.2 或 0.2.1-rc.2、Node 22+，并让 `dsh` 和 `pnpm` 在 PATH 中可用。 |
 | 基础远程连接 | 本机 OpenSSH、具体 Host alias、可用的非交互 SSH 认证；远端 Python 3.8+。 |
 | 远端文件搜索与 `@` 补全 | 远端 `rg`（ripgrep）；Git 工作区索引还需要远端 Git。 |
 | 模型受限命令执行 | 远端 Linux 和可用的 bubblewrap；基础文件浏览和人工终端不要求它。 |

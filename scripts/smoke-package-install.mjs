@@ -11,6 +11,7 @@ const { values } = parseArgs({ options: {
   package: { type: 'string' }, version: { type: 'string', default: packageManifest.version },
   previous: { type: 'string' }, 'previous-version': { type: 'string', default: '0.10.2' },
   dsh: { type: 'string', default: 'dsh' }, out: { type: 'string' }, keep: { type: 'boolean', default: false },
+  'dsh-version': { type: 'string', default: '0.2.0-rc.2' },
 } });
 assert(values.package, 'Usage: node scripts/smoke-package-install.mjs --package <absolute .tgz or HTTPS URL> [--previous <0.10.2.tgz>] [--keep]');
 assert(isAbsolute(values.package) || values.package.startsWith('https://'), 'Use an absolute package path or HTTPS release URL');
@@ -118,7 +119,7 @@ async function boot(enabled) {
 }
 try {
   report.dshVersion = (await cli(['--version'])).stdout.trim();
-  assert.equal(report.dshVersion, '0.2.0-rc.2');
+  assert.equal(report.dshVersion, values['dsh-version'], 'Unexpected DSH test runtime');
   await writeFile(join(workspace, 'workspace-sentinel.txt'), 'KEEP_PROJECT_DATA', { mode: 0o600 });
   if (values.previous) await install(values.previous, values['previous-version']);
   await install(values.package, values.version); await boot(true);

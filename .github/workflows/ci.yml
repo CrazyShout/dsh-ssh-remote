@@ -17,6 +17,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
         node: [22, 24]
+        dsh: ['0.2.0-rc.2', '0.2.1-rc.2']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,7 +29,7 @@ jobs:
       - run: node scripts/check-docs.mjs
       - name: Install the tested official DSH runtime
         run: |
-          npm install --prefix "$RUNNER_TEMP/dsh-runtime" @deepseek-ai/dsh@0.2.0-rc.2 pnpm@11.21.0
+          npm install --prefix "$RUNNER_TEMP/dsh-runtime" @deepseek-ai/dsh@${{ matrix.dsh }} pnpm@11.28.5
           echo "$RUNNER_TEMP/dsh-runtime/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Pack committed runtime and the verified rollback version
         run: |
@@ -39,12 +40,26 @@ jobs:
       - name: Install, boot, upgrade, roll back, disable and remove the actual archive
         run: |
           version="$(node -p 'require("./package.json").version')"
-          npm run test:install -- --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.10.2.tgz" --out "$RUNNER_TEMP/install-evidence"
+          if [ '${{ matrix.dsh }}' = '0.2.0-rc.2' ]; then
+            npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.10.2.tgz" --out "$RUNNER_TEMP/install-evidence"
+          else
+            npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --out "$RUNNER_TEMP/install-evidence"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: install-${{ matrix.os }}-node-${{ matrix.node }}
+          name: install-${{ matrix.os }}-node-${{ matrix.node }}-dsh-${{ matrix.dsh }}
           path: ${{ runner.temp }}/install-evidence
+
+  next-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - run: node scripts/check-dsh-sdk.mjs 0.2.1-rc.2
 
   test:
     runs-on: ubuntu-latest

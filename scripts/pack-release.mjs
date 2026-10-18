@@ -50,7 +50,7 @@ export function packRelease({ output = join(repositoryRoot, 'dist'), version } =
   const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const report = { name: manifest.name, version: manifest.version, filename: packed.filename,
     sha256, size: packed.size, unpackedSize: packed.unpackedSize, entryCount: packed.entryCount,
-    dshVersion: '0.2.0-rc.2', helperVersion: '0.11.0', helperSha256: helper.sha256,
+    dshVersion: '0.2.0-rc.2', dshVersions: ['0.2.0-rc.2', '0.2.1-rc.2'], helperVersion: '0.11.0', helperSha256: helper.sha256,
     commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim() };
   writeFileSync(join(target, 'SHA256SUMS'), `${sha256}  ${packed.filename}\n`);
   writeFileSync(join(target, 'release-manifest.json'), JSON.stringify(report, null, 2) + '\n');

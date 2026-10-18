@@ -8,12 +8,12 @@ SSH development workspaces for DeepSeek Harness: browse and edit remote files, r
 
 ## Requirements
 
-Validated with **DSH 0.2.0-rc.2**, macOS / Linux hosts, and a Linux remote. Windows hosts are not validated; forwarding currently requires a macOS / Linux host.
+Compatibility targets: **DSH 0.2.0-rc.2 / 0.2.1-rc.2**; Desktop uses its bundled runtime. See the [0.11.0 acceptance record](docs/releases/0.11.0-acceptance.md) for the tested scope. Windows hosts are not validated; forwarding currently requires a macOS / Linux host.
 
 | Purpose | Requirement |
 | --- | --- |
 | Desktop | Official DSH Desktop, which includes its own Node and package manager. |
-| CLI / Web | DSH 0.2.0-rc.2, Node 22+, and `dsh` / `pnpm` on PATH. |
+| CLI / Web | DSH 0.2.0-rc.2 or 0.2.1-rc.2, Node 22+, and `dsh` / `pnpm` on PATH. |
 | Basic SSH connection | Local OpenSSH, a concrete Host alias, non-interactive authentication, and Python 3.8+ on the remote. |
 | File search and `@` completion | Remote `rg` (ripgrep); Git discovery also needs remote Git. |
 | Restricted model commands | Remote Linux and working bubblewrap. Basic browsing and human terminals do not require it. |
