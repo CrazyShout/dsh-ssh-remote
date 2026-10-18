@@ -92,10 +92,11 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
   const [query, setQuery] = useState('');
   const [ignored, setIgnored] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [result, setResult] = useState<FileIndexResult>();
+  const [result, setResult] = useState<{ key: string; value: FileIndexResult }>();
   const [status, setStatus] = useState<FileIndexStatus>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const queryKey = JSON.stringify([sessionId, query, ignored]);
   const lifetime = useRef(new AbortController());
   useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, [sessionId]);
   useEffect(() => { setQuery(''); setIgnored(false); setResult(undefined); setStatus(undefined); setError(''); }, [sessionId]);
@@ -108,11 +109,11 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
         if (!live) return;
         if (!response.ok) { setError(response.error.message); return; }
         if (response.value.sessionId !== sessionId) { setError('会话身份不一致，已拒绝显示结果。'); return; }
-        setResult(response.value); setStatus(response.value); setSelected(-1);
+        setResult({ key: queryKey, value: response.value }); setStatus(response.value); setSelected(-1);
       }, error => { if (live) setError(String(error)); }).finally(() => { if (live) setPending(false); });
     }, 150);
     return () => { live = false; clearTimeout(timer); controller.abort(); };
-  }, [sessionId, query, ignored, revision, remote, visible]);
+  }, [sessionId, query, ignored, queryKey, revision, remote, visible]);
   useEffect(() => {
     if (!pending || !visible) return;
     const controller = new AbortController(); let live = true; let timer: ReturnType<typeof setTimeout>;
@@ -142,7 +143,7 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
     }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
   };
-  const current = result?.sessionId === sessionId ? result : undefined;
+  const current = result?.key === queryKey && result.value.sessionId === sessionId ? result.value : undefined;
   return <section aria-label="远程快速打开" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10, height: '100%', minWidth: 0 }}>
     <form onSubmit={event => { event.preventDefault(); choose(query); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 6, minWidth: 0 }}>
       <Input aria-label="搜索远程文件" role="combobox" aria-autocomplete="list" aria-expanded={Boolean(current?.candidates.length)} aria-controls={listId}
@@ -153,8 +154,16 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
           if (event.key === 'Escape') { event.preventDefault(); setSelected(-1); }
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault();
             setSelected(index => candidates.length ? (index + (event.key === 'ArrowDown' ? 1 : -1) + candidates.length) % candidates.length : -1); }
-          else if (event.key === 'Enter' && candidates.length) { event.preventDefault(); const candidate = candidates[selected < 0 ? 0 : selected];
-            if (candidate.kind === 'directory') setQuery(`${candidate.path}/`); else choose(candidate.path); }
+          else if (event.key === 'Enter') {
+            event.preventDefault();
+            // Debounced input must never activate a previous query's candidate.
+            // The explicit path button remains available while indexing.
+            if (!current) return;
+            if (candidates.length) {
+              const candidate = candidates[selected < 0 ? 0 : selected];
+              if (candidate.kind === 'directory') setQuery(`${candidate.path}/`); else choose(candidate.path);
+            } else if (!pending && query) choose(query);
+          }
         }} style={{ width: '100%', minWidth: 0 }} />
       <Button type="submit" disabled={!query}>按路径预览</Button>
     </form>

@@ -25,6 +25,30 @@ async function render() {
   return { remote, container, root, open, close: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 describe('quick open interaction and native menu refresh', () => {
+  it('never activates a previous query while new input is debouncing or awaiting its response', async () => {
+    vi.useFakeTimers(); const f = await render();
+    f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [
+      { path: 'old-folder', kind: 'directory' }, { path: 'protocol.txt', kind: 'file' },
+    ] })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    const input = f.container.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    let finish!: (value: any) => void;
+    f.remote.query.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'protocol');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const enter = async () => { await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))); };
+    await enter();
+    expect(input.value).toBe('protocol'); expect(f.open).not.toHaveBeenCalled();
+    expect(f.container.querySelectorAll('[role="option"]')).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    await enter(); expect(input.value).toBe('protocol'); expect(f.open).not.toHaveBeenCalled();
+    await act(async () => finish(ok(state({ candidates: [{ path: 'protocol.txt', kind: 'file' }] }))));
+    await enter();
+    expect(f.open).toHaveBeenCalledExactlyOnceWith('protocol.txt', false, expect.any(AbortSignal));
+    await f.close();
+  });
   it('stretches the public Input wrapper without relying on styles on the inner input', async () => {
     vi.useFakeTimers(); const f = await render();
     const form = f.container.querySelector('form')!;
