@@ -35,16 +35,12 @@ jobs:
         run: |
           npm run release:pack -- --out "$RUNNER_TEMP/candidate"
           mkdir "$RUNNER_TEMP/rollback-source" "$RUNNER_TEMP/rollback-package"
-          git archive c1c88a1dca9651694228838fe3df17d9a982c202 | tar -x -C "$RUNNER_TEMP/rollback-source"
+          git archive 3c113b74b3a9f2c0577640b8e88ebf7acfa29b97 | tar -x -C "$RUNNER_TEMP/rollback-source"
           npm pack "$RUNNER_TEMP/rollback-source" --ignore-scripts --pack-destination "$RUNNER_TEMP/rollback-package"
       - name: Install, boot, upgrade, roll back, disable and remove the actual archive
         run: |
           version="$(node -p 'require("./package.json").version')"
-          if [ '${{ matrix.dsh }}' = '0.2.0-rc.2' ]; then
-            npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.10.2.tgz" --out "$RUNNER_TEMP/install-evidence"
-          else
-            npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --out "$RUNNER_TEMP/install-evidence"
-          fi
+          npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.11.0.tgz" --previous-version 0.11.0 --out "$RUNNER_TEMP/install-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -53,16 +49,32 @@ jobs:
 
   next-sdk:
     runs-on: ubuntu-latest
+    env:
+      DSH_REQUIRE_FISH: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep fish tcsh zsh
       - run: node scripts/check-dsh-sdk.mjs 0.2.1-rc.2
+
+  windows-skills:
+    # Verify Windows host path handling without claiming a full Windows SSH/UI run.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run test/remote-skills.test.ts test/runtime-router.test.ts test/client-ui.test.tsx --maxWorkers=1 --minWorkers=1
 
   test:
     runs-on: ubuntu-latest
+    env:
+      DSH_REQUIRE_FISH: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -74,8 +86,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - name: Install file-discovery test dependency
-        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - name: Install file-discovery and SSH login-shell test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep fish tcsh zsh
       - run: npm test
       - run: npm run build
       - name: Verify committed build artifacts
