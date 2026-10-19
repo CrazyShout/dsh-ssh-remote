@@ -94,6 +94,8 @@ Blank Sessions show the SSH badge above the composer. The native sidebar start p
 
 The badge and workbench share a small status dot: **green** means SSH/helper connected, **amber** means connecting or limited capabilities, **hollow gray** means disconnected or unknown, and **red** means a connection error. Hover or keyboard-focus the indicator for the full remote path and status. It observes existing connections without connecting every host; green does not certify every remote feature. Polling pauses while hidden and refreshes on return.
 
+![SSH connection indicators and keyboard-focus details](docs/images/connection-status.png)
+
 In 0.11.1, the directory path field navigates after a 300 ms pause, while Enter / **前往** submits immediately. Invalid paths retain the draft and previous listing. Helper installation and direct commands now preserve quoting through fish/tcsh login shells; per-command terminal observation still uses the existing Bash/Zsh hooks.
 
 Remote skills support `<name>/SKILL.md` and flat Markdown with DSH frontmatter and invocation controls. Remote sources win same-category duplicates; local-only and bundled skills remain available. Bodies are read fresh, catalogs expire within 60 seconds, and no skill is copied locally or executed automatically. The four default roots are supported, without symlink following or remote custom `DSH_HOME`/`DSH_AGENTS_HOME` discovery. See [troubleshooting](docs/TROUBLESHOOTING.md) for limits and refresh behavior.
