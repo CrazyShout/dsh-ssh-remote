@@ -9,6 +9,7 @@ describe('connection error policy', () => {
     ['Host key verification failed.', 'SSH_HOST_KEY'],
     ['REMOTE HOST IDENTIFICATION HAS CHANGED!', 'SSH_HOST_KEY'],
     ['python3: command not found', 'PYTHON_REQUIRED'],
+    ['fish: Unknown command: python3', 'PYTHON_REQUIRED'],
     ['Python 3.8 or newer required', 'PYTHON_REQUIRED'],
     ['alias no longer present', 'SSH_CONFIG'],
     ['helper sha256 mismatch', 'HELPER_PROTOCOL'],

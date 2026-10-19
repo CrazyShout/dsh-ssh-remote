@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { join, resolve } from 'node:path';
+import { decodeRemoteScript } from './fixtures/remote-script.js';
 import {
   buildRemoteSshInvocation,
   installRemoteFileSystemRouter,
@@ -36,8 +38,9 @@ function fakeHelpers() {
 }
 function fakeAnchors() {
   const registry = Object.create(AnchorRegistry.prototype);
-  Object.assign(registry, { root: '/anchors', spellings: ['/anchors'], entries: new Map([['/anchors/project', {
-    anchorPath: '/anchors/project', uri: 'ssh://gpu/home/atlas/project', remotePath: '/home/atlas/project',
+  const root = resolve('/anchors'), anchorPath = join(root, 'project');
+  Object.assign(registry, { root, spellings: [root], entries: new Map([[anchorPath, {
+    anchorPath, uri: 'ssh://gpu/home/atlas/project', remotePath: '/home/atlas/project',
   }]]) });
   return registry;
 }
@@ -224,9 +227,9 @@ describe('OpenSSH process invocation', () => {
       false,
     );
     expect(invocation.slice(0, 6)).toEqual(['ssh', '-T', '-p', '2202', '--', 'atlas@gpu']);
-    expect(invocation.at(-1)).toContain("cd '");
-    expect(invocation.at(-1)).toContain('DEMO=');
-    expect(invocation.at(-1)).toContain('My Project');
+    expect(decodeRemoteScript(invocation.at(-1))).toContain("cd '");
+    expect(decodeRemoteScript(invocation.at(-1))).toContain('DEMO=');
+    expect(decodeRemoteScript(invocation.at(-1))).toContain('My Project');
   });
 
   it('runs packaged ripgrep requests through remote PATH rg scoped to cwd', () => {
@@ -236,10 +239,10 @@ describe('OpenSSH process invocation', () => {
       undefined,
       false,
     );
-    expect(invocation.at(-1)).toContain('rg');
-    expect(invocation.at(-1)).toContain('--files');
-    expect(invocation.at(-1)).toMatch(/--.*\./u);
-    expect(invocation.at(-1)).not.toContain('ripgrep-darwin-arm64');
+    expect(decodeRemoteScript(invocation.at(-1))).toContain('rg');
+    expect(decodeRemoteScript(invocation.at(-1))).toContain('--files');
+    expect(decodeRemoteScript(invocation.at(-1))).toMatch(/--.*\./u);
+    expect(decodeRemoteScript(invocation.at(-1))).not.toContain('ripgrep-darwin-arm64');
   });
 
   it('maps packaged ripgrep local anchor roots to remote paths', () => {
@@ -259,8 +262,8 @@ describe('OpenSSH process invocation', () => {
         : undefined,
       fakeHelpers() as never,
     );
-    expect(invocation.at(-1)).toContain('/home/atlas/project');
-    expect(invocation.at(-1)).not.toContain('/Users/me/.dsh/ssh-workspace-anchors/project');
+    expect(decodeRemoteScript(invocation.at(-1))).toContain('/home/atlas/project');
+    expect(decodeRemoteScript(invocation.at(-1))).not.toContain('/Users/me/.dsh/ssh-workspace-anchors/project');
   });
 
   it('gives pathless DSH content searches an explicit cwd instead of SSH stdin', () => {
@@ -283,7 +286,7 @@ describe('OpenSSH process invocation', () => {
 
   it('does not mistake substring lookalikes for the packaged executable', () => {
     const binary = '/tools/@vscode-custom/not-ripgrep/bin/rg';
-    expect(buildRemoteSshInvocation(cwd, [binary, '--files'], undefined, false).at(-1))
+    expect(decodeRemoteScript(buildRemoteSshInvocation(cwd, [binary, '--files'], undefined, false).at(-1)))
       .toContain(binary);
   });
 

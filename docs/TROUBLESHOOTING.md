@@ -2,6 +2,18 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## 0.11.1：fish、目录路径与远程技能
+
+- fish/tcsh 主机在 helper 安装时报引号语法错误：升级到 0.11.1 后重试，无需更改登录 shell。仍需要远端 PATH 中的 Python 3.8+。fish 的命令状态 hook 不在本次范围，原生终端仍可使用。
+- 路径输入停顿 300 ms 后自动导航，Enter / 前往可立即提交。输入法组词时不导航；失败保留原列表，修改或刷新后重试。尚未确认的输入不能用“打开此文件夹”误提交旧目录。
+- 远程会话原生 `/` 菜单现在发现远端项目 `.dsh/skills`、`.agents/skills`（最近 Git 根目录；无 Git 时为当前工作区），以及远端用户 `~/.dsh/skills`、`~/.agents/skills`。`~/.dsh/skills/.system` 排除。支持目录包 `name/SKILL.md` 与平铺 `.md`，必须包含有效的 YAML `name` 和 `description`。
+- 保留 DSH 的 `disable-model-invocation` / `user-invocable` 开关。远端同类别同名技能优先；未被覆盖的本机与内置技能保留。原始内容不复制到本机；路径和相对资源指向该远程会话，不自动运行 skill 脚本。
+- 正文按需重新读取，目录缓存最多 60 秒；通过插件保存/上传后会失效。外部编辑后等缓存过期再打开菜单。没有远程文件 watcher 或 SSH 轮询。
+- 单个技能最多 256 KiB；一次发现最多 1000 个候选文件、8 MiB 内容，最多四路读取。权限不足、超限会记录 `remote skills` 诊断并返回“不完整”，不会声称目录确实为空。单个格式错误文件被忽略，其他技能继续发现。
+- 目前不跟随符号链接，不自动发现自定义远端 `DSH_HOME` / `DSH_AGENTS_HOME` 或其他技能目录。Windows 路径/注册表回归不等于完整 Windows Desktop/SSH 验收。
+
+English: 0.11.1 fixes fish/tcsh script transport and debounces directory navigation. Remote skills use DSH's public provider, the four default project/user roots, native invocation flags and remote resource paths. Catalogs expire within 60 seconds without SSH polling; limits are 256 KiB per skill and 1000 files / 8 MiB per scan, with at most four reads. Permission/budget failures are incomplete observations. Symlinks and custom remote home overrides are not followed; full Windows Desktop acceptance remains outside the targeted Windows regression.
+
 ## 先确定问题发生在哪一步
 
 | 现象 | 下一步 |

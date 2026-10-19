@@ -6,10 +6,12 @@ Release packages are built with the repository's committed `lib/`, not on the us
 
 1. Update `package.json`, the root version in `package-lock.json`, both READMEs, `CHANGELOG.md`, and the versioned release notes under `docs/releases/`.
 2. Run build and tests separately. Keep the committed build current. Verify the package through `npm run release:pack -- --out /absolute/new/output` and `npm run test:install -- --package /absolute/new/output/dsh-ssh-remote-VERSION.tgz`.
-3. For upgrade/rollback checks, pass `--previous /absolute/dsh-ssh-remote-0.10.2.tgz`. Use `--keep` to retain the isolated installed profile for Web UI checks; the script prints its `home`. Evidence and test profiles stay in temporary directories, never in a user profile. They can be removed after checking the report.
+3. For upgrade/rollback checks, pass `--previous /absolute/dsh-ssh-remote-0.11.0.tgz --previous-version 0.11.0`. Use `--keep` to retain the isolated installed profile for Web UI checks; the script prints its `home`. Evidence and test profiles stay in temporary directories, never in a user profile. They can be removed after checking the report.
 4. Capture documentation screenshots using an isolated test workspace; never commit real conversation history or credentials. Render both READMEs and verify their local links.
 
 For 0.11.0, keep v0.10.2 immutable. The helper changes to 0.11.0; pin the reviewed combined asset hash in the pack validator. Preserve transfer manifest v1 and check actual old-package resume. No automatic SSH migration is allowed in acceptance; configuration writes use private fixtures.
+
+For 0.11.1, preserve both tags and the existing helper hash. Run real fish login-shell regressions (CI requires fish instead of silently skipping them), remote skills through the public registry and helper, and the directory-picker interaction tests. The Windows job is targeted path/registry coverage, not a full Desktop/SSH acceptance claim.
 
 Keep the release build pinned to the oldest supported SDK. `node scripts/check-dsh-sdk.mjs 0.2.1-rc.2` installs the newer SDK into a temporary source copy and checks Host/Client types plus the full suite without changing the source lockfile. Package-install CI covers both DSH versions on macOS/Linux and Node 22/24. For an independent newer CLI use `--dsh /absolute/path/to/dsh --dsh-version 0.2.1-rc.2`; never upgrade the user's global CLI just to run acceptance. The v0.10.2 rollback package is validated on DSH 0.2.0-rc.2, not the newer prerelease.
 

@@ -25,7 +25,13 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
   disposers.push(async () => { if (child.exitCode !== null) return; const done = new Promise(resolve => child.once('exit', resolve)); child.stdin.end(); await done; });
   await client.initialize({ clientId: randomUUID() });
   const ws = await client.call<{ workspaceId: string }>('workspace/open', { path: root, access: 'danger-full-access', operationId: randomUUID() });
-  const process = await client.call<{ processId: string; pid: number }>('process/start', { operationId: randomUUID(), workspaceId: ws.workspaceId, argv: [shell, ...args], env: { HOME: root, ZDOTDIR: root, TERM: 'xterm' }, tty: { cols: 80, rows: 24 }, shellObservation: true });
+  // Debian/Ubuntu's global zshrc otherwise initializes the runner's unrelated
+  // completion tree and can wait for compaudit input before our fixture rc.
+  // Do not load those completions (or suppress their security checks). This is
+  // fixture-only; production user/global startup files remain unchanged.
+  // https://sources.debian.org/src/zsh/5.9-8/debian/zshrc/
+  const env = { HOME: root, ZDOTDIR: root, TERM: 'xterm', ...(shell.includes('zsh') ? { skip_global_compinit: '1' } : {}) };
+  const process = await client.call<{ processId: string; pid: number }>('process/start', { operationId: randomUUID(), workspaceId: ws.workspaceId, argv: [shell, ...args], env, tty: { cols: 80, rows: 24 }, shellObservation: true });
   disposers.push(() => client.call('process/release', { processId: process.processId, operationId: randomUUID() }));
   const state = () => client.call<any>('process/shellState', { processId: process.processId });
   let sequence = 0;
@@ -33,7 +39,8 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
   const until = async (predicate: (state: any) => boolean) => {
     const end = Date.now() + 6000; let view: any;
     do { view = await state(); if (predicate(view)) return view; await new Promise(resolve => setTimeout(resolve, 30)); } while (Date.now() < end);
-    throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr);
+    const captured = await client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 8192, waitMs: 0 });
+    throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr + ' output=' + JSON.stringify(captured));
   };
   const output = () => client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 65536, waitMs: 100 });
   const foregroundJob = async () => {

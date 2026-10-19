@@ -1,5 +1,12 @@
 # Changelog / 更新记录
 
+## 0.11.1
+
+- Fix #28: preserve installer and direct-command scripts through fish/tcsh login-shell parsing using the already-required Python runtime. No temporary shell script, shell change or new remote dependency.
+- Fix #29: debounce directory-path navigation by 300 ms, keep Enter/Go, suppress IME submissions and natural-language corrections, retain failed drafts/listings and reject stale responses or committing an old directory.
+- Fix #27: register remote skills through the public DSH provider API. Discover project and remote-user `.dsh/skills` / `.agents/skills`, preserve invocation controls and remote resource paths, isolate hosts/workspaces, and expire catalogs without SSH polling. Local-only and bundled skills remain available.
+- Add real sh/zsh/fish/tcsh execution regressions and targeted Windows path/registry CI. Helper stays 0.11.0 with the same content hash; supported DSH versions stay 0.2.0-rc.2 / 0.2.1-rc.2.
+
 ## 0.11.0
 
 - Breaking: remove SSH2/SFTP and legacy terminal backend exports; add explicit, backed-up OpenSSH configuration migration and guarded rollback.

@@ -18,7 +18,7 @@ export function classifyConnectionError(error: unknown, stderr = '', established
   if (/permission denied.*(?:publickey|password|keyboard-interactive)|authentication failed|too many authentication failures|sign_and_send_pubkey|incorrect passphrase|agent refused/iu.test(message)) {
     return result('SSH_AUTH', false, '请先在终端验证 SSH alias，并将密钥解锁到 ssh-agent；后台连接无法输入密码或 MFA。');
   }
-  if (/python3?:.*(?:not found|No such file)|python.*(?:3\.8|version.*unsupported|version.*required)/iu.test(message)) {
+  if (/python3?:.*(?:not found|No such file)|Unknown command:\s*python3?\b|python.*(?:3\.8|version.*unsupported|version.*required)/iu.test(message)) {
     return result('PYTHON_REQUIRED', false, '远端需要 PATH 中可用的 Python 3.8 或更新版本。');
   }
   if (error instanceof DshRpcProtocolError || /unsupported.*protocol|protocol.*(?:incompatible|unsupported)|helper sha256 mismatch/iu.test(message)) {

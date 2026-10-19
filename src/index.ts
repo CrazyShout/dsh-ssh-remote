@@ -17,6 +17,7 @@ import { SshRemoteFiles } from './file-search.js';
 import { PortForwardManager, SshRemotePorts } from './port-forwards.js';
 import { TransferManager, SshRemoteTransfers, mountTransferHttp } from './transfers.js';
 import { TerminalStateManager, SshRemoteTerminalState } from './terminal-state.js';
+import { mountRemoteSkills } from './remote-skills.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -50,8 +51,10 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   const service = new SshRemoteService(ctx, helpers, config);
   const resolveRemotePath = service.resolveRemotePath.bind(service);
   const fileIndex = new RemoteFileIndex(helpers, resolveRemotePath);
+  const remoteSkills = mountRemoteSkills(ctx, helpers, resolveRemotePath);
+  const filesChanged = (root: string) => { fileIndex.invalidate(root); remoteSkills.invalidate(); };
   const portForwards = new PortForwardManager(resolveRemotePath);
-  const transfers = new TransferManager(helpers, resolveRemotePath, root => fileIndex.invalidate(root));
+  const transfers = new TransferManager(helpers, resolveRemotePath, filesChanged);
   const terminalState = new TerminalStateManager(resolveRemotePath);
   const terminalStateFiber = ctx.inject(['terminalController', 'workspaceFiles', 'sessions'], scope => {
     new SshRemoteTerminalState(scope, terminalState);
@@ -72,7 +75,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     resolveRemotePath,
   ));
   const editorFiber = ctx.inject(['workspaceFiles', 'sessions'], scope => {
-    new SshRemoteEditor(scope, helpers, resolveRemotePath, root => fileIndex.invalidate(root));
+    new SshRemoteEditor(scope, helpers, resolveRemotePath, filesChanged);
     new SshRemoteFiles(scope, fileIndex, helpers, resolveRemotePath);
     new SshRemotePorts(scope, portForwards);
     new SshRemoteTransfers(scope, transfers);
@@ -118,6 +121,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
       workspaceFilesFiber.dispose(),
       editorFiber.dispose(),
       referencesFiber.dispose(),
+      remoteSkills.dispose(),
       disposeTransferHttp(),
       terminalStateFiber.dispose(),
       userSubprocess.dispose(),

@@ -6,6 +6,10 @@
 
 ## 架构
 
+0.11.1 增加可选的 `ctx.skills.registerProvider()` 适配：仅为已映射的远程 cwd 提供 SSH 技能候选，使用 helper target identity 和 POSIX 路径组合，而非把 `host:/path` 展示标签传给本机路径处理。四类根目录与原生发现器一致，远端同类别优先；正文通过现有有界文件读取加载，不落盘复制。缓存失效使用公开 provider control，保持本机 provider 与 Agent 层级作用域。
+
+SSH 安装/直连命令以固定 Python 表达式解码 POSIX 脚本后 `exec`；账户登录 shell 只解析受控包装。Python 已是基础依赖，stdin 继续传 helper 内容，不新增临时 shell 文件或 helper 协议能力。helper 仍为 0.11.0。
+
 默认数据平面已经改为：
 
 ```text
