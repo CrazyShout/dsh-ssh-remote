@@ -1,135 +1,135 @@
-# dsh-ssh-remote
+![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-English | [中文](README.md) · [Download 0.11.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.11.2) · [Changelog](CHANGELOG.md)
+[中文](README.md) · [Download 0.12.0](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.12.0) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
-SSH development workspaces for DeepSeek Harness: browse and edit remote files, reference code, open terminals, forward ports, and transfer files. Uses your existing OpenSSH configuration and DSH's native file and terminal panels.
+Open an SSH workspace inside DeepSeek Harness. Browse files and run commands in its native panels, with remote editing, `@` references, port forwarding and file transfers. Reuse `~/.ssh/config`; no full DSH installation is needed on the server.
 
-![Remote workbench: quick open, transfers, ports and terminal status](docs/images/remote-tools.png)
+## Install: copy, install, connect
 
-## Requirements
+Already have working **DSH** and an **SSH alias**? Start here. Desktop includes its runtime; you do not need to install Node separately.
 
-Compatibility targets: **DSH 0.2.0-rc.2 / 0.2.1-rc.2**; Desktop uses its bundled runtime. See the [0.11.0 acceptance record](docs/releases/0.11.0-acceptance.md) for the tested scope. Windows hosts are not validated; forwarding currently requires a macOS / Linux host.
+### Desktop / Web
 
-| Purpose | Requirement |
-| --- | --- |
-| Desktop | Official DSH Desktop, which includes its own Node and package manager. |
-| CLI / Web | DSH 0.2.0-rc.2 or 0.2.1-rc.2, Node 22+, and `dsh` / `pnpm` on PATH. |
-| Basic SSH connection | Local OpenSSH, a concrete Host alias, non-interactive authentication, and Python 3.8+ on the remote. |
-| File search and `@` completion | Remote `rg` (ripgrep); Git discovery also needs remote Git. |
-| Restricted model commands | Remote Linux and working bubblewrap. Basic browsing and human terminals do not require it. |
+1. Open **Plugins → Add plugin** in the sidebar and paste the full address below.
+2. Choose **Install → Enable now**. Save your work and fully restart DSH after the first install or an upgrade from 0.11.x; follow the reported outcome for later updates.
+3. Choose **Add workspace**, select your SSH host and folder, then use native **Workspace files** and **New terminal**.
 
-Install DSH first using the [official instructions](https://github.com/deepseek-ai/deepseek-harness). Check each plugin Release for verified compatibility with other DSH versions.
+~~~text
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.12.0/dsh-ssh-remote-0.12.0.tgz
+~~~
 
-## Install
+No clone, build or manual plugin-directory copying. The installer still downloads runtime dependencies.
 
-### Desktop / Web: use the official plugin page
+> **Use the full address.** The npm package named `dsh-ssh-remote` belongs to another project. Desktop and Web have separate profiles and need separate installation.
 
-1. Open **Plugins / 插件** in the left sidebar and choose **Add plugin / 添加插件**.
-2. Paste this complete address and click **Install / 安装**:
+### CLI / Web: one install command
 
-```text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz
-```
+~~~sh
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.12.0/dsh-ssh-remote-0.12.0.tgz'
+~~~
 
-3. Version 0.11.0 removes `ssh2` / `cpu-features` and their native build prompts. Review any other dependency prompts in the official installer; do not globally allow unknown build scripts.
-4. Click **Enable now / 立即启用** after installation (listed as `dsh-ssh-remote`), then fully restart that Desktop instance or Web server.
+Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its terminal first. **For Desktop, use the application's own Plugins page.**
 
-![Pasting a pinned release address into the official plugin installer](docs/images/install.png)
+<details>
+<summary>Alternative sources and the install dialog</summary>
 
-The package includes built runtime files: no clone or compilation is needed. Installation still downloads runtime dependencies. **The npm package named `dsh-ssh-remote` belongs to another project: use the complete address above.** Desktop and Web use separate profiles and need separate installation.
+![A pinned release URL in the official plugin installer](docs/images/install.png)
 
-### CLI: install into the Web profile
+Fixed Git tag (requires local Git):
 
-```sh
-dsh --version
-pnpm --version
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz'
-```
+~~~sh
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.12.0'
+~~~
 
-Restart your existing `dsh web` server after installation. Stop it with Ctrl-C in its terminal before starting `dsh web` again. After a blocked-build retry, also check that the bundle is enabled in Plugins. For Desktop, use the application's plugin page.
+You can also download the release `.tgz` and enter its absolute path in Plugins. Verify downloads with `SHA256SUMS`. Review dependency-script prompts in the official installer, without globally allowing unknown scripts. Version 0.11.0 removed the `ssh2` / `cpu-features` native-build dependencies.
 
-The fixed Git tag is an alternative source and requires local Git:
+</details>
 
-```sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.2'
-```
+## Your everyday workflow
 
-You can also download the release `.tgz` and install its **absolute local path** through the same UI or CLI. Use the release's `SHA256SUMS` to verify the downloaded package.
-
-## First connection: five steps
-
-1. Reuse an existing concrete alias in your local `~/.ssh/config`, or add a minimal one:
-
-   ```sshconfig
-   Host devbox
-     HostName your-server.example.com
-     User your-user
-   ```
-
-2. Run `ssh devbox`, verify the host fingerprint on first connection, and confirm login works. Type `exit` to return. See [connection troubleshooting](docs/TROUBLESHOOTING.md) for encrypted keys, passwords and MFA.
-3. In DSH choose **Add workspace / 添加工作区 → devbox**, browse or enter a remote path, then open the folder.
-4. The first connection deploys the matching Python helper automatically. **Settings → Built-in plugins → SSH Remote** also provides connect, retry and diagnostics.
-5. Open **Workspace files / 工作区文件** to preview a file, then **New terminal / 新建终端** and run `pwd`. Verify the remote directory. No model message is needed.
-
-Keep custom `Port`, `IdentityFile` and `ProxyJump` settings in OpenSSH; do not duplicate them in the plugin. Background connections use `BatchMode=yes`: ensure `ssh -o BatchMode=yes devbox true` succeeds after preparing your SSH agent or login session.
-
-## Upgrade legacy hosts
-
-0.11.0 uses system OpenSSH + the Python helper only. The SFTP backend and both SSH2 terminal exports were removed. Existing OpenSSH aliases need no migration. For old plugin host settings, open **Settings → SSH Remote → 迁移旧 SSH 配置**, review the diff, then explicitly confirm backup, write and connection verification. Nothing edits SSH configuration at startup; private-key contents are never imported. Unmigrated workspaces never fall back to local files. See the bilingual [migration guide](docs/MIGRATION-0.11.md).
-
-## Everyday use
+![Actual Web interface: the SSH remote workbench](docs/images/remote-tools.png)
 
 | Task | Entry point |
 | --- | --- |
 | Browse and preview files | Native **Workspace files / 工作区文件** |
-| Edit and save text | Preview-tab menu **编辑远程文本**, or **编辑** after selecting a quick-open result |
-| Find a file | **SSH · host → 快速打开**, or native `@` completion |
+| Edit and save text | File-tab menu **编辑远程文本**, or **编辑** in quick open |
+| Find and reference code | **SSH · host → 快速打开**, or native `@` |
 | Run commands | Native **New terminal / 新建终端** |
-| See cwd, exit status and terminal context | Terminal-tab menu **查看 SSH 终端状态** |
-| Open TensorBoard, Jupyter or a development website | **远程工作台 → 端口转发** |
+| See cwd, exit status and context | Terminal-tab menu **查看 SSH 终端状态** |
+| Access TensorBoard, Jupyter or a dev website | **远程工作台 → 端口转发** |
 | Upload/download files and folders | **远程工作台 → 文件传输** |
-| Use remote skills | Native `/` menu in a remote Session; project and remote-user `.dsh/skills` / `.agents/skills` |
+| Use remote skills | Native `/` skill menu in a remote Session |
 
-Blank Sessions show the SSH badge above the composer. The native sidebar start page also offers **远程工作台**. Local Sessions retain their normal file and terminal behavior.
+The **SSH · host** badge opens the unified workbench; blank Sessions show it above the composer. Local Sessions retain their original file and terminal behavior.
 
-The badge and workbench share a small status dot: **green** means SSH/helper connected, **amber** means connecting or limited capabilities, **hollow gray** means disconnected or unknown, and **red** means a connection error. Hover or keyboard-focus the indicator for the full remote path and status. It observes existing connections without connecting every host; green does not certify every remote feature. Polling pauses while hidden and refreshes on return.
+Connection dots: green = SSH/helper connected; amber = connecting or limited; hollow gray = disconnected or unknown; red = connection error. Hover or keyboard-focus for the full path and explanation. Green does not certify every remote feature.
 
-![SSH connection indicators and keyboard-focus details](docs/images/connection-status.png)
+## New to SSH?
 
-In 0.11.1, the directory path field navigates after a 300 ms pause, while Enter / **前往** submits immediately. Invalid paths retain the draft and previous listing. Helper installation and direct commands now preserve quoting through fish/tcsh login shells; per-command terminal observation still uses the existing Bash/Zsh hooks.
+Install DSH using the [official instructions](https://github.com/deepseek-ai/deepseek-harness), then configure a concrete local OpenSSH alias:
 
-Remote skills support `<name>/SKILL.md` and flat Markdown with DSH frontmatter and invocation controls. Remote sources win same-category duplicates; local-only and bundled skills remain available. Bodies are read fresh, catalogs expire within 60 seconds, and no skill is copied locally or executed automatically. The four default roots are supported, without symlink following or remote custom `DSH_HOME`/`DSH_AGENTS_HOME` discovery. See [troubleshooting](docs/TROUBLESHOOTING.md) for limits and refresh behavior.
+~~~sshconfig
+Host devbox
+  HostName your-server.example.com
+  User your-user
+~~~
 
-The workbench combines **quick open, transfers, ports, and terminal status**. Arrow keys select files, Enter previews, and Escape clears selection. Narrow panes use a section menu. Transfers follow select → review → start and keep running when switching sections.
+Run `ssh devbox`, verify the host fingerprint on first login, then `exit`. The plugin uses non-interactive authentication, so also check:
 
-The text editor supports complete UTF-8 files up to **256 KiB**. Transfers support **1 TiB per file/batch**: small real samples and simulated boundaries were tested, not TB-scale performance. Save editor drafts before restarting; transfers require source/destination reauthorization after restart. Human terminals run with the SSH account's permissions.
+~~~sh
+ssh -o BatchMode=yes devbox true
+~~~
 
-DSH's Finder/local-application actions still refer to the local machine. Use the native preview and remote editor for SSH files. See [technical reference](docs/TECHNICAL.md) for limits, permissions and recovery guarantees.
+Follow the three installation steps above and run `pwd` in a native terminal to verify the remote directory. No model message is needed. The first connection deploys the matching Python helper; host diagnostics are in **Settings → Built-in plugins → SSH Remote**. Keep custom `Port`, `IdentityFile` and `ProxyJump` settings in OpenSSH, without duplicating them in the plugin.
+
+## Requirements and limits
+
+Validated DSH versions: **0.2.0-rc.2 / 0.2.1-rc.2**. Check each Release for other compatibility results.
+
+| Purpose | Requirement |
+| --- | --- |
+| Desktop | Official DSH Desktop, with its bundled Node and package manager |
+| CLI / Web | Node 22+, `dsh` and `pnpm` on PATH |
+| Basic remote connection | Local OpenSSH and non-interactive authentication; remote Python 3.8+ |
+| Search and `@` completion | Remote ripgrep; Git workspace discovery also needs Git |
+| Restricted model commands | Remote Linux and bubblewrap; not required for browsing or human terminals |
+
+- Editing: complete UTF-8 files, **256 KiB** maximum. Save drafts before restarting.
+- Transfers: **1 TiB per file/batch**; small real samples and simulated boundaries tested, not TB-scale throughput. Restart recovery requires source/destination reauthorization.
+- Forwarding: currently validated on macOS / Linux hosts. Windows has no full Desktop/SSH acceptance.
+- Skills: project and user `.dsh/skills` / `.agents/skills` by default, without following symlinks or automatically running scripts.
+- DSH's Finder / local-application actions remain local; use preview and remote editing for SSH files.
+
+See the [technical reference](docs/TECHNICAL.md) for detailed boundaries. Old SFTP/plugin-host configurations have a [migration guide](docs/MIGRATION-0.11.md). Existing OpenSSH aliases need no migration; upgrades never automatically rewrite SSH configuration.
 
 ## Update, roll back and remove
 
-- **Update:** copy the desired package address from [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases). Follow the rc.2 plugin page's advice to remove the old plugin, then install and enable the new version. Web CLI users can repeat the `add` command above in the same profile to replace the version. Restart afterwards. Save drafts and pause transfers first; a restart ends live human terminals.
-- **Roll back to 0.11.1:** install the previous public archive and restart. Migrated OpenSSH settings remain; use the migration wizard to undo them first if needed.
+**In-app updates:** open **Plugins → dsh-ssh-remote → 检查更新 (Check for updates)**. Select **更新到… → 确认更新** to install a newer stable release without visiting this repository or copying another link. Automatic checks run every six hours while the page is visible; switch them off on the same page without losing manual checks. A new-version notice appears once and never starts installation by itself.
 
-```sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-remote-0.11.1.tgz'
-```
+Package installation uses DSH's official service, including dependency approvals and compatibility checks. Installed and running versions are shown separately. Save drafts and pause transfers first: **reloading the SSH plugin may end its terminals and port forwards. It never automatically restarts DSH.** If a response is lost, choose **重新确认结果** to reconcile the result instead of automatically reinstalling.
 
-0.11.1 was validated with both DSH baselines but lacks the shared status indicators. Helper content is identical; rolling back does not require downgrading DSH. Earlier releases remain available separately.
+Source `link:` / local-directory installs show version information only and must be synchronized with Git; archives never replace them automatically. Version 0.11.2 and earlier need one manual installation of 0.12.0 to gain this feature. [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) remain available for manual selection. If DSH refuses to replace a source directly, follow its plugin-page guidance; this feature does not remove the old package first. Web CLI users can still repeat `add` in the same profile.
 
-- **Disable:** switch off the bundle in the plugin page, retaining its files and settings; restart if requested by DSH.
-- **Remove:** use the corresponding application's plugin page. For Web, stop the server and run:
+**Roll back to 0.11.2:** install the previous official release in Plugins, or run:
 
-```sh
+~~~sh
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz'
+~~~
+
+Restart when requested. Version 0.11.2 was validated with both DSH baselines and shares the 0.12.0 helper; migrated OpenSSH settings remain.
+
+**Disable / remove:** use the application's Plugins page. For Web, you can also stop the server and run:
+
+~~~sh
 dsh plugin --profile web remove dsh-ssh-remote
-```
+~~~
 
-Removal affects only that profile's plugin; it does not delete remote projects, local conversation history or SSH configuration. Existing remote workspaces need the plugin to work; reinstalling can reuse their saved mappings.
+Removal does not delete remote projects, local conversations or SSH configuration. Remote workspaces need the plugin to work; reinstalling reuses saved mappings.
 
 ## Help and development
 
-- [Troubleshooting](docs/TROUBLESHOOTING.md): install errors, dependency builds, authentication and missing remote tools.
-- [Report an issue](https://github.com/CrazyShout/dsh-ssh-remote/issues) with plugin/DSH versions, Desktop or Web, installation source and the first actual error. Omit credentials.
-- [Technical reference and development](docs/TECHNICAL.md), [roadmap](docs/ROADMAP.md), [release procedure](docs/RELEASING.md), [changelog](CHANGELOG.md).
+[Troubleshooting](docs/TROUBLESHOOTING.md) · [Report an issue](https://github.com/CrazyShout/dsh-ssh-remote/issues) · [Technical reference](docs/TECHNICAL.md) · [Roadmap](docs/ROADMAP.md) · [Release procedure](docs/RELEASING.md) · [Changelog](CHANGELOG.md)
+
+Include plugin / DSH versions, Desktop or Web, installation source and the first actual error. Do not include credentials.
 
 MIT License.

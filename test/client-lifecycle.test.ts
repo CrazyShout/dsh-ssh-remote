@@ -37,7 +37,7 @@ describe('client lifecycle', () => {
       for (const parameter of entry.parameters) {
         if (parameter.name === 'selections') { expect(parameter.codec.create().parse([])).toEqual([]); continue; }
         if (entry.method.startsWith('migration') && ['id', 'token'].includes(parameter.name)) { expect(parameter.codec.create().parse('00000000-0000-4000-8000-000000000000')).toContain('00000000'); continue; }
-        if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
+        if (['includeIgnored', 'force'].includes(parameter.name)) { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'cursor') { expect(parameter.codec.create().parse(0)).toBe(0); continue; }
         if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
         if (parameter.name === 'id') { expect(parameter.codec.create().parse('test-forward-identity')).toBe('test-forward-identity'); continue; }
@@ -49,7 +49,7 @@ describe('client lifecycle', () => {
       for (const parameter of entry.parameters) {
         if (parameter.name === 'selections') { expect(parameter.codec.create().parse([])).toEqual([]); continue; }
         if (entry.method.startsWith('migration') && ['id', 'token'].includes(parameter.name)) { expect(parameter.codec.create().parse('00000000-0000-4000-8000-000000000000')).toContain('00000000'); continue; }
-        if (parameter.name === 'includeIgnored') { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
+        if (['includeIgnored', 'force'].includes(parameter.name)) { expect(parameter.codec.create().parse(false)).toBe(false); continue; }
         if (parameter.name === 'cursor') { expect(parameter.codec.create().parse(0)).toBe(0); continue; }
         if (['request', 'input'].includes(parameter.name)) { expect(() => parameter.codec.create().parse('gpu')).toThrow(); continue; }
         if (parameter.name === 'id') { expect(parameter.codec.create().parse('test-forward-identity')).toBe('test-forward-identity'); continue; }
@@ -138,6 +138,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTransfers,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTerminalState,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteUpdates,remote.pluginManager,slots,pluginNavigation',
     ]);
 
     const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
@@ -170,6 +171,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemotePorts,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTransfers,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteTerminalState,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
+      'inject:remote.sshRemoteUpdates,remote.pluginManager,slots,pluginNavigation',
       'dispose:sidebar.workspaces.directoryFlow',
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',

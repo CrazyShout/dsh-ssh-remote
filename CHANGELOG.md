@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 0.12.0
+
+- 中英文 README 以品牌横幅与三步安装开场；换用匿名示例工作区的真实 Web 截图，不带接管标志或虚拟鼠标。
+- 在官方插件详情页增加稳定版检查、轻量提醒和确认更新。GitHub Release 元数据有超时、大小上限和共享缓存；不上传会话、SSH 配置或项目内容。
+- 安装仅调用 DSH 的公开插件管理服务，区分安装版本与运行版本、重启要求及结果未知；刷新后可核对在途更新，不自动重复安装、不自动批准构建或重启应用。
+- 源码链接 / 本地开发目录不被安装包覆盖；Web/Desktop profile 分别管理。helper 保持 0.11.0，传输、SSH 路由和进程协议不变。
+- English: installation-first README, clean real-UI captures, stable-release notifications and user-confirmed updates through DSH's official installer. Source links, dependency approvals and restart control remain explicit.
+
 ## 0.11.2
 
 - SSH 主机入口与远程工作台共用连接状态：绿色已连接，黄色连接中或能力受限，灰色空心未连接/未知，红色连接错误。悬停和键盘聚焦显示完整路径及原因，不改官方工作区列表。
