@@ -33,7 +33,8 @@ async function fixture(shell: string, args = ['-i'], startup = '', setup?: (root
   const until = async (predicate: (state: any) => boolean) => {
     const end = Date.now() + 6000; let view: any;
     do { view = await state(); if (predicate(view)) return view; await new Promise(resolve => setTimeout(resolve, 30)); } while (Date.now() < end);
-    throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr);
+    const captured = await client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 8192, waitMs: 0 });
+    throw new Error('shell state timeout: ' + JSON.stringify(view) + ' ' + stderr + ' output=' + JSON.stringify(captured));
   };
   const output = () => client.call<any>('process/read', { processId: process.processId, afterSeq: '0', maxBytes: 65536, waitMs: 100 });
   const foregroundJob = async () => {

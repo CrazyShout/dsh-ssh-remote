@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { join, resolve } from 'node:path';
 import { decodeRemoteScript } from './fixtures/remote-script.js';
 import {
   buildRemoteSshInvocation,
@@ -37,8 +38,9 @@ function fakeHelpers() {
 }
 function fakeAnchors() {
   const registry = Object.create(AnchorRegistry.prototype);
-  Object.assign(registry, { root: '/anchors', spellings: ['/anchors'], entries: new Map([['/anchors/project', {
-    anchorPath: '/anchors/project', uri: 'ssh://gpu/home/atlas/project', remotePath: '/home/atlas/project',
+  const root = resolve('/anchors'), anchorPath = join(root, 'project');
+  Object.assign(registry, { root, spellings: [root], entries: new Map([[anchorPath, {
+    anchorPath, uri: 'ssh://gpu/home/atlas/project', remotePath: '/home/atlas/project',
   }]]) });
   return registry;
 }
