@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import { installRemoteShellRouter, RemoteShellProcessTracker } from '../src/help
 import type { ShellExecution } from '@deepseek-ai/dsh-shell';
 import { RemoteHelperRpcClient } from '../src/helper/rpc-client.js';
 import { formatSshUri } from '../src/types.js';
+import { RemoteSkillsProvider } from '../src/remote-skills.js';
 
 const helper = fileURLToPath(new URL('../helper/dsh_remote_helper.py', import.meta.url));
 
@@ -84,6 +85,24 @@ async function remoteFixture(): Promise<{
 }
 
 describe('real TypeScript ↔ Python helper adapters', () => {
+  it('discovers and loads project and user skills through real helper targets, not their display labels', async () => {
+    const fixture = await remoteFixture();
+    const home = join(fixture.root, 'user'), projectSkill = join(fixture.root, '.dsh/skills/demo');
+    await mkdir(join(fixture.root, '.git')); await mkdir(projectSkill, { recursive: true });
+    await mkdir(join(home, '.agents/skills'), { recursive: true });
+    await writeFile(join(projectSkill, 'SKILL.md'), '---\nname: remote-project\ndescription: Project fixture\n---\nPROJECT_REMOTE');
+    await writeFile(join(home, '.agents/skills/user.md'), '---\nname: remote-user\ndescription: User fixture\n---\nUSER_REMOTE');
+    const controller = new AbortController();
+    const provider = new RemoteSkillsProvider(new HelperRemoteFileSystem(fixture.helper, fixture.resolveAnchor), fixture.resolveAnchor,
+      async () => home, { signal: controller.signal, invalidate: vi.fn() }, vi.fn());
+    try {
+      const result = await provider.list({ cwd: '/anchor' });
+      expect(result.complete).toBe(true); expect(result.candidates.map(s => s.name)).toEqual(['remote-project', 'remote-user']);
+      expect((await provider.get(result.candidates[0], { cwd: '/anchor' }))?.content).toBe('PROJECT_REMOTE');
+      expect((await provider.get(result.candidates[1], { cwd: '/anchor' }))?.content).toBe('USER_REMOTE');
+    } finally { controller.abort(); }
+  });
+
   it('seeks directly, checks every range version, and retains correct old-helper fallback', async () => {
     const fixture = await remoteFixture(), raw = fixture.helper.clientValue;
     const bytes = Buffer.alloc(700_000, 65); bytes.fill(66, 600_000);
