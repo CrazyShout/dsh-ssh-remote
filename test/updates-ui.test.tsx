@@ -19,8 +19,8 @@ afterEach(async () => { await act(async () => { root.unmount(); store?.dispose()
 const target = { version: '0.12.0', url: 'https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.12.0',
   packageUrl: 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.12.0/dsh-ssh-remote-0.12.0.tgz',
   sha256: 'a'.repeat(64), testedDshVersions: ['0.2.0-rc.2'], publishedAt: '2026-10-19T00:00:00Z' };
-async function render({ sourceKind = 'release', subject = 'dsh-ssh-remote', error = '' } = {}) {
-  const info = { profileId: 'ui-test', runningVersion: '0.11.2', installedVersion: '0.11.2', source: 'file:/tmp/previous.tgz', sourceKind, enabled: true };
+async function render({ sourceKind = 'release', subject = 'dsh-ssh-remote', error = '', installedVersion = '0.11.2' } = {}) {
+  const info = { profileId: 'ui-test', runningVersion: '0.11.2', installedVersion, source: 'file:/tmp/previous.tgz', sourceKind, enabled: true };
   const remote = { info: vi.fn(async () => ({ ok: true, value: info })), check: vi.fn(async () => ({ ok: true, value: { latest: target, checkedAt: 1, error } })) };
   const installer = { installBundle: vi.fn(async () => ({ ok: false, error: { message: 'lost response' } })), waitForInstall: vi.fn(), cancelInstall: vi.fn() };
   store = new UpdateStore(remote as never, installer as never);
@@ -35,6 +35,11 @@ function button(label: string) { const b = [...element.querySelectorAll('button'
 async function click(label: string) { await act(async () => { button(label).click(); }); }
 
 describe('update entry and confirmation', () => {
+  it('does not say up to date when installed files are newer than the running code', async () => {
+    await render({ installedVersion: '0.12.0' });
+    expect(element.textContent).toContain('重新加载或重启后生效');
+    expect(element.textContent).not.toContain('已是最新稳定版');
+  });
   it('shows a lightweight notice and routes it to the existing plugin details without installing', async () => {
     const s = await render(); expect(element.textContent).toContain('有可用更新');
     await click('查看更新'); expect(s.openUpdates).toHaveBeenCalledOnce(); expect(s.installer.installBundle).not.toHaveBeenCalled();

@@ -25,7 +25,7 @@ export function UpdateSection(props: DetailProps) {
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
       <span>当前运行 {info?.runningVersion || '正在读取…'}</span>
       {available && <strong>可更新至 {available.version}</strong>}
-      {!available && latest && info && !failure && <span style={hint}>{info.installedVersion === latest.version ? '已是最新稳定版' : `最新稳定版 ${latest.version}`}</span>}
+      {!available && latest && info && !failure && <span style={hint}>{info.installedVersion === latest.version && info.runningVersion === latest.version ? '已是最新稳定版' : `最新稳定版 ${latest.version}`}</span>}
       {state.checking && <span role="status" style={hint}>正在检查…</span>}
     </div>
     {info && info.runningVersion !== info.installedVersion && <p role="status" style={{ margin: 0 }}>已安装 {info.installedVersion}，重新加载或重启后生效。</p>}
