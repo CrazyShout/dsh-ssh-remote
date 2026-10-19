@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[English](README.en.md) · [下载 0.11.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.11.2) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
+[English](README.en.md) · [下载 0.12.0](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.12.0) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
 
 **远程开发，像在本地一样顺手。**
 
@@ -17,7 +17,7 @@
 3. 点击 **添加工作区**，选择 SSH 主机与远端文件夹，即可使用官方 **工作区文件** 和 **新建终端**。
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.12.0/dsh-ssh-remote-0.12.0.tgz
 ~~~
 
 无需克隆、编译或复制插件目录。安装器仍需联网下载运行依赖。
@@ -27,7 +27,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-r
 ### CLI / Web：一条安装命令
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.12.0/dsh-ssh-remote-0.12.0.tgz'
 ~~~
 
 安装后重新启动 `dsh web`；已有服务先在它的终端按 Ctrl-C。**Desktop 请使用应用自己的插件页。**
@@ -40,7 +40,7 @@ dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/relea
 固定 Git Tag（需要本机 Git）：
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.2'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.12.0'
 ~~~
 
 也可下载 Release 的 `.tgz`，在插件页输入其绝对路径；`SHA256SUMS` 用于校验下载包。遇到依赖脚本提示时按官方安装器确认，不要全局放开未知脚本。0.11.0 起已移除 `ssh2` / `cpu-features` 原生构建依赖。
@@ -106,15 +106,19 @@ ssh -o BatchMode=yes devbox true
 
 ## 更新、回退与卸载
 
-**更新：** 从 [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) 选择固定版本安装包，在官方插件页安装。若 DSH 提示已安装，按其提示先卸载再安装。Web CLI 可在同一 profile 再次运行 `add` 替换版本。更新前保存草稿、暂停传输；需要重启时，当前实例的人工终端会结束。
+**应用内更新：** 打开 **插件 → dsh-ssh-remote → 检查更新**。发现稳定版后点击 **更新到版本号 → 确认更新**，无需返回仓库或复制新链接。默认在页面可见时每 6 小时检查一次；可在同页关闭自动检查，手动检查仍可用。提醒只显示一次，不自动安装。
 
-**回退到 0.11.1：** 在插件页安装上一正式版本，或使用：
+更新调用 DSH 官方安装服务，保留依赖审批与兼容性检查。安装完成与新版生效会分别显示；若提示需要重启，请先保存草稿、暂停传输。**更新重载可能结束 SSH 终端和端口转发；插件不会自动重启 DSH。** 断线或响应丢失时选择 **重新确认结果**，不会自动重复安装。
+
+源码 `link:` / 本地目录安装只提示版本，使用 Git 同步，不会被安装包覆盖。0.11.2 及更早版本尚无此入口，需要先按上方步骤安装一次 0.12.0。也可随时从 [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) 手动选择固定版本；若 DSH 拒绝直接替换某种来源，按官方插件页提示处理，不自动卸载旧版。Web CLI 仍可在同一 profile 再次运行 `add`。
+
+**回退到 0.11.2：** 在插件页安装上一正式版本，或使用：
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-remote-0.11.1.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz'
 ~~~
 
-按提示重启。0.11.1 已验证上述两版 DSH，helper 与 0.11.2 相同；已迁移的 OpenSSH 配置保留。
+按提示重启。0.11.2 已验证上述两版 DSH，helper 与 0.12.0 相同；已迁移的 OpenSSH 配置保留。
 
 **停用 / 卸载：** 使用对应应用的插件页。Web 也可停止服务后运行：
 

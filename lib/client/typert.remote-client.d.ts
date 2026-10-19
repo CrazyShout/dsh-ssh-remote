@@ -1,6 +1,7 @@
 import type { SshRemote } from 'dsh-ssh-remote/ssh';
 import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
+import type { UpdatesRemote } from 'dsh-ssh-remote/updates';
 export interface RemoteWorkspaceInfo {
     alias: string;
     remotePath: string;
@@ -8,6 +9,7 @@ export interface RemoteWorkspaceInfo {
 }
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap {
+        sshRemoteUpdates: UpdatesRemote;
         sshRemoteTerminalState: TerminalStateRemote;
         sshRemote: SshRemote;
     }

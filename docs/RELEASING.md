@@ -17,6 +17,8 @@ Keep the release build pinned to the oldest supported SDK. `node scripts/check-d
 
 ## Draft and publish
 
+For 0.12.0 updates, keep v0.11.2 immutable and use it as the package-lifecycle rollback point. In addition to normal archive tests, exercise the update button in isolated Web/Desktop profiles. Before a new stable release exists, `node scripts/prepare-update-smoke.mjs --package /absolute/candidate.tgz --base 0.11.2 --out /absolute/new/probe` creates a **private prerelease fixture containing the candidate updater**. Only its manifest version changes, allowing the real public 0.11.2 release to be offered. Never publish this fixture or claim that public 0.11.2 contained the updater. After publishing 0.12.0, repeat with `--base 0.12.0` and install the actual public 0.12.0 archive through the update button. Check installed version, running code, restart-required outcomes, retained workspace mappings and normal remote/local operations separately.
+
 1. Merge the reviewed change into `main` after CI succeeds.
 2. Run **Release** manually from `main`, with the exact package version. It reuses CI, checks version/tag consistency, builds and packs, then creates a draft GitHub Release with the `.tgz`, `SHA256SUMS` and `release-manifest.json`.
 3. Download the draft package and install that actual archive into independent Web and Desktop profiles. Verify native remote file preview, terminal `pwd`, and local workspaces without sending model requests. Review dependency prompts in the official installer.

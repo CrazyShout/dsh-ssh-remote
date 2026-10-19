@@ -8,6 +8,8 @@ import { transferInvocations } from 'dsh-ssh-remote/transfer-schema';
 import { terminalStateInvocations } from 'dsh-ssh-remote/terminal-state-schema';
 import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
 import type {} from './transfer-types.js';
+import { updateInvocations } from 'dsh-ssh-remote/update-schema';
+import type { UpdatesRemote } from 'dsh-ssh-remote/updates';
 
 export interface RemoteWorkspaceInfo {
   alias: string;
@@ -17,6 +19,7 @@ export interface RemoteWorkspaceInfo {
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespaceMap {
+    sshRemoteUpdates: UpdatesRemote;
     sshRemoteTerminalState: TerminalStateRemote;
     sshRemote: SshRemote;
   }
@@ -131,6 +134,23 @@ const diagnosticsSchema = {
 const migrationObject = { parse(value: unknown) { return object(value, 'migration result'); } };
 const booleanSchema = { parse(value: unknown) { if (typeof value !== 'boolean') throw new Error('expected boolean'); return value; } };
 const selectionsSchema = { parse(value: unknown) { if (!Array.isArray(value)) throw new Error('expected selections'); return value; } };
+const updateInfoSchema = { parse(value: unknown) {
+  const row = object(value, 'update information');
+  for (const key of ['profileId', 'runningVersion', 'installedVersion', 'source', 'sourceKind']) stringSchema.parse(row[key]);
+  booleanSchema.parse(row.enabled); return value;
+} };
+const releaseCheckSchema = { parse(value: unknown) {
+  const row = object(value, 'release check');
+  if (typeof row.checkedAt !== 'number') throw new Error('invalid check timestamp');
+  stringSchema.parse(row.error);
+  if (row.latest !== null) {
+    const latest = object(row.latest, 'release');
+    for (const key of ['version', 'url', 'packageUrl', 'publishedAt', 'sha256']) stringSchema.parse(latest[key]);
+    if (!Array.isArray(latest.testedDshVersions)) throw new Error('invalid tested versions');
+    latest.testedDshVersions.forEach(stringSchema.parse);
+  }
+  return value;
+} };
 export const TYPERT_REMOTE = {
   package: 'dsh-ssh-remote',
   descriptors: [
@@ -143,6 +163,7 @@ export const TYPERT_REMOTE = {
     ...portForwardInvocations,
     ...transferInvocations,
     ...terminalStateInvocations,
+    ...updateInvocations({ boolean: booleanSchema, UpdateInfo: updateInfoSchema, ReleaseCheck: releaseCheckSchema }),
   ],
 } as unknown as TypertRemoteContribution;
 

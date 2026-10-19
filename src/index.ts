@@ -18,6 +18,7 @@ import { PortForwardManager, SshRemotePorts } from './port-forwards.js';
 import { TransferManager, SshRemoteTransfers, mountTransferHttp } from './transfers.js';
 import { TerminalStateManager, SshRemoteTerminalState } from './terminal-state.js';
 import { mountRemoteSkills } from './remote-skills.js';
+import { SshRemoteUpdates } from './updates.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -46,6 +47,7 @@ export const inject = ['fs', 'subprocess'];
 export const Config = LegacySshRemoteSettingsSchema;
 
 export function apply(ctx: Context, config: LegacySshConfig) {
+  const updatesFiber = ctx.inject(['pluginManager', 'profileContext'], scope => { new SshRemoteUpdates(scope); return () => {}; });
   const helpers = new RemoteHelperManager({ aliasValidator: hasConcreteSshAlias });
   const shellProcesses = new RemoteShellProcessTracker();
   const service = new SshRemoteService(ctx, helpers, config);
@@ -116,6 +118,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     // Child capability adapters own live remote processes and must quiesce
     // before the host-level helper session is explicitly closed.
     const childResults = await Promise.allSettled([
+      updatesFiber.dispose(),
       terminalFiber.dispose(),
       shellFiber.dispose(),
       workspaceFilesFiber.dispose(),

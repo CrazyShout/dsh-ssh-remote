@@ -12,6 +12,7 @@ import { mountQuickOpen } from './quick-open.js';
 import { mountPortForwards } from './port-forwards.js';
 import { mountTransfers } from './transfers.js';
 import { mountTerminalState } from './terminal-state.js';
+import { mountPluginUpdates } from './updates.js';
 import type { EditorBridge } from './file-search-types.js';
 
 import type { DirectoryService } from 'dsh-ssh-remote/ssh';
@@ -121,9 +122,11 @@ export async function apply(ctx: ClientContext) {
   const disposePorts = mountPortForwards(ctx, workbench);
   const disposeTransfers = mountTransfers(ctx, workbench);
   const disposeTerminalState = mountTerminalState(ctx, workbench);
+  const disposeUpdates = mountPluginUpdates(ctx);
   try {
     await ui;
   } catch (error) {
+    await disposeUpdates();
     await disposeTerminalState();
     await disposeTransfers();
     await disposePorts();
@@ -137,6 +140,7 @@ export async function apply(ctx: ClientContext) {
   }
 
   return async () => {
+    await disposeUpdates();
     await disposeTerminalState();
     await disposeTransfers();
     await disposePorts();
