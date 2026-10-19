@@ -1,5 +1,5 @@
 import { type Workbench } from './workbench.js';
-import type { HelperHostStatus, RemoteResult } from 'dsh-ssh-remote/ssh';
+import { ConnectionStatusStore } from './connection-status.js';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
@@ -31,7 +31,7 @@ declare const tools: readonly [{
 type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {
     workbench: Workbench;
-    statuses(): Promise<RemoteResult<Record<string, HelperHostStatus>>>;
+    connectionStatus: ConnectionStatusStore;
     workspaceInfo(path: string): Promise<InfoResult>;
     openPanel(kind: PanelKind): void;
     availablePanels(): number;

@@ -1,5 +1,12 @@
 # Changelog / 更新记录
 
+## 0.11.2
+
+- SSH 主机入口与远程工作台共用连接状态：绿色已连接，黄色连接中或能力受限，灰色空心未连接/未知，红色连接错误。悬停和键盘聚焦显示完整路径及原因，不改官方工作区列表。
+- 可见使用者共享每五秒一次的只读查询；隐藏时停止，恢复时重新确认。查询失败、十秒超时或 DSH 连接丢失时清除旧绿点；会话切换与连接代次更新后忽略迟到结果。不主动连接、重连或断开 SSH。
+- Host RPC、helper 0.11.0 及内容哈希不变；不升级 DSH。文件夹小地球与工作区行尾状态待上游扩展接口，不接管官方列表。
+- English: shared SSH connection indicators, accessible hover/focus details, visibility-bound polling and stale-response protection. Native workspace rows, SSH execution and helper artifacts remain unchanged.
+
 ## 0.11.1
 
 - Fix #28: preserve installer and direct-command scripts through fish/tcsh login-shell parsing using the already-required Python runtime. No temporary shell script, shell change or new remote dependency.

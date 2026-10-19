@@ -130,7 +130,7 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,connection',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -162,7 +162,7 @@ describe('client lifecycle', () => {
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,connection',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -181,6 +181,7 @@ describe('client lifecycle', () => {
     const unregister = vi.fn();
     let selected = 'session-a';
     const scope = {
+      connection: { generation: { getSnapshot: () => undefined, subscribe: () => () => {} } },
       remote: { sshRemote: { workspaceInfo: vi.fn(async () => ({ ok: true, value: null })) } },
       slots: {
         inject: vi.fn((_slot, callback) => callback()),
@@ -192,7 +193,7 @@ describe('client lifecycle', () => {
     };
     const ctx = {
       inject: vi.fn((dependencies, callback) => {
-        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions']);
+        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions', 'connection']);
         return { dispose: callback(scope) };
       }),
     };
@@ -220,6 +221,7 @@ describe('client lifecycle', () => {
     const old = new Promise(resolve => { resolveOld = resolve; });
     const workspaceInfo = vi.fn(async (path: string) => path === '/slow' ? old : ({ ok: true, value: path === '/local' ? null : { alias: 'gpu', remotePath: '/project' } }));
     const scope = {
+      connection: { generation: { getSnapshot: () => undefined, subscribe } },
       remote: { sshRemote: { workspaceInfo } },
       sidebarRight: { mounted: { getSnapshot: () => selected, subscribe }, openTab: vi.fn() },
       sessions: { list: { getSnapshot: () => ({ byId: { remote: { cwd: '/anchor' }, local: { cwd: '/local' }, slow: { cwd: '/slow' } } }), subscribe } },

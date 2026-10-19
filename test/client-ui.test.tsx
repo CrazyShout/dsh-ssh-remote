@@ -5,13 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SshDirectoryFlow, SshRemotePanel } from '../client/index.js';
 import { Workbench, sections } from '../client/workbench.js';
 import { BlankNativePanelActions, NativePanelActions, RemoteToolsPane } from '../client/native-panels.js';
+import { ConnectionStatusStore } from '../client/connection-status.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
-  const { createElement: element } = await import('react');
+  const { createElement: element, cloneElement } = await import('react');
   const button = ({ children, icon: _icon, variant: _variant, size: _size, ...props }: any) =>
     element('button', props, children);
   return {
     Button: button,
+    Tooltip: ({ label, children }: any) => cloneElement(children, { 'data-tooltip': label }),
     Menu: ({ open, anchor, items, onSelect }: any) => element('div', {}, anchor, open && items.map((item: any) => element('button', { key: item.id, onClick: () => onSelect(item.id) }, item.label))),
     SegmentedTabs: ({ items, onChange }: any) => element('div', {}, items.map((item: any) => element('button', { key: item.value, onClick: () => onChange(item.value) }, item.label))),
     Pill: button,
@@ -418,8 +420,12 @@ describe('native remote workspace panel entry points', () => {
   function panelProps(cwd: string | undefined = '/real-saved-anchor') {
     const workbench = new Workbench();
     for (const section of sections) workbench.register(section.id, () => createElement('div', {}, `${section.title}内容`));
+    const statuses = vi.fn(async () => ok({ gpu: status('connected') }) as any);
+    const connectionStatus = new ConnectionStatusStore(statuses, {
+      getSnapshot: () => ({ id: 1, host: { home: '/home/test' } }), subscribe: () => () => {},
+    });
     return {
-      workbench, statuses: vi.fn(async () => ok({ gpu: { status: 'connected' } })),
+      workbench, statuses, connectionStatus,
       useTabInfo: () => ({ tab: { id: 'workbench-tab', visible: true } }),
       sessionId: 'session-a',
       useSessions: (selector: any) => selector({ byId: { 'session-a': { cwd } } }),
@@ -463,7 +469,9 @@ describe('native remote workspace panel entry points', () => {
     await render(NativePanelActions, props);
     expect(props.workspaceInfo).toHaveBeenCalledWith('/real-saved-anchor');
     expect(container.textContent).toContain('SSH · gpu');
-    expect(button('SSH · gpu').title).toBe('gpu:/home/test/project');
+    expect(button('SSH · gpu').getAttribute('data-tooltip')).toBe('gpu:/home/test/project\n已连接');
+    expect(button('SSH · gpu').getAttribute('aria-label')).toContain('已连接');
+    expect(container.querySelector('[data-ssh-status="connected"]')?.getAttribute('aria-hidden')).toBe('true');
     expect(container.querySelectorAll('button')).toHaveLength(1);
     expect(container.textContent).not.toMatch(/远程文件|远程终端|远程编辑|快速打开|端口转发|文件传输|终端状态/);
     await click('SSH · gpu');
@@ -511,7 +519,7 @@ describe('native remote workspace panel entry points', () => {
     props.workspaceInfo.mockResolvedValue(ok({ alias, remotePath: '/实验 目录/project', uri: 'ssh://test/project' }));
     await render(NativePanelActions, props);
     const badge = container.querySelector('button')!;
-    expect(badge.title).toBe(`${alias}:/实验 目录/project`);
+    expect(badge.getAttribute('data-tooltip')).toBe(`${alias}:/实验 目录/project\n状态未知：尚未获得该主机的连接状态`);
     expect(badge.style.maxWidth).toBe('160px');
     expect(badge.querySelector('span')?.style.textOverflow).toBe('ellipsis');
     await act(async () => badge.click());
@@ -528,6 +536,106 @@ describe('native remote workspace panel entry points', () => {
     expect(container.querySelector('[role="tabpanel"]:not([hidden])')?.textContent).toBe('文件传输内容');
     expect(props.workbench.selected('session-a')).toBe('transfers');
     expect(props.openPanel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['connected', '已连接', 'success', {}],
+    ['installing', '正在安装', 'warn', {}],
+    ['connecting', '正在连接', 'warn', {}],
+    ['reconnecting', '正在重连', 'warn', {}],
+    ['degraded', '已连接（能力受限）', 'warn', { environment: { search: { available: false, error: '缺少 rg' } } }],
+    ['disconnected', '未连接', 'neutral', {}],
+    ['error', '错误', 'error', { error: 'Permission denied' }],
+  ])('renders %s with a small non-animated, accessible status marker', async (state, label, tone, extra) => {
+    const props = panelProps();
+    props.statuses.mockResolvedValue(ok({ gpu: status(state as string, extra) }));
+    await render(NativePanelActions, props);
+    const dot = container.querySelector<HTMLElement>('[data-ssh-status]')!;
+    expect(dot.dataset.sshStatus).toBe(state);
+    expect(dot.style.width).toBe('6px'); expect(dot.style.height).toBe('6px');
+    expect(dot.style.animation).toBe('');
+    expect(dot.style.background).toBe(tone === 'neutral' ? 'transparent' : `var(--dsw-alias-state-${tone}-primary)`);
+    expect(button('SSH · gpu').getAttribute('aria-label')).toContain(label as string);
+    if (state === 'degraded') expect(button('SSH · gpu').getAttribute('data-tooltip')).toContain('缺少 rg');
+    if (state === 'error') expect(button('SSH · gpu').getAttribute('data-tooltip')).toContain('Permission denied');
+  });
+
+  it('shares one poll between badge and workbench and suspends it when the page is hidden', async () => {
+    vi.useFakeTimers();
+    const props = panelProps();
+    function Both() { return createElement('div', {}, createElement(NativePanelActions, props as any), createElement(RemoteToolsPane, props as any)); }
+    await render(Both, {});
+    expect(props.statuses).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('[data-ssh-status="connected"]')).toHaveLength(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(props.statuses).toHaveBeenCalledTimes(2);
+    const hidden = vi.spyOn(document, 'hidden', 'get');
+    try {
+      hidden.mockReturnValue(true);
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(props.statuses).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-ssh-status="connected"]')).toBeNull();
+      const pending = deferred(); props.statuses.mockReturnValue(pending.promise);
+      hidden.mockReturnValue(false);
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      expect(props.statuses).toHaveBeenCalledTimes(3);
+      expect(container.querySelectorAll('[data-ssh-status="unknown"]')).toHaveLength(2);
+      await act(async () => pending.resolve(ok({ gpu: status('connected') })));
+      expect(container.querySelectorAll('[data-ssh-status="connected"]')).toHaveLength(2);
+    } finally { hidden.mockRestore(); }
+  });
+
+  it('drops the old green dot on a failed refresh, without changing navigation or the workspace', async () => {
+    vi.useFakeTimers();
+    const props = panelProps();
+    await render(NativePanelActions, props);
+    props.statuses.mockResolvedValue({ ok: false, error: { message: 'transport offline' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(container.querySelector('[data-ssh-status="connected"]')).toBeNull();
+    expect(button('SSH · gpu').getAttribute('data-tooltip')).toContain('状态未知：无法读取连接状态：transport offline');
+    await click('SSH · gpu');
+    expect(props.openPanel).toHaveBeenCalledExactlyOnceWith('ssh-tools');
+    expect(props.workspaceInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll a hidden workbench or a local workspace', async () => {
+    const props = panelProps();
+    props.useTabInfo = () => ({ tab: { id: 'hidden', visible: false } });
+    await render(RemoteToolsPane, props);
+    expect(props.statuses).not.toHaveBeenCalled();
+    props.workspaceInfo.mockResolvedValue(ok(null) as any);
+    await render(NativePanelActions, { ...props, sessionId: 'local', useSessions: (select: any) => select({ byId: { local: { cwd: '/local' } } }) });
+    expect(props.statuses).not.toHaveBeenCalled();
+  });
+
+  it('keeps the verified identity gray offline and revalidates it on a new carrier generation', async () => {
+    const props = panelProps();
+    let generation: { id: number; host: { home: string } } | undefined = { id: 1, host: { home: '/home/test' } };
+    const listeners = new Set<() => void>();
+    const store = new ConnectionStatusStore(props.statuses, {
+      getSnapshot: () => generation, subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    });
+    props.connectionStatus = store;
+    const change = async (id?: number) => act(async () => {
+      generation = id === undefined ? undefined : { id, host: { home: '/home/test' } };
+      listeners.forEach(listener => listener());
+    });
+    try {
+      await render(NativePanelActions, props);
+      await change();
+      expect(button('SSH · gpu').getAttribute('aria-label')).toContain('状态未知');
+      expect(props.workspaceInfo).toHaveBeenCalledTimes(1);
+      const old = deferred(); props.workspaceInfo.mockReturnValue(old.promise);
+      await change(2);
+      expect(container.querySelector('button')).toBeNull();
+      const fresh = deferred(); props.workspaceInfo.mockReturnValue(fresh.promise);
+      await change(3);
+      await act(async () => old.resolve(ok({ alias: 'stale', remotePath: '/stale', uri: 'ssh://stale/stale' })));
+      expect(container.querySelector('button')).toBeNull();
+      await act(async () => fresh.resolve(ok({ alias: 'gpu', remotePath: '/new path', uri: 'ssh://gpu/new%20path' })));
+      expect(button('SSH · gpu').getAttribute('data-tooltip')).toBe('gpu:/new path\n已连接');
+    } finally { store.dispose(); }
   });
 
   it('honors legacy navigation after destination mounting without overriding later manual selection', async () => {
