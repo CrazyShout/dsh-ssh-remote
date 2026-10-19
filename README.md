@@ -1,6 +1,6 @@
 # dsh-ssh-remote
 
-[English](README.en.md) | 中文 · [下载 0.11.1](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.11.1) · [更新记录](CHANGELOG.md)
+[English](README.en.md) | 中文 · [下载 0.11.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.11.2) · [更新记录](CHANGELOG.md)
 
 在 DeepSeek Harness 中使用 SSH 远程开发工作区：浏览和编辑远端文件、引用代码、打开终端、转发端口和传输文件。直接复用本机 OpenSSH 配置，以及 DSH 官方文件、终端界面。
 
@@ -28,7 +28,7 @@
 2. 粘贴以下完整地址，点击 **安装**：
 
 ```text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-remote-0.11.1.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz
 ```
 
 3. 0.11.0 已移除 `ssh2` / `cpu-features`，不再需要这两个包的原生构建。若出现其他依赖提示，按官方安装器核对；不要全局允许未知脚本。
@@ -43,7 +43,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-r
 ```sh
 dsh --version
 pnpm --version
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-remote-0.11.1.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.2/dsh-ssh-remote-0.11.2.tgz'
 ```
 
 安装完成后，重启原来的 `dsh web` 服务。已有服务时先在它的终端按 Ctrl-C，再运行 `dsh web`。若曾遇到构建拦截，重试成功后还需在插件页确认已启用。Desktop 请使用应用自己的插件页面。
@@ -51,7 +51,7 @@ dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/relea
 需要从 GitHub 源码地址安装时，使用固定版本（此方式需要本机 Git）：
 
 ```sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.1'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.2'
 ```
 
 也可以从 Release 下载 `.tgz`，在插件页面输入它的**绝对路径**，或用同一 CLI 命令安装该路径。Release 的 `SHA256SUMS` 用于核对下载包。
@@ -92,6 +92,8 @@ dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.11.1'
 
 空会话的 SSH 入口位于输入框上方；官方侧边栏首页也提供 **远程工作台** 卡片。本地会话保持原来的文件与终端体验。
 
+SSH 入口旁的圆点与工作台同步：**绿色**表示 SSH/helper 已连接，**黄色**表示连接中或能力受限，**灰色空心**表示未连接或状态未知，**红色**表示连接错误。悬停或键盘聚焦可查看完整路径和具体状态。它只观察已有连接，不主动连接所有主机；绿点不代表远端所有功能都已验证。页面隐藏时停止状态轮询，恢复后重新确认。
+
 工作台包含 **快速打开｜文件传输｜端口转发｜终端状态**。方向键选择文件，Enter 预览，Escape 取消选择；窄面板使用分区菜单。传输按“选择 → 核对清单 → 开始”操作，切换分区不停止传输。
 
 0.11.1 的目录路径输入在停顿 300 ms 后自动检查并导航；Enter / **前往** 仍可立即提交。失败时保留输入与原列表，不会误选旧目录。fish / tcsh 登录 shell 的 helper 安装与直连命令引号已修复；终端命令状态感知仍仅支持原有 Bash / Zsh hook。
@@ -105,13 +107,13 @@ DSH 的 Finder / 本机应用打开入口仍是本机操作；远端文件请使
 ## 更新、回退和卸载
 
 - **更新**：到 [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) 复制目标版本的安装包地址。按 rc.2 插件页面提示先卸载旧插件、再安装并启用新版；Web CLI 可在原 profile 再次运行上面的 `add` 命令替换版本。完成后重启。先保存编辑草稿，暂停传输；重启会结束仍存活的人工终端。
-- **回退到 0.11.0**：安装上一正式版本的安装包，然后重启。已迁移的 OpenSSH 配置保留；需要撤销迁移时先在迁移向导中回滚。
+- **回退到 0.11.1**：安装上一正式版本的安装包，然后重启。已迁移的 OpenSSH 配置保留；需要撤销迁移时先在迁移向导中回滚。
 
 ```sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.0/dsh-ssh-remote-0.11.0.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.11.1/dsh-ssh-remote-0.11.1.tgz'
 ```
 
-0.11.0 已验证上述两版 DSH，但不含本轮 fish、目录输入和远程 skill 修复；回退不需要降级 DSH。更早的 v0.10.2 仍保留。
+0.11.1 已验证上述两版 DSH，但没有本轮共享状态圆点；helper 内容相同，回退不需要降级 DSH。更早的正式版本仍保留。
 
 - **停用**：在插件页面关闭该组合包，保留安装文件和配置；按界面提示重启。
 - **卸载**：在对应应用的插件页面卸载。Web 也可以停止服务后运行：
