@@ -215,6 +215,14 @@ export class UpdateStore {
       const info = await this.remote.info();
       if (this.disposed || this.state.operation?.requestId !== requestId) return;
       if (info.ok && info.value.installedVersion === target.version) { this.patch({ info: info.value }); this.installed(requestId, target, info.value); }
+      else if (info.ok && result.application === 'applied' && info.value.source !== target.packageUrl) {
+        // A completed install can outlive this client; the user may subsequently
+        // roll back or change sources in the official manager. It is no longer
+        // an in-flight operation and must not block the next explicit update.
+        write(this.receipts, `${this.key}:pending`, undefined);
+        this.patch({ info: info.value, operation: { requestId, target, phase: 'failed',
+          message: '上次安装已结束，但当前版本或来源已被更改。请核对当前安装后重新检查更新。' } });
+      }
       else this.patch({ operation: { requestId, target, phase: 'unknown', message: '安装已返回，版本或激活状态仍待确认，请重新确认。' } });
     } catch { this.patch({ operation: { requestId, target, phase: result.application === 'restart-required' ? 'restart' : 'unknown', message: result.application === 'restart-required' ? `DSH 要求重启以加载 ${target.version}，请先保存工作。` : 'DSH 正在重载插件，请稍后重新确认更新结果。' } }); }
   }

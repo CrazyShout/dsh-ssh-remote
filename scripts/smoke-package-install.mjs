@@ -106,6 +106,25 @@ async function boot(enabled) {
       const bundle = await fetch(new URL(entry.url, address), { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
       assert.equal(bundle.status, 200);
       assert((await bundle.text()).includes('__ModuleLoader__.load'));
+      const installed = JSON.parse(await readFile(join(profile, 'node_modules', 'dsh-ssh-remote', 'package.json'), 'utf8'));
+      if (installed.exports?.['./updates']) {
+        // A delivered client bundle alone does not prove the new Host service
+        // activated. Exercise the authenticated public RPC after a cold boot.
+        const info = await fetch(new URL('/api/sshRemoteUpdates/info', address), {
+          method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'client-request', rpcId: 'install-smoke-updates',
+            method: 'sshRemoteUpdates/info', payload: { args: {} } }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        assert.equal(info.status, 200, 'Update Host service must be reachable after restart');
+        const response = await info.json();
+        assert.equal(response.result?.ok, true, JSON.stringify(response));
+        assert.equal(response.result.value.runningVersion, installed.version);
+        assert.equal(response.result.value.installedVersion, installed.version);
+        assert.equal(response.result.value.sourceKind, 'release');
+        assert.equal(response.result.value.enabled, true);
+        report.checks.push(`authenticated update service running ${installed.version}`);
+      }
     }
     await new Promise(resolveWait => setTimeout(resolveWait, 500));
     assert.equal(child.exitCode, null, redact(output.slice(-3000)));

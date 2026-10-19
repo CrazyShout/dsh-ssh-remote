@@ -156,6 +156,20 @@ describe('shared update controller', () => {
     await s.store.reconcile(); expect(s.store.getSnapshot().operation?.phase).toBe('unknown');
     await s.store.install(target); expect(s.installer.installBundle).toHaveBeenCalledOnce();
   });
+  it('releases a completed receipt after a later manual rollback or source change', async () => {
+    const s = setup(); await ready(s); const pending = deferred();
+    s.installer.installBundle.mockImplementation(() => pending.promise);
+    const task = s.store.install(target); await Promise.resolve(); await Promise.resolve(); s.store.dispose();
+    pending.resolve(ok({ changed: true, application: 'applied', stage: 'install', target: target.packageUrl })); await task;
+    const next = setup(s.preferences, s.receipts); next.setInfo({ source: 'file:/manual-rollback.tgz' });
+    await next.store.start(); await next.store.reconcile();
+    expect(next.store.getSnapshot().operation?.message).toContain('来源已被更改');
+    expect(next.store.busy()).toBe(false);
+    expect(s.receipts.getItem('dsh-ssh-remote:updates:test-profile:pending')).toBeNull();
+    expect(next.installer.installBundle).not.toHaveBeenCalled();
+    await next.store.check(); await next.store.install(target);
+    expect(next.installer.installBundle).toHaveBeenCalledOnce();
+  });
   it('reports blocked scripts without approving or removing anything', async () => {
     const s = setup(); await ready(s); s.installer.installBundle.mockResolvedValue(ok({ changed: false, application: 'failed', stage: 'install', target: target.packageUrl, pendingBuilds: ['unknown-build'] }) as never);
     await s.store.install(target); expect(s.store.getSnapshot().operation).toMatchObject({ phase: 'failed', message: expect.stringContaining('不会自动批准') });
