@@ -222,6 +222,81 @@ async function openRemote(ssh: ReturnType<typeof remote>) {
 }
 
 describe('rendered SSH directory flow', () => {
+  it('debounces path edits, navigates after a pause, and disables natural-language corrections', async () => {
+    vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
+    const input = container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')!;
+    expect(input.getAttribute('spellcheck')).toBe('false');
+    expect(input.getAttribute('autocorrect')).toBe('off');
+    expect(input.getAttribute('autocapitalize')).toBe('none');
+    await path('/data/中文 project');
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(ssh.browse).toHaveBeenCalledTimes(1);
+    await path('/data/中文 project/final/');
+    expect(button('打开此文件夹').disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
+    expect(ssh.browse).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(ssh.browse).toHaveBeenLastCalledWith('alpha', '/data/中文 project/final/');
+    expect(button('打开此文件夹').disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(ssh.browse).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let an in-flight path response overwrite newer input before its debounce fires', async () => {
+    vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
+    const old = deferred(); ssh.browse.mockReturnValueOnce(old.promise);
+    await path('/old'); await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    await path('/new'); await act(async () => old.resolve(ok(listing('/old'))));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')?.value).toBe('/new');
+    expect(container.querySelector('section > p')?.textContent).toBe('/home/test');
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(ssh.browse).toHaveBeenLastCalledWith('alpha', '/new');
+  });
+
+  it('keeps the typed trailing slash and caret when automatic navigation canonicalizes the directory', async () => {
+    vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
+    ssh.browse.mockImplementation(async (_alias, target) => ok(listing(target.replace(/\/+$/u, ''))));
+    await path('/data/');
+    const input = container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')!;
+    input.setSelectionRange(3, 3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(input.value).toBe('/data/'); expect(input.selectionStart).toBe(3);
+    expect(container.querySelector('section > p')?.textContent).toBe('/data');
+    expect(button('打开此文件夹').disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(ssh.browse).toHaveBeenCalledTimes(2);
+    await path('/data/next'); await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(ssh.browse).toHaveBeenLastCalledWith('alpha', '/data/next');
+  });
+
+  it('retains a failed path draft and cancels pending automatic navigation on close', async () => {
+    vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
+    ssh.browse.mockResolvedValueOnce({ ok: false, error: { message: 'directory not found' } } as any);
+    await path('/missing'); await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('directory not found');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')?.value).toBe('/missing');
+    expect(button('existing-child')).toBeTruthy(); expect(button('打开此文件夹').disabled).toBe(true);
+    await path('/cancelled'); await render(SshDirectoryFlow, { ...directoryProps(ssh), open: false });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(ssh.browse).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not submit IME composition and does not repeat an explicit Enter when its debounce expires', async () => {
+    vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
+    const input = container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')!;
+    await act(async () => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+    await path('/data/中文');
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(ssh.browse).toHaveBeenCalledTimes(1);
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })));
+    expect(ssh.browse).toHaveBeenCalledTimes(1);
+    await act(async () => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+    await path('/data/中文', true);
+    expect(ssh.browse).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(ssh.browse).toHaveBeenCalledTimes(2);
+  });
+
   function nativeProps() {
     const props = directoryProps(remote());
     props.listLocal.mockRejectedValue(Object.assign(new Error('native picker has no browse capability'), {

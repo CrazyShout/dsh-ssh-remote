@@ -41,6 +41,9 @@ export function SshDirectoryFlow({
   const [error, setError] = useState('');
   const [newFolder, setNewFolder] = useState('');
   const [pathInput, setPathInput] = useState('');
+  const [pathDirty, setPathDirty] = useState(false);
+  const [composingPath, setComposingPath] = useState(false);
+  const pathTimer = useRef<ReturnType<typeof setTimeout>>();
   // Tri-state browse-capability probe result: null while unknown.
   const [localCanBrowse, setLocalCanBrowse] = useState<boolean | null>(null);
   // Windows drive anchors derived from one /mnt listing; null until probed.
@@ -52,6 +55,8 @@ export function SshDirectoryFlow({
   const mounted = useRef(false);
   const nativePicker = useRef<AbortController | null>(null);
 
+  function clearPathTimer() { clearTimeout(pathTimer.current); pathTimer.current = undefined; }
+
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -59,6 +64,7 @@ export function SshDirectoryFlow({
       navigationEpoch.current += 1;
       mutationEpoch.current += 1;
       nativePicker.current?.abort();
+      clearPathTimer();
     };
   }, []);
 
@@ -71,6 +77,8 @@ export function SshDirectoryFlow({
     setError('');
     setNewFolder('');
     setPathInput('');
+    setPathDirty(false);
+    setComposingPath(false);
     setDriveAnchors(null);
     setLocalCanBrowse(null);
     setLoading(true);
@@ -99,8 +107,15 @@ export function SshDirectoryFlow({
     return () => {
       navigationEpoch.current += 1;
       nativePicker.current?.abort();
+      clearPathTimer();
     };
   }, [open, ssh, listLocal]);
+
+  useEffect(() => {
+    if (!open || !target || !pathDirty || !pathInput || composingPath || busy || mutating) return;
+    pathTimer.current = setTimeout(() => { void enter(target, pathInput, true); }, 300);
+    return clearPathTimer;
+  }, [open, target, pathInput, pathDirty, composingPath, busy, mutating]);
 
   useEffect(() => {
     if (!open || target?.kind !== 'local' || driveAnchors !== null) return;
@@ -129,7 +144,8 @@ export function SshDirectoryFlow({
     }
   }
 
-  async function enter(targetNext: BrowseTarget, path?: string): Promise<boolean> {
+  async function enter(targetNext: BrowseTarget, path?: string, preserveInput = false): Promise<boolean> {
+    clearPathTimer();
     const epoch = ++navigationEpoch.current;
     setLoading(true);
     setError('');
@@ -148,7 +164,8 @@ export function SshDirectoryFlow({
       if (result.ok) {
         setTarget(targetNext);
         setListing(result.value);
-        setPathInput(result.value.path);
+        if (!preserveInput) setPathInput(result.value.path);
+        setPathDirty(false);
       } else {
         setError(result.error.message);
       }
@@ -160,7 +177,8 @@ export function SshDirectoryFlow({
     if (outcome.ok) {
       setTarget(targetNext);
       setListing(outcome.value);
-      setPathInput(outcome.value.path);
+      if (!preserveInput) setPathInput(outcome.value.path);
+      setPathDirty(false);
     } else {
       setError(messageOf(outcome.error));
     }
@@ -191,6 +209,7 @@ export function SshDirectoryFlow({
         setTarget({ kind: 'local' });
         setListing(outcome.value);
         setPathInput(outcome.value.path);
+        setPathDirty(false);
         return;
       }
       if (!isDirectoryPickerUnavailable(outcome.error)) {
@@ -231,7 +250,8 @@ export function SshDirectoryFlow({
   }
 
   async function commit() {
-    if (!target || !listing) return;
+    if (!target || !listing || pathDirty) return;
+    clearPathTimer();
     const epoch = ++navigationEpoch.current;
     const mutation = ++mutationEpoch.current;
     setMutating(true);
@@ -278,7 +298,8 @@ export function SshDirectoryFlow({
   }
 
   async function createFolder() {
-    if (!target || !listing || !newFolder.trim()) return;
+    if (!target || !listing || pathDirty || !newFolder.trim()) return;
+    clearPathTimer();
     const epoch = ++navigationEpoch.current;
     const mutation = ++mutationEpoch.current;
     const targetSnapshot = target;
@@ -316,6 +337,7 @@ export function SshDirectoryFlow({
   }
 
   function cancel(): void {
+    clearPathTimer();
     navigationEpoch.current += 1;
     nativePicker.current?.abort();
     onCancel();
@@ -339,7 +361,7 @@ export function SshDirectoryFlow({
         <>
           <Button variant="ghost" disabled={busy || mutating} onClick={cancel}>取消</Button>
           {target && listing && (
-            <Button variant="primary" disabled={disabled} onClick={() => void commit()}>
+            <Button variant="primary" disabled={disabled || pathDirty} onClick={() => void commit()}>
               {busy ? '正在添加…' : '打开此文件夹'}
             </Button>
           )}
@@ -397,20 +419,32 @@ export function SshDirectoryFlow({
                   aria-label="文件夹路径"
                   className="dsh-ssh-remote-field"
                   value={pathInput}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="none"
                   disabled={busy || mutating}
-                  onChange={event => setPathInput(event.target.value)}
+                  onChange={event => {
+                    clearPathTimer(); navigationEpoch.current += 1;
+                    setLoading(false); setError('');
+                    setPathInput(event.target.value);
+                    setPathDirty(event.target.value !== listing.path);
+                  }}
+                  onCompositionStart={() => { clearPathTimer(); navigationEpoch.current += 1; setLoading(false); setComposingPath(true); }}
+                  onCompositionEnd={() => setComposingPath(false)}
                   onKeyDown={event => {
-                    if (event.key === 'Enter' && pathInput.trim()) navigate(pathInput.trim());
+                    if (event.key === 'Enter' && !event.nativeEvent.isComposing && !composingPath && pathInput) {
+                      event.preventDefault(); navigate(pathInput);
+                    }
                   }}
                   placeholder="输入完整文件夹路径"
                 />
               </div>
-              <Button disabled={busy || mutating || !pathInput.trim()} onClick={() => navigate(pathInput.trim())}>前往</Button>
+              <Button disabled={busy || mutating || !pathInput} onClick={() => navigate(pathInput)}>前往</Button>
               <Button disabled={busy || mutating} onClick={() => navigate(listing.path)}>刷新目录</Button>
               <Button disabled={busy || mutating} onClick={() => navigate(listing.home)}>主目录</Button>
             </div>
             <div style={chipRowStyle}>
-              <Pill disabled={disabled} onClick={() => { setTarget(null); setListing(null); }}>
+              <Pill disabled={disabled} onClick={() => { clearPathTimer(); navigationEpoch.current += 1; setPathDirty(false); setTarget(null); setListing(null); }}>
                 {target.kind === 'local' ? '本机' : '主机'}
               </Pill>
               {listing.crumbs.map((crumb) => (
@@ -453,8 +487,11 @@ export function SshDirectoryFlow({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Input
                   value={newFolder}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="none"
                   className="dsh-ssh-remote-field"
-                  disabled={disabled}
+                  disabled={disabled || pathDirty}
                   onChange={(event) => setNewFolder(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') void createFolder();
@@ -465,7 +502,7 @@ export function SshDirectoryFlow({
               <Button
                 variant="ghost"
                 icon={<IconPlusOutlineRegular />}
-                disabled={disabled || !newFolder.trim()}
+                disabled={disabled || pathDirty || !newFolder.trim()}
                 onClick={() => void createFolder()}
               >
                 新建
@@ -475,6 +512,7 @@ export function SshDirectoryFlow({
         )}
 
         {loading && <div role="status" style={subtleText}>正在读取…</div>}
+        {pathDirty && !loading && !error && <div role="status" style={subtleText}>输入停顿后自动前往；Enter 可立即前往。</div>}
         {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{error}</div>}
       </div>
     </Modal>
