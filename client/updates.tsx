@@ -64,7 +64,7 @@ export function UpdateSection(props: DetailProps) {
 }
 export function UpdateAction(props: PropsRuntime<'plugins.detail.actions'> & Injected) {
   const state = useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);
-  return mine(props) ? <Button disabled={state.checking || !state.info || props.updates.busy()} onClick={() => void props.updates.check(true)}>检查更新</Button> : null;
+  return mine(props) ? <Button disabled={state.checking || props.updates.busy()} onClick={() => { if (state.info) void props.updates.check(true); else void props.updates.start(); }}>检查更新</Button> : null;
 }
 export function UpdateBadge(props: PropsRuntime<'plugins.detail.badge'> & Injected) {
   useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);

@@ -11,7 +11,7 @@ Already have working **DSH** and an **SSH alias**? Start here. Desktop includes 
 ### Desktop / Web
 
 1. Open **Plugins → Add plugin** in the sidebar and paste the full address below.
-2. Choose **Install → Enable now**. Complete loading or restart when DSH requests it.
+2. Choose **Install → Enable now**. Save your work and fully restart DSH after the first install or an upgrade from 0.11.x; follow the reported outcome for later updates.
 3. Choose **Add workspace**, select your SSH host and folder, then use native **Workspace files** and **New terminal**.
 
 ~~~text

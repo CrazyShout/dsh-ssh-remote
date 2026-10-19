@@ -96,6 +96,12 @@ describe('source and version policy', () => {
 });
 
 describe('shared update controller', () => {
+  it('explains mixed old-Host/new-client loading and can retry after Host restart', async () => {
+    const s = setup(); s.remote.info.mockResolvedValueOnce({ ok: false, error: { message: 'transport failure: HTTP 404' } } as never);
+    await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, error: expect.stringContaining('重启当前 DSH') });
+    expect(s.remote.check).not.toHaveBeenCalled();
+    await ready(s); expect(s.store.available()).toEqual(target); expect(s.store.getSnapshot().error).toBe('');
+  });
   it('checks automatically but never installs before explicit confirmation', async () => {
     const s = setup(); await ready(s);
     expect(s.store.available()).toEqual(target); expect(s.installer.installBundle).not.toHaveBeenCalled();

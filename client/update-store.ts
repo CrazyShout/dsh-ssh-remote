@@ -63,6 +63,7 @@ export class UpdateStore {
     this.checkTask = undefined;
     this.recovery = undefined;
     clearTimeout(this.timer);
+    this.patch({ checking: true, error: '' });
     try {
       const answer = await this.remote.info();
       if (this.disposed || epoch !== this.epoch) return;
@@ -76,7 +77,13 @@ export class UpdateStore {
       const receipt = this.receipt();
       if (receipt) void this.reconcile();
       if (this.state.automatic && this.visible) void this.check(false);
-    } catch (error) { if (epoch === this.epoch) this.patch({ error: `无法读取插件版本：${String(error instanceof Error ? error.message : error)}` }); }
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      const message = String(error instanceof Error ? error.message : error);
+      this.patch({ checking: false, error: /HTTP 404|gateway\/(?:service-unavailable|endpoint-not-found)/u.test(message)
+        ? '更新服务尚未加载。若刚升级插件，请保存工作后重启当前 DSH，再点击“检查更新”。'
+        : `无法读取插件版本：${message}` });
+    }
   }
   setVisible(visible: boolean) {
     this.visible = visible; clearTimeout(this.timer);

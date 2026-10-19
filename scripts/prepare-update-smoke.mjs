@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 
-const { values } = parseArgs({ options: { package: { type: 'string' }, base: { type: 'string' }, out: { type: 'string' } } });
+const { values } = parseArgs({ options: { package: { type: 'string' }, base: { type: 'string' }, out: { type: 'string' }, iteration: { type: 'string', default: '0' } } });
 assert(values.package && values.base && /^\d+\.\d+\.\d+$/u.test(values.base), 'Use --package <candidate.tgz> --base <existing-stable-version> [--out <new-directory>]');
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-update-probe-')));
 const output = values.out ? resolve(values.out) : join(root, 'archive');
@@ -17,7 +17,8 @@ const source = join(root, 'package');
 const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
 assert.equal(manifest.name, 'dsh-ssh-remote');
 const candidateVersion = manifest.version;
-manifest.version = `${values.base}-update-probe.0`;
+assert(/^(?:0|[1-9]\d{0,5})$/u.test(values.iteration));
+manifest.version = `${values.base}-update-probe.${values.iteration}`;
 for (const name of ['install', 'postinstall', 'prepare']) assert(!manifest.scripts?.[name]);
 writeFileSync(join(source, 'package.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
 const [packed] = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], { cwd: source, encoding: 'utf8' }));
