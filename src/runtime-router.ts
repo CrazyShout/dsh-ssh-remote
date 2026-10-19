@@ -8,6 +8,7 @@ import type {
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
 import { parseSshUri, type SshUri } from './types.js';
+import { quotePosix, remoteShCommand } from './ssh-command.js';
 
 type AnyFunction = (...args: any[]) => any;
 
@@ -189,10 +190,6 @@ export function installRemoteFileSystemRouter(
   };
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 function sameRemote(left: SshUri, right: SshUri): boolean {
   return left.host === right.host && left.port === right.port && left.user === right.user;
 }
@@ -243,18 +240,18 @@ export function buildRemoteSshInvocation(
   const environment = Object.entries(env ?? {})
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
-    .map(([key, value]) => shellQuote(`${key}=${value}`));
-  const command = remoteArgv(uri, argv, resolveRemotePath).map(shellQuote);
+    .map(([key, value]) => quotePosix(`${key}=${value}`));
+  const command = remoteArgv(uri, argv, resolveRemotePath).map(quotePosix);
   const exec = environment.length > 0
     ? `exec env ${environment.join(' ')} ${command.join(' ')}`
     : `exec ${command.join(' ')}`;
-  const script = `cd ${shellQuote(uri.path)} && ${exec}`;
+  const script = `cd ${quotePosix(uri.path)} && ${exec}`;
   const args = ['ssh', terminal ? '-tt' : '-T'];
   // Port 22 stays absent so an alias-specific Port from ~/.ssh/config wins.
   if (uri.port !== 22) args.push('-p', String(uri.port));
   // End local OpenSSH option parsing before the destination. URI validation
   // also rejects option-like users/hosts; this is defense in depth.
-  args.push('--', destination, `sh -lc ${shellQuote(script)}`);
+  args.push('--', destination, remoteShCommand(script, true));
   return args;
 }
 

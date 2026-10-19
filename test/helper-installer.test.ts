@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { decodeRemoteScript } from './fixtures/remote-script.js';
 import {
   RemoteHelperInstaller,
   buildHelperConnectCommand,
@@ -85,9 +86,10 @@ describe('RemoteHelperInstaller', () => {
     expect(args).toContain('SessionType=default');
     expect(args).toContain('StdinNull=no');
     expect(args).toContain('gpu-dev');
-    expect(args.at(-1)).toContain(result.sha256);
-    expect(args.at(-1)).toContain('chmod 700');
-    expect(args.at(-1)).toContain('chmod 600');
+    const script = decodeRemoteScript(args.at(-1));
+    expect(script).toContain(result.sha256);
+    expect(script).toContain('chmod 700');
+    expect(script).toContain('chmod 600');
     expect(result.remotePath).toBe(helperRemotePath(result.sha256));
     expect(buildHelperConnectCommand(result.sha256)).toContain('connect --stdio');
   });
