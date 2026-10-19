@@ -156,7 +156,7 @@ export class UpdateStore {
   }
   progress(requestId: string, phase: string) {
     const op = this.state.operation;
-    if (op?.requestId !== requestId) return;
+    if (op?.requestId !== requestId || !this.busy()) return;
     if (phase === 'applying') this.patch({ operation: { ...op, phase: 'applying', message: '安装包已就绪，DSH 正在应用更新…' } });
   }
   async cancel() {

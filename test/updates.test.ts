@@ -182,5 +182,7 @@ describe('shared update controller', () => {
     s.setInfo({ installedVersion: target.version, runningVersion: target.version });
     pending.resolve(ok({ changed: true, application: 'applied', stage: 'install', target: target.packageUrl })); await task;
     cancel.resolve(ok({ status: 'not-running' })); await cancellation; expect(s.store.getSnapshot().operation?.phase).toBe('done');
+    s.store.progress(s.store.getSnapshot().operation!.requestId, 'applying');
+    expect(s.store.getSnapshot().operation?.phase).toBe('done');
   });
 });

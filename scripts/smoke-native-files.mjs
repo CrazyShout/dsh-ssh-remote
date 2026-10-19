@@ -40,7 +40,7 @@ try {
   await writeFile(join(localRoot, 'local-sentinel.txt'), 'LOCAL_ONLY');
   new LocalFileSystem(ctx, { cwd: localRoot, diffBasisMaxBytes: 1024 * 1024 });
   new WorkspaceFiles(ctx, { maxBytes: 1024 * 1024, maxFileBytes: 1024 * 1024, maxLines: 100, maxEntries: 2000 });
-  restores.push(installRemoteFileSystemRouter(ctx.fs, {}, resolver, manager));
+  restores.push(installRemoteFileSystemRouter(ctx.fs, resolver, manager));
   restores.push(installRemoteWorkspaceFilesRouter(ctx.workspaceFiles, manager, resolver));
   const scope = { sessionId: 'smoke-files', workspaceRoot: anchor };
   const signal = new AbortController().signal;
