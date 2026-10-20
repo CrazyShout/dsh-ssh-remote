@@ -82,6 +82,8 @@ export interface SshRemote {
   disconnectHost(alias: string): Promise<RemoteResult<HelperHostStatus>>;
   retryHost(alias: string): Promise<RemoteResult<HelperHostStatus>>;
   diagnostics(alias: string): Promise<RemoteResult<HelperHostDiagnostics>>;
+  /** Re-probe the login-shell environment without reconnecting the helper. */
+  refreshEnvironment(alias: string): Promise<RemoteResult<HelperHostStatus>>;
 }
 
 export interface DirectoryService {

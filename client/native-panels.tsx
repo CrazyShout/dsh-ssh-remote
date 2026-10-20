@@ -52,7 +52,8 @@ export function mountNativePanels(ctx: Context, workbench: Workbench): () => Pro
     const workspaceInfo = (path: string) => ssh.workspaceInfo!(path);
     // The public Client face does not augment Cordis' Host-side connection type.
     const connection = (scope as Context & { connection: ConnectionHandle }).connection;
-    const connectionStatus = new ConnectionStatusStore(() => scope.remote.sshRemote.statuses(), connection.generation);
+    const connectionStatus = new ConnectionStatusStore(() => scope.remote.sshRemote.statuses(), connection.generation,
+      alias => scope.remote.sshRemote.refreshEnvironment?.(alias) ?? Promise.resolve());
     const inject = (sessionId: SessionId): NativePanelInjected => ({
         workspaceInfo, workbench, connectionStatus,
         openPanel: (kind: PanelKind) => {
@@ -176,7 +177,18 @@ function useConnectionStatus(store: ConnectionStatusStore, key: string, alias: s
   useEffect(() => {
     if (visible && alias) return store.retain(owner);
   }, [store, owner, alias, visible]);
-  return connectionPresentation(visible && store.hasOwner(owner) && alias ? snapshot.hosts[alias] : undefined, snapshot.unavailable);
+  const host = visible && store.hasOwner(owner) && alias ? snapshot.hosts[alias] : undefined;
+  // The environment verdict is a snapshot from connect time. A tool installed
+  // afterwards (ripgrep is the common case) leaves this surface claiming a
+  // limitation that no longer exists, so a degraded surface asks the shared
+  // store to revalidate. The store owns deduplication, the bounded retry
+  // interval and the visibility gate: this effect re-runs on every poll and on
+  // every sibling surface, and neither may multiply remote probes.
+  useEffect(() => {
+    if (!visible || alias === undefined || host?.environment?.search.available !== false) return;
+    void store.recheckHost(alias);
+  }, [store, alias, visible, host]);
+  return connectionPresentation(host, snapshot.unavailable);
 }
 
 function StatusDot({ status }: { status: ReturnType<typeof connectionPresentation> }) {

@@ -7,6 +7,7 @@ export function sshInvocations(schemas) {
     ['materializeWorkspace', ['alias', 'remotePath'], 'SshWorkspaceAnchor'],
     ['connectHost', ['alias'], 'HelperHostStatus'], ['disconnectHost', ['alias'], 'HelperHostStatus'],
     ['retryHost', ['alias'], 'HelperHostStatus'], ['diagnostics', ['alias'], 'HelperHostDiagnostics'],
+    ['refreshEnvironment', ['alias'], 'HelperHostStatus'],
     ['migrationPreview', ['selections'], 'MigrationPreview'], ['migrationApply', ['token'], 'MigrationResult'],
     ['migrationRollback', ['id'], 'boolean'],
   ];

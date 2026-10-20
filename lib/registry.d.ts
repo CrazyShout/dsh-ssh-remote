@@ -94,6 +94,16 @@ export declare class SshRemoteService extends TypertRemoteService {
     disconnectHost(alias: string): Promise<HelperHostStatus>;
     retryHost(alias: string): Promise<HelperHostStatus>;
     diagnostics(alias: string): Promise<HelperHostDiagnostics>;
+    /**
+     * Re-probe the login-shell environment of a live helper.
+     *
+     * The capability verdict is captured once when the helper connects, so a tool
+     * installed later (for example ripgrep) leaves a stale `degraded` status on
+     * every surface that reads it. Unlike config() this needs no ssh -G pass and
+     * cannot disturb running work; a caller that renders a status surface can
+     * therefore revalidate lazily instead of asking the user to reconnect.
+     */
+    refreshEnvironment(alias: string): Promise<HelperHostStatus>;
     dispose(): Promise<void>;
     private assertHelperAlias;
 }

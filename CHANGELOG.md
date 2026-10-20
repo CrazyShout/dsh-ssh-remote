@@ -1,5 +1,10 @@
 # Changelog / 更新记录
 
+## Unreleased
+
+- 修复能力状态过期：环境探测只在 helper 连接时执行一次，连接后再安装 ripgrep 等工具，状态面仍长期显示「已连接（能力受限）」。新增 `refreshEnvironment` Host RPC；去重、可见性门控与冷却重查统一放进共享的连接状态 store，按 alias + 连接代次合并同主机的在途探测，受限状态每 60 秒最多补探一次，成功后立即重发快照。在途探测不参与下一轮排程，主机最后一个可见入口关闭即撤销其重试需求，断线后迟到的探测结果被丢弃且不会重新启动轮询。不重连 helper、不改变五秒轮询频率，页面隐藏时不探测，探测失败保留上次快照，新连接代次重置冷却。
+- English: revalidate a stale degraded verdict. The environment probe now has an explicit `refreshEnvironment` Host RPC, and the shared connection-status store owns deduplication, the visibility gate and a bounded sixty-second retry for hosts whose search verdict is still unavailable. Sibling surfaces share one in-flight probe per alias and connection generation, an in-flight probe never joins the next round, the last visible lease of a host withdraws its retry demand, a probe that outlives its connection is discarded instead of restarting polling, a success republishes the snapshot immediately, a hidden page probes nothing, a failed probe keeps the last good snapshot, and a new generation resets the cooldown.
+
 ## 0.12.0
 
 - 中英文 README 以品牌横幅与三步安装开场；换用匿名示例工作区的真实 Web 截图，不带接管标志或虚拟鼠标。
