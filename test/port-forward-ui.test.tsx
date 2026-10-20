@@ -7,7 +7,7 @@ import { PortForwardPane } from '../client/port-forwards.js';
 import type { PortForwardInput, PortForwardView } from '../client/port-forward-types.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
-  return { Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
+  return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
 });
 const ok = <T,>(value: T) => ({ ok: true as const, value });
 function row(input: Partial<PortForwardView> = {}): PortForwardView {
@@ -82,6 +82,8 @@ describe('port forwarding UI ownership', () => {
     const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
     await act(async () => root.render(createElement(PortForwardPane, { sessionId: 'original-session', remote: f.remote })));
     expect(container.textContent).toContain('本机监听已建立'); expect(container.textContent).toContain('请先启动远端服务');
+    expect(container.textContent).toContain('远端端口暂不可达');
+    expect([...container.querySelectorAll('details')].find(item => item.textContent?.includes('请先启动远端服务'))?.open).toBe(false);
     expect(container.querySelector('a')).toBeNull();
     await act(async () => (container.querySelector('input[type=checkbox]') as HTMLInputElement).click());
     expect(container.querySelector('a')?.getAttribute('href')).toBe('http://127.0.0.1:16006/');

@@ -8,7 +8,11 @@ export interface ShellSnapshot {
   reason: string; cwd: string | null; current: ObservedCommand | null; recent: ObservedCommand[];
 }
 export interface TerminalObservation extends ShellSnapshot { id: string; title: string; alias: string; stale: boolean; observedAt: number }
-export interface TerminalContext { terminal: TerminalObservation; text: string; truncated: boolean }
+export interface TerminalContext {
+  terminal: TerminalObservation; text: string; truncated: boolean;
+  /** Sanitized output for localized presentation. Older Hosts provide only text. */
+  output?: string;
+}
 export interface TerminalStateRemote {
   list(sessionId: string, signal: AbortSignal): Promise<RemoteResult<TerminalObservation[]>>;
   context(sessionId: string, id: string, signal: AbortSignal): Promise<RemoteResult<TerminalContext>>;

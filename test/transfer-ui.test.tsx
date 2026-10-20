@@ -7,7 +7,7 @@ import { TransferPane } from '../client/transfers.js';
 import type { TransferSummary } from '../shared/transfers.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
-  return { Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
+  return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
 });
 const models: TransferModel[] = [];
 beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); });
@@ -47,11 +47,26 @@ describe('transfer pane interactions', () => {
     await act(async () => button('刷新任务').click()); expect(element.textContent).toContain('重新选择');
     await act(async () => root.unmount()); expect(f.model.snapshot().jobs).toHaveLength(1);
   });
-  it('keeps a download permission failure explicit instead of silently saving on the Host', async () => {
+  it('explains missing folder capability before starting instead of saving on the Host', async () => {
     const f = fixture(); f.job.direction = 'download'; const element = document.createElement('div'), root = createRoot(element);
     await act(async () => root.render(createElement(TransferPane, { sessionId: 'original-session', getModel: () => f.model })));
+    const start = [...element.querySelectorAll('button')].find(item => item.textContent === '授权目录并开始 / 继续')!;
+    expect(start.disabled).toBe(true);
+    expect(element.querySelector('[role="note"]')?.textContent).toContain('不支持目录授权');
+    await act(async () => start.click());
+    expect(f.remote.control).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+  it('keeps an actual denied picker permission visible and never starts the download', async () => {
+    const picker = vi.fn(async () => { throw new DOMException('permission denied', 'NotAllowedError'); });
+    vi.stubGlobal('showDirectoryPicker', picker);
+    const f = fixture(); f.job.direction = 'download';
+    const element = document.createElement('div'), root = createRoot(element);
+    await act(async () => root.render(createElement(TransferPane, { sessionId: 'original-session', getModel: () => f.model })));
     await act(async () => [...element.querySelectorAll('button')].find(item => item.textContent === '授权目录并开始 / 继续')!.click());
-    expect(element.textContent).toContain('缺少目录读写授权能力'); expect(f.remote.control).not.toHaveBeenCalled();
+    expect(picker).toHaveBeenCalledOnce();
+    expect(element.querySelector('[role="alert"]')?.textContent).toContain('permission denied');
+    expect(f.remote.control).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 });

@@ -2,6 +2,8 @@
 
 Release packages are built with the repository's committed `lib/`, not on the user's machine. The workflow creates a **draft**; publishing is a separate step after package/UI acceptance. Do not replace published assets or move published tags.
 
+Run `npm ci` inside the release checkout rather than symlinking another checkout's `node_modules`. esbuild resolves symlinks into source comments; shared dependency paths make committed artifacts differ from clean CI builds. Keep the build-consistency gate enabled.
+
 ## Prepare
 
 1. Update `package.json`, the root version in `package-lock.json`, both READMEs, `CHANGELOG.md`, and the versioned release notes under `docs/releases/`.

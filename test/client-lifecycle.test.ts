@@ -4,6 +4,12 @@ import { TYPERT_REMOTE } from '../client/typert.remote-client.js';
 import { TYPERT } from '../src/typert.host.js';
 import { Workbench } from '../client/workbench.js';
 import { mountNativePanels } from '../client/native-panels.js';
+import { ConnectionStatusStore } from '../client/connection-status.js';
+import { localeFixture } from './locale-fixture.js';
+
+const observer = () => new ConnectionStatusStore(async () => ({ ok: true, value: {} }), {
+  getSnapshot: () => undefined, subscribe: () => () => {},
+});
 
 // The real primitives package ships browser-only CSS imports; at runtime the
 // DSH loader resolves it through its module table instead of Node. This test
@@ -73,6 +79,12 @@ describe('client lifecycle', () => {
       createDirectory: vi.fn(async () => '/local/new'),
     };
     const childScope = {
+      connection: { generation: { getSnapshot: () => undefined, subscribe: () => () => {} } },
+      sshConnectionStatus: observer(),
+      reflect: { provide: vi.fn((_name: string, store: ConnectionStatusStore) => {
+        childScope.sshConnectionStatus = store;
+        return () => {};
+      }) },
       remote: {
         sshRemote: {},
         directoryPicker: { pick: vi.fn(async () => ({ ok: true, value: '/native-local' })) },
@@ -111,6 +123,7 @@ describe('client lifecycle', () => {
       return fiber;
     });
     const ctx = {
+      locale: localeFixture().locale,
       remote: {
         $mount: vi.fn(async () => {
           events.push('remote:mount');
@@ -124,13 +137,14 @@ describe('client lifecycle', () => {
 
     expect(events).toEqual([
       'remote:mount',
-      'inject:remote.sshRemote,slots,workspaces',
+      'inject:remote.sshRemote,connection',
+      'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
       'inject:remote.directoryPicker',
       'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,connection',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,sshConnectionStatus',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -157,13 +171,14 @@ describe('client lifecycle', () => {
 
     expect(events).toEqual([
       'remote:mount',
-      'inject:remote.sshRemote,slots,workspaces',
+      'inject:remote.sshRemote,connection',
+      'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
       'inject:remote.directoryPicker',
       'inject:uiWorkspace',
       'register:ssh-remote',
       'register:conversation.hero.workspace.directoryFlow',
       'register:sidebar.workspaces.directoryFlow',
-      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,connection',
+      'inject:remote.sshRemote,slots,sidebarRight,sidebarRightTabs,sessions,sshConnectionStatus',
       'inject:slots,locale,remote.workspaceFiles',
       'inject:remote.sshRemoteEditor,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
       'inject:remote.sshRemoteFiles,remote.sshRemote,slots,sidebarRight,sidebarRightTabs',
@@ -183,6 +198,7 @@ describe('client lifecycle', () => {
     const unregister = vi.fn();
     let selected = 'session-a';
     const scope = {
+      sshConnectionStatus: observer(),
       connection: { generation: { getSnapshot: () => undefined, subscribe: () => () => {} } },
       remote: { sshRemote: { workspaceInfo: vi.fn(async () => ({ ok: true, value: null })) } },
       slots: {
@@ -195,13 +211,14 @@ describe('client lifecycle', () => {
     };
     const ctx = {
       inject: vi.fn((dependencies, callback) => {
-        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions', 'connection']);
+        expect(dependencies).toEqual(['remote.sshRemote', 'slots', 'sidebarRight', 'sidebarRightTabs', 'sessions', 'sshConnectionStatus']);
         return { dispose: callback(scope) };
       }),
     };
     const dispose = mountNativePanels(ctx as never, new Workbench());
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.session.header.utilities', expect.any(Function));
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.input.dock', expect.any(Function));
+    expect(scope.slots.register).toHaveBeenCalledWith({ name: 'sidebar.right.pane.tab.title', key: 'dsh-ssh-remote.tools' }, expect.any(Function));
     const options = scope.slots.register.mock.calls.map((call: any) => call[0]).find((options: any) => options.name === 'conversation.session.header.utilities');
     expect(options).toMatchObject({ name: 'conversation.session.header.utilities', id: 'dsh-ssh-remote.native-panels' });
     const face = options.inject('session-a');
@@ -211,7 +228,7 @@ describe('client lifecycle', () => {
     selected = 'session-b';
     expect(() => face.openPanel('ssh-tools')).toThrow('会话已切换');
     await dispose();
-    expect(unregister).toHaveBeenCalledTimes(3);
+    expect(unregister).toHaveBeenCalledTimes(4);
   });
 
   it('contributes one guide card only for the current verified SSH Session and releases subscriptions', async () => {
@@ -223,6 +240,7 @@ describe('client lifecycle', () => {
     const old = new Promise(resolve => { resolveOld = resolve; });
     const workspaceInfo = vi.fn(async (path: string) => path === '/slow' ? old : ({ ok: true, value: path === '/local' ? null : { alias: 'gpu', remotePath: '/project' } }));
     const scope = {
+      sshConnectionStatus: observer(),
       connection: { generation: { getSnapshot: () => undefined, subscribe } },
       remote: { sshRemote: { workspaceInfo } },
       sidebarRight: { mounted: { getSnapshot: () => selected, subscribe }, openTab: vi.fn() },
@@ -234,6 +252,7 @@ describe('client lifecycle', () => {
     const dispose = mountNativePanels({ inject: (_dependencies: string[], callback: (scope: unknown) => unknown) => ({ dispose: callback(scope) }) } as never, new Workbench());
     await vi.waitFor(() => expect(tabs.get('ssh-tools')?.guide).toHaveLength(1));
     expect(tabs.get('ssh-tools').guide[0].title()).toBe('远程工作台');
+    expect(tabs.get('ssh-tools').keepMounted).toBe(true);
     expect(tabs.size).toBe(1);
     selected = 'local'; listeners.forEach(listener => listener());
     expect(tabs.size).toBe(0);

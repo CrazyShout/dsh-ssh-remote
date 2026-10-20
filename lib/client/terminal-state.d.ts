@@ -1,7 +1,8 @@
 import { type Workbench } from './workbench.js';
 import type { Context } from '@deepseek-ai/cordis';
 import type { InputActions } from '@deepseek-ai/dsh-client-ui-conversation/client';
-import type { TerminalStateRemote } from 'dsh-ssh-remote/terminal-state';
+import type { TerminalStateRemote, TerminalContext } from 'dsh-ssh-remote/terminal-state';
+export declare function formatTerminalContext(value: TerminalContext): string;
 export declare function mountTerminalState(ctx: Context, workbench: Workbench): () => Promise<void>;
 export declare function TerminalStatePane({ sessionId, remote, inputActions, active }: {
     active?: boolean;

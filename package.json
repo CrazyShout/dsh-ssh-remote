@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-remote",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "DeepSeek Harness SSH remote workspaces powered by system OpenSSH and a versioned Python helper.",
   "type": "module",
   "main": "lib/index.js",
@@ -65,7 +65,8 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-locale"
       ],
       "platform": "web"
     }

@@ -2,15 +2,33 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TerminalStatePane } from '../client/terminal-state.js';
+import { TerminalStatePane, formatTerminalContext } from '../client/terminal-state.js';
+import { installLocale } from '../client/locale.js';
+import { localeFixture } from './locale-fixture.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
-  const { createElement: h } = await import('react'); return { Button: ({ size: _size, children, ...props }: any) => h('button', props, children) };
+  const { createElement: h } = await import('react'); return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ size: _size, children, ...props }: any) => h('button', props, children) };
 });
 beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const row = { id: 'terminal-one', title: 'bash', alias: 'hk', state: 'prompt', reason: '', cwd: '/remote', recent: [], current: null, stale: false };
 const ok = (value: any) => Promise.resolve({ ok: true, value });
 describe('terminal state UI', () => {
+  it('localizes only context framing, preserves raw output and bounds the export', () => {
+    const locale = localeFixture();
+    const dispose = installLocale(locale.locale);
+    try {
+      locale.change('en');
+      const value = { terminal: row, text: 'LEGACY', truncated: false, output: '中文 raw output\n' };
+      const english = formatTerminalContext(value as any);
+      expect(english).toContain('Human terminal observation');
+      expect(english).toContain('Directory: /remote');
+      expect(english).toContain('中文 raw output');
+      expect(formatTerminalContext({ ...value, output: undefined } as any)).toBe('LEGACY');
+      const bounded = formatTerminalContext({ ...value, output: '文'.repeat(65536) } as any);
+      expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(65536);
+      expect(bounded).toContain('[Context truncated]');
+    } finally { dispose(); }
+  });
   it('previews before insertion, uses revision-guarded original actions, and never submits', async () => {
     const remote: any = { list: vi.fn(() => ok([row])), context: vi.fn(() => ok({ text: 'REMOTE_CONTEXT', terminal: row, truncated: false })) };
     const actions: any = { captureInsertion: vi.fn(() => ({ revision: 1 })), insertText: vi.fn(() => false), submit: vi.fn(), setDraft: vi.fn() };

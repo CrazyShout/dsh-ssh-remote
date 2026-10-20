@@ -8,6 +8,7 @@ import { UpdateStore } from '../client/update-store.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
   return {
+    ...(await import('./native-control-stubs.js')).nativeControls,
     Button: ({ variant: _variant, size: _size, children, ...props }: any) => h('button', props, children),
     Modal: ({ open, title, description, children, footer }: any) => open ? h('section', { role: 'dialog', 'aria-label': title }, h('p', {}, description), children, footer) : null,
     Toast: ({ text, actions, onDone }: any) => h('aside', { role: 'status' }, text, actions.map((action: any) => h('button', { key: action.label, onClick: action.onClick }, action.label)), h('button', { onClick: onDone }, 'dismiss')),

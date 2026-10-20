@@ -10,4 +10,4 @@ const invocation = (method, parameters, result) => ({ id: `dsh-ssh-remote#sshRem
   invocation: { kind: 'direct' }, parameters: [scope, ...parameters], cancellation: { parameter: 'signal' },
   result: { mode: 'strict', typeSymbol: `dsh-ssh-remote#terminalState/${method}`, create: () => result }, sourceLocation: { file: 'src/terminal-state.ts', line: 1, column: 1 } });
 export const terminalStateInvocations = [invocation('list', [], bounded(view, 64)), invocation('context', [{ name: 'id', wire: 'id', source: 'json', codec: { mode: 'strict', typeSymbol: 'string', create: () => str } }],
-  z.object({ terminal: view, text: str.check(z.maxLength(65536)), truncated: z.boolean() }))];
+  z.object({ terminal: view, text: str.check(z.maxLength(65536)), truncated: z.boolean(), output: z.optional(str.check(z.maxLength(65536))) }))];
