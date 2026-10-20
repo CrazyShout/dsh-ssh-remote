@@ -421,11 +421,12 @@ describe('native remote workspace panel entry points', () => {
     const workbench = new Workbench();
     for (const section of sections) workbench.register(section.id, () => createElement('div', {}, `${section.title}内容`));
     const statuses = vi.fn(async () => ok({ gpu: status('connected') }) as any);
+    const refreshEnvironment = vi.fn(async () => ok(status('degraded')) as any);
     const connectionStatus = new ConnectionStatusStore(statuses, {
       getSnapshot: () => ({ id: 1, host: { home: '/home/test' } }), subscribe: () => () => {},
-    });
+    }, refreshEnvironment);
     return {
-      workbench, statuses, connectionStatus,
+      workbench, statuses, refreshEnvironment, connectionStatus,
       useTabInfo: () => ({ tab: { id: 'workbench-tab', visible: true } }),
       sessionId: 'session-a',
       useSessions: (selector: any) => selector({ byId: { 'session-a': { cwd } } }),
@@ -584,6 +585,47 @@ describe('native remote workspace panel entry points', () => {
       await act(async () => pending.resolve(ok({ gpu: status('connected') })));
       expect(container.querySelectorAll('[data-ssh-status="connected"]')).toHaveLength(2);
     } finally { hidden.mockRestore(); }
+  });
+
+  it('revalidates a degraded host once for the badge and the workbench together', async () => {
+    vi.useFakeTimers();
+    const props = panelProps();
+    props.statuses.mockResolvedValue(ok({
+      gpu: status('degraded', { environment: { search: { available: false, error: '缺少 rg' } } }),
+    }));
+    function Both() { return createElement('div', {}, createElement(NativePanelActions, props as any), createElement(RemoteToolsPane, props as any)); }
+    await act(async () => { root.render(createElement(Both)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(props.refreshEnvironment).toHaveBeenCalledTimes(1);
+    expect(props.refreshEnvironment).toHaveBeenCalledWith('gpu');
+    // One shared store means the sibling surface and the five-second poll add no probes.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(props.refreshEnvironment).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('[data-ssh-status="degraded"]')).toHaveLength(2);
+  });
+
+  it('recovers when the tool appears after the first probe already failed', async () => {
+    vi.useFakeTimers();
+    const props = panelProps();
+    props.statuses.mockResolvedValue(ok({
+      gpu: status('degraded', { environment: { search: { available: false, error: '缺少 rg' } } }),
+    }));
+    let installed = false;
+    props.refreshEnvironment.mockImplementation(async () => {
+      if (installed) props.statuses.mockResolvedValue(ok({ gpu: status('connected') }));
+      return ok(status('degraded'));
+    });
+    await render(NativePanelActions, props);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(props.refreshEnvironment).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-ssh-status="degraded"]')).not.toBeNull();
+    // ripgrep is installed while the same surface stays open. Nobody re-renders
+    // the badge or calls the probe by hand: the store's bounded retry must find it.
+    installed = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(props.refreshEnvironment).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(container.querySelector('[data-ssh-status="connected"]')).not.toBeNull();
   });
 
   it('drops the old green dot on a failed refresh, without changing navigation or the workspace', async () => {

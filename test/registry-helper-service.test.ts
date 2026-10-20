@@ -49,4 +49,28 @@ describe('SshRemoteService helper lifecycle facade', () => {
     expect(helpers.close).toHaveBeenCalledWith('gpu');
     expect(helpers.retry).toHaveBeenCalledWith('gpu');
   });
+
+  it('re-probes the live environment without reconnecting the helper', async () => {
+    let current = status('connected');
+    const helpers = {
+      refreshEnvironment: vi.fn(async () => {
+        current = {
+          ...status('connected'),
+          environment: { search: { available: true, path: '/usr/bin/rg', version: 'ripgrep 14.1.1' } },
+        };
+      }),
+      status: vi.fn(() => current),
+    };
+    const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
+    Object.defineProperties(service, {
+      helpers: { value: helpers },
+      assertHelperAlias: { value: () => {} },
+    });
+
+    await expect(service.refreshEnvironment('gpu')).resolves.toMatchObject({
+      status: 'connected',
+      environment: { search: { available: true, path: '/usr/bin/rg' } },
+    });
+    expect(helpers.refreshEnvironment).toHaveBeenCalledWith('gpu');
+  });
 });
