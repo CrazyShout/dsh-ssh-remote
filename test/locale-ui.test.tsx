@@ -10,6 +10,7 @@ import { installLocale, localized, t, formatDateTime } from '../client/locale.js
 import { localeFixture } from './locale-fixture.js';
 import { RemoteEditorPane } from '../client/editor.js';
 import { EditorModel } from '../client/editor-model.js';
+import { RemoteToolsTitle } from '../client/native-panels.js';
 import { GettingStarted } from '../client/start-guide.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
@@ -22,6 +23,17 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
 });
 
 describe('official locale integration', () => {
+  it('updates the public workbench title slot without replacing a persisted tab', async () => {
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const fixture = localeFixture(), release = installLocale(fixture.locale);
+    const element = document.createElement('div'), root = createRoot(element), Title = localized(RemoteToolsTitle);
+    try {
+      await act(async () => root.render(createElement(Title)));
+      expect(element.textContent).toBe('远程工作台');
+      await act(async () => fixture.change('en'));
+      expect(element.textContent).toBe('Remote workbench');
+    } finally { await act(async () => root.unmount()); release(); }
+  });
   it('ships balanced dictionaries, matching placeholders, and only registered message keys', () => {
     expect(Object.keys(en)).toEqual(Object.keys(zh));
     const params = (value: string) => [...value.matchAll(/\{(\w+)\}/gu)].map(match => match[1]).sort();

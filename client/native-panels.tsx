@@ -111,6 +111,9 @@ export function mountNativePanels(ctx: Context, workbench: Workbench): () => Pro
         const body = scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
             name: 'sidebar.right.pane.tab', key: TOOLS_ID, inject,
         }, localized(RemoteToolsPane)));
+        const title = scope.slots.inject('sidebar.right.pane.tab.title', () => scope.slots.register({
+            name: 'sidebar.right.pane.tab.title', key: TOOLS_ID,
+        }, localized(RemoteToolsTitle)));
         const header = scope.slots.inject('conversation.session.header.utilities', () => scope.slots.register({
             name: 'conversation.session.header.utilities',
             id: 'dsh-ssh-remote.native-panels',
@@ -130,12 +133,14 @@ export function mountNativePanels(ctx: Context, workbench: Workbench): () => Pro
             stopMounted();
             blank();
             header();
+            title();
             body();
             unregister?.();
         };
     });
     return async () => { await fiber.dispose(); };
 }
+export function RemoteToolsTitle() { return <>{t('远程工作台')}</>; }
 /** The official header hides its utilities while a real Session is still blank. */
 export function BlankNativePanelActions(props: BlankNativePanelProps) {
     const activeTarget = props.useConversation((snapshot: ConversationSnapshot) => snapshot.activeTargets.size > 0);

@@ -218,6 +218,7 @@ describe('client lifecycle', () => {
     const dispose = mountNativePanels(ctx as never, new Workbench());
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.session.header.utilities', expect.any(Function));
     expect(scope.slots.inject).toHaveBeenCalledWith('conversation.input.dock', expect.any(Function));
+    expect(scope.slots.register).toHaveBeenCalledWith({ name: 'sidebar.right.pane.tab.title', key: 'dsh-ssh-remote.tools' }, expect.any(Function));
     const options = scope.slots.register.mock.calls.map((call: any) => call[0]).find((options: any) => options.name === 'conversation.session.header.utilities');
     expect(options).toMatchObject({ name: 'conversation.session.header.utilities', id: 'dsh-ssh-remote.native-panels' });
     const face = options.inject('session-a');
@@ -227,7 +228,7 @@ describe('client lifecycle', () => {
     selected = 'session-b';
     expect(() => face.openPanel('ssh-tools')).toThrow('会话已切换');
     await dispose();
-    expect(unregister).toHaveBeenCalledTimes(3);
+    expect(unregister).toHaveBeenCalledTimes(4);
   });
 
   it('contributes one guide card only for the current verified SSH Session and releases subscriptions', async () => {

@@ -37,6 +37,7 @@ type NativePanelProps = PropsRuntime<'conversation.session.header.utilities'> & 
 type BlankNativePanelProps = PropsRuntime<'conversation.input.dock'> & NativePanelInjected;
 /** Additive optional integration: no sidebar/conversation composition is required at boot. */
 export declare function mountNativePanels(ctx: Context, workbench: Workbench): () => Promise<void>;
+export declare function RemoteToolsTitle(): import("react").JSX.Element;
 /** The official header hides its utilities while a real Session is still blank. */
 export declare function BlankNativePanelActions(props: BlankNativePanelProps): import("react").JSX.Element | null;
 export declare function NativePanelActions(props: NativePanelProps): import("react").JSX.Element | null;
