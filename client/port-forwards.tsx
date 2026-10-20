@@ -63,7 +63,10 @@ export function PortForwardPane({ sessionId, remote, active = true }: {
     <div role="list" aria-label={t('本工作区的端口转发')} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {state.list?.items.map(row => <article role="listitem" key={row.id} style={{ ...cardStyle, overflowWrap: 'anywhere' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}><strong>127.0.0.1:{row.localPort} → :{row.remotePort}</strong><small role="status">{labels()[row.state]}</small></div>
-        {row.state === 'listening' && row.probe.state !== 'reachable' && <small>{row.probe.message}</small>}
+        {row.state === 'listening' && row.probe.state !== 'reachable' && <>
+          <small>{row.probe.state === 'unreachable' ? t('远端端口暂不可达，请确认服务已启动。') : t('远端端口状态尚未确认。')}</small>
+          {row.probe.message && <details><summary>{t('检查详情')}</summary><small>{row.probe.message}</small></details>}
+        </>}
         {row.error && <div role="alert">{row.error}</div>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           {row.state === 'listening' && <>

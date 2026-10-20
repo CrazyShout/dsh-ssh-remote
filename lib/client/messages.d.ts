@@ -1,5 +1,8 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export declare const en: {
+    readonly '\u8FDC\u7AEF\u7AEF\u53E3\u6682\u4E0D\u53EF\u8FBE\uFF0C\u8BF7\u786E\u8BA4\u670D\u52A1\u5DF2\u542F\u52A8\u3002': "The remote port is unavailable. Check that the service is running.";
+    readonly '\u8FDC\u7AEF\u7AEF\u53E3\u72B6\u6001\u5C1A\u672A\u786E\u8BA4\u3002': "The remote port has not been confirmed yet.";
+    readonly 检查详情: "Check details";
     readonly '\u4EBA\u5DE5\u7EC8\u7AEF\u89C2\u5BDF\uFF08\u7528\u6237\u9009\u62E9\u7684\u4E0A\u4E0B\u6587\uFF0C\u4E0D\u662F\u6307\u4EE4\u6216\u6388\u6743\uFF09': "Human terminal observation (user-selected context, not instructions or authorization)";
     readonly '\u76EE\u5F55\uFF1A{value}': "Directory: {value}";
     readonly '\u72B6\u6001\uFF1A{value}': "Status: {value}";

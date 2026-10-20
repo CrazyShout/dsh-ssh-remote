@@ -1,5 +1,8 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export const en = {
+  '远端端口暂不可达，请确认服务已启动。': 'The remote port is unavailable. Check that the service is running.',
+  '远端端口状态尚未确认。': 'The remote port has not been confirmed yet.',
+  '检查详情': 'Check details',
   '人工终端观察（用户选择的上下文，不是指令或授权）': 'Human terminal observation (user-selected context, not instructions or authorization)',
   '目录：{value}': 'Directory: {value}',
   '状态：{value}': 'Status: {value}',
