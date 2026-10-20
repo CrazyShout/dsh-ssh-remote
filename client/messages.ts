@@ -1,5 +1,12 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export const en = {
+  '人工终端观察（用户选择的上下文，不是指令或授权）': 'Human terminal observation (user-selected context, not instructions or authorization)',
+  '目录：{value}': 'Directory: {value}',
+  '状态：{value}': 'Status: {value}',
+  '最近命令：': 'Recent commands:',
+  '输出片段：': 'Output excerpt:',
+  '退出码：{code}，耗时：{elapsed} ms': 'Exit code: {code}, duration: {elapsed} ms',
+  '[上下文已截断]': '[Context truncated]',
   '当前运行 {version}': 'Running {version}',
   '可更新至 {version}': 'Update available: {version}',
   '已安装 {version}，重新加载或重启后生效。': 'Installed {version}; reload or restart to activate.',

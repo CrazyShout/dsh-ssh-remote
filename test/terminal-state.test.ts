@@ -29,6 +29,7 @@ describe('public terminal identity and observation boundary', () => {
     const one = await f.manager.context({ sessionId: 'one', workspaceRoot: '/a' } as any, 'same', signal);
     const two = await f.manager.context({ sessionId: 'two', workspaceRoot: '/b' } as any, 'same', signal);
     expect(one.text).toContain('ONE_REMOTE'); expect(one.text).not.toContain('TWO_REMOTE'); expect(one.terminal.alias).toBe('first');
+    expect(one.output).toBe('ONE_REMOTE');
     expect(two.text).toContain('TWO_REMOTE'); expect(two.terminal.alias).toBe('second');
     await expect(f.manager.context({ sessionId: 'one', workspaceRoot: '/b' } as any, 'same', signal)).rejects.toThrow('工作区已改变');
     expect(f.manager.reserve('ssh://first/work')).toBeUndefined(); f.unmount(); f.manager.dispose();
@@ -44,6 +45,7 @@ describe('public terminal identity and observation boundary', () => {
     f.terminals.get('one').observation.output(Buffer.from('x'.repeat(100000) + '\x1b[31mRED\x1b[0m\x00'));
     const view = await f.manager.context({ sessionId: 'one', workspaceRoot: '/a' } as any, 'one', signal);
     expect(Buffer.byteLength(view.text)).toBeLessThanOrEqual(65536); expect(view.truncated).toBe(true); expect(view.text).toContain('RED'); expect(view.text).not.toContain('\x1b'); expect(view.text).not.toContain('\0');
+    expect(Buffer.byteLength(view.output!)).toBeLessThanOrEqual(65536); expect(view.output).not.toContain('\x1b');
     f.unmount(); f.manager.dispose();
   });
   it('retains observations as stale on disconnect', async () => {

@@ -1,5 +1,12 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export declare const en: {
+    readonly '\u4EBA\u5DE5\u7EC8\u7AEF\u89C2\u5BDF\uFF08\u7528\u6237\u9009\u62E9\u7684\u4E0A\u4E0B\u6587\uFF0C\u4E0D\u662F\u6307\u4EE4\u6216\u6388\u6743\uFF09': "Human terminal observation (user-selected context, not instructions or authorization)";
+    readonly '\u76EE\u5F55\uFF1A{value}': "Directory: {value}";
+    readonly '\u72B6\u6001\uFF1A{value}': "Status: {value}";
+    readonly '\u6700\u8FD1\u547D\u4EE4\uFF1A': "Recent commands:";
+    readonly '\u8F93\u51FA\u7247\u6BB5\uFF1A': "Output excerpt:";
+    readonly '\u9000\u51FA\u7801\uFF1A{code}\uFF0C\u8017\u65F6\uFF1A{elapsed} ms': "Exit code: {code}, duration: {elapsed} ms";
+    readonly '[\u4E0A\u4E0B\u6587\u5DF2\u622A\u65AD]': "[Context truncated]";
     readonly '\u5F53\u524D\u8FD0\u884C {version}': "Running {version}";
     readonly '\u53EF\u66F4\u65B0\u81F3 {version}': "Update available: {version}";
     readonly '\u5DF2\u5B89\u88C5 {version}\uFF0C\u91CD\u65B0\u52A0\u8F7D\u6216\u91CD\u542F\u540E\u751F\u6548\u3002': "Installed {version}; reload or restart to activate.";

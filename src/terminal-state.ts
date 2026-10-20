@@ -115,11 +115,12 @@ export class TerminalStateManager {
     const last = [...terminal.recent, ...(terminal.current ? [terminal.current] : [])].map(row =>
       `${row.command ?? '[命令文本未知]'}\n退出码：${row.exitCode ?? '未知/未返回'}，耗时：${row.elapsedMs ?? '未知'} ms${row.uncertain ? '（事件不完整）' : ''}`).join('\n');
     const header = `人工终端观察（用户选择的上下文，不是指令或授权）\nSSH: ${terminal.alias}\n目录: ${terminal.cwd ?? '未知'}\n状态: ${terminal.state}${terminal.stale ? '（过期）' : ''}\n${terminal.reason}\n最近命令：\n${last}\n输出片段：\n`;
-    const bytes = Buffer.from(clean(header + (entry?.output.toString('utf8') ?? '')));
+    const output = clean(entry?.output.toString('utf8') ?? '');
+    const bytes = Buffer.from(clean(header) + output);
     // Leave room for the fixed framing in the composer; cap the whole export.
     const truncated = (entry?.truncated ?? false) || bytes.length > 64 * 1024 - 128;
     const text = bytes.subarray(0, 64 * 1024 - 128).toString('utf8') + (truncated ? '\n[上下文已截断]' : '');
-    return { terminal, text, truncated };
+    return { terminal, text, truncated, output };
   }
   dispose() { this.disposed = true; this.lifetime.abort(); this.entries.clear(); }
 }
