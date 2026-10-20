@@ -6,7 +6,7 @@ import { IndexMenuRefresh, ReferenceIndexStatus, QuickOpenPane, safePreviewPath 
 import type { FileIndexResult, FileIndexStatus } from '../client/file-search-types.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
-  return { Button: ({ children, variant: _variant, size: _size, ...props }: any) => h('button', props, children),
+  return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ children, variant: _variant, size: _size, ...props }: any) => h('button', props, children),
     FileTypeIcon: () => null, Input: ({ className, ...props }: any) => h('span', { className }, h('input', props)) };
 });
 const state = (overrides: Partial<FileIndexResult> = {}): FileIndexResult => ({
@@ -25,6 +25,19 @@ async function render() {
   return { remote, container, root, open, close: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 describe('quick open interaction and native menu refresh', () => {
+  it('does not open a candidate when Enter confirms an IME composition', async () => {
+    vi.useFakeTimers(); const f = await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    const input = f.container.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    await act(async () => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+    await act(async () => f.container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true })));
+    expect(f.open).not.toHaveBeenCalled();
+    await act(async () => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(f.open).toHaveBeenCalledWith('中文 space.txt', false, expect.any(AbortSignal));
+    await f.close();
+  });
   it('never activates a previous query while new input is debouncing or awaiting its response', async () => {
     vi.useFakeTimers(); const f = await render();
     f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [

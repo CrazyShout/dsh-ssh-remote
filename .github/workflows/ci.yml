@@ -35,12 +35,12 @@ jobs:
         run: |
           npm run release:pack -- --out "$RUNNER_TEMP/candidate"
           mkdir "$RUNNER_TEMP/rollback-source" "$RUNNER_TEMP/rollback-package"
-          git archive dbc1b5f7f8077517491b2a8c25075998866e8037 | tar -x -C "$RUNNER_TEMP/rollback-source"
+          git archive v0.12.0 | tar -x -C "$RUNNER_TEMP/rollback-source"
           npm pack "$RUNNER_TEMP/rollback-source" --ignore-scripts --pack-destination "$RUNNER_TEMP/rollback-package"
       - name: Install, boot, upgrade, roll back, disable and remove the actual archive
         run: |
           version="$(node -p 'require("./package.json").version')"
-          npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.11.2.tgz" --previous-version 0.11.2 --out "$RUNNER_TEMP/install-evidence"
+          npm run test:install -- --dsh-version '${{ matrix.dsh }}' --package "$RUNNER_TEMP/candidate/dsh-ssh-remote-$version.tgz" --previous "$RUNNER_TEMP/rollback-package/dsh-ssh-remote-0.12.0.tgz" --previous-version 0.12.0 --out "$RUNNER_TEMP/install-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

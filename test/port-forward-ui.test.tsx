@@ -7,7 +7,7 @@ import { PortForwardPane } from '../client/port-forwards.js';
 import type { PortForwardInput, PortForwardView } from '../client/port-forward-types.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
-  return { Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
+  return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ size: _size, children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props) };
 });
 const ok = <T,>(value: T) => ({ ok: true as const, value });
 function row(input: Partial<PortForwardView> = {}): PortForwardView {

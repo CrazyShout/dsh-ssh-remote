@@ -8,7 +8,7 @@ import type { EditorDocument, EditorRemote } from '../client/editor-types.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
-  return { Button: ({ children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props),
+  return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ children, ...props }: any) => h('button', props, children), Input: (props: any) => h('input', props),
     Modal: ({ open, title, description, footer }: any) => open ? h('div', { role: 'dialog' }, title, description, footer) : null };
 });
 const ok = <T,>(value: T) => ({ ok: true as const, value });

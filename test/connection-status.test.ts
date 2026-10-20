@@ -54,6 +54,24 @@ describe('shared read-only connection status', () => {
     await vi.advanceTimersByTimeAsync(1); expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it('shares different visible surfaces and never overlaps a timed-out read or an explicit refresh', async () => {
+    const { store, load } = fixture(), pending = deferred();
+    load.mockReturnValueOnce(pending.promise);
+    const badge = store.retain('a\0/anchor\0alpha');
+    await flush();
+    const settings = store.retain('settings\0alpha'), second = store.retain('settings\0beta');
+    store.refresh(); store.refresh();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().unavailable).toContain('超时');
+    pending.resolve(success()); await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().hosts.alpha.status).toBe('connected');
+    badge(); settings(); second();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['failure', 'throw', 'timeout'])('clears a good snapshot after %s and ignores a late success', async kind => {
     const { store, load } = fixture(); store.retain('a\0/anchor\0alpha'); await flush();
     expect(store.getSnapshot().hosts.alpha.status).toBe('connected');

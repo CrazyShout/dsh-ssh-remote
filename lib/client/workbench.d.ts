@@ -3,16 +3,16 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 export declare const sections: readonly [{
     readonly id: "files";
-    readonly title: "快速打开";
+    readonly title: string;
 }, {
     readonly id: "transfers";
-    readonly title: "文件传输";
+    readonly title: string;
 }, {
     readonly id: "ports";
-    readonly title: "端口转发";
+    readonly title: string;
 }, {
     readonly id: "terminals";
-    readonly title: "终端状态";
+    readonly title: string;
 }];
 export type WorkbenchSection = typeof sections[number]['id'];
 declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
@@ -36,7 +36,7 @@ export declare class Workbench {
     register(section: WorkbenchSection, render: (props: WorkbenchProps) => ReactNode): () => void;
     selected(session: string): WorkbenchSection;
     select(session: string, section: WorkbenchSection): void;
-    render(section: WorkbenchSection, props: WorkbenchProps): string | number | boolean | import("react").JSX.Element | Iterable<ReactNode>;
+    render(section: WorkbenchSection, props: WorkbenchProps): string | number | boolean | Iterable<ReactNode> | import("react").JSX.Element;
 }
 /** A persisted legacy tab is replaced through the public navigator, never by editing layout files. */
 export declare function mountWorkbenchSection(scope: Context, workbench: Workbench, id: string, kind: string, section: WorkbenchSection, render: (props: WorkbenchProps) => ReactNode): () => void;

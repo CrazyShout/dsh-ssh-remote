@@ -12,6 +12,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const button = ({ children, icon: _icon, variant: _variant, size: _size, ...props }: any) =>
     element('button', props, children);
   return {
+    ...(await import('./native-control-stubs.js')).nativeControls,
     Button: button,
     Tooltip: ({ label, children }: any) => cloneElement(children, { 'data-tooltip': label }),
     Menu: ({ open, anchor, items, onSelect }: any) => element('div', {}, anchor, open && items.map((item: any) => element('button', { key: item.id, onClick: () => onSelect(item.id) }, item.label))),
@@ -32,6 +33,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
 
 let container: HTMLDivElement;
 let root: Root;
+const settingsStores = new Set<ConnectionStatusStore>();
+const settingsByRemote = new WeakMap<object, ConnectionStatusStore>();
 
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,6 +46,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  for (const store of settingsStores) store.dispose();
+  settingsStores.clear();
   vi.useRealTimers();
 });
 
@@ -82,6 +87,17 @@ function listing(path: string) {
   };
 }
 async function render(component: any, props: any) {
+  if (component === SshRemotePanel && !props.connectionStatus) {
+    let connectionStatus = settingsByRemote.get(props.ssh);
+    if (!connectionStatus) {
+      connectionStatus = new ConnectionStatusStore(() => props.ssh.statuses(), {
+        getSnapshot: () => ({ id: 1, host: { home: '/fixture' } }), subscribe: () => () => {},
+      });
+      settingsByRemote.set(props.ssh, connectionStatus);
+      settingsStores.add(connectionStatus);
+    }
+    props = { ...props, connectionStatus };
+  }
   await act(async () => { root.render(createElement(component, props)); });
 }
 function group(alias: string) {
@@ -126,7 +142,7 @@ describe('rendered SSH settings', () => {
     await click('连接', group('alpha'));
     await click('连接', group('beta'));
     await act(async () => alpha.resolve(ok(status('connected'))));
-    expect(button('重试', group('alpha')).disabled).toBe(false);
+    expect(button('诊断', group('alpha')).disabled).toBe(false);
     expect(button('重试', group('beta')).disabled).toBe(true);
     expect(button('停止 / 断开', group('beta')).disabled).toBe(false);
     await click('停止 / 断开', group('beta'));
@@ -140,7 +156,7 @@ describe('rendered SSH settings', () => {
     vi.useFakeTimers();
     const ssh = remote();
     const poll = deferred();
-    ssh.statuses.mockReturnValue(poll.promise);
+    ssh.statuses.mockReturnValueOnce(poll.promise);
     await render(SshRemotePanel, { ssh });
     await click('连接', group('alpha'));
     await act(async () => { await vi.advanceTimersByTimeAsync(40_000); });
@@ -224,6 +240,31 @@ async function openRemote(ssh: ReturnType<typeof remote>) {
 }
 
 describe('rendered SSH directory flow', () => {
+  it('shows and browses SSH while the local capability probe is still pending', async () => {
+    const ssh = remote(), local = deferred();
+    const props = directoryProps(ssh); props.listLocal.mockReturnValue(local.promise);
+    await render(SshDirectoryFlow, props);
+    const host = [...container.querySelectorAll('button')].find(item => item.querySelector('strong')?.textContent === 'alpha')!;
+    expect(host.disabled).toBe(false);
+    await act(async () => host.click());
+    expect(ssh.browse).toHaveBeenCalledWith('alpha', '');
+    await act(async () => local.reject(new Error('local permission denied')));
+    expect(container.textContent).toContain('/home/test');
+    expect(container.textContent).not.toContain('local permission denied');
+  });
+
+  it('allows local browsing without waiting for SSH configuration', async () => {
+    const ssh = remote(), slow = deferred();
+    ssh.config.mockReturnValue(slow.promise);
+    const props = directoryProps(ssh);
+    await render(SshDirectoryFlow, props);
+    const local = [...container.querySelectorAll('button')].find(item => item.querySelector('strong')?.textContent === '本机')!;
+    expect(local.disabled).toBe(false);
+    await act(async () => local.click());
+    expect(container.textContent).toContain('/local');
+    await act(async () => slow.reject(new Error('ssh config unavailable')));
+    expect(container.textContent).not.toContain('ssh config unavailable');
+  });
   it('debounces path edits, navigates after a pause, and disables natural-language corrections', async () => {
     vi.useFakeTimers(); const ssh = remote(); await openRemote(ssh);
     const input = container.querySelector<HTMLInputElement>('[aria-label="文件夹路径"]')!;
@@ -561,12 +602,16 @@ describe('native remote workspace panel entry points', () => {
     if (state === 'error') expect(button('SSH · gpu').getAttribute('data-tooltip')).toContain('Permission denied');
   });
 
-  it('shares one poll between badge and workbench and suspends it when the page is hidden', async () => {
+  it('shares one poll between settings, badge and workbench and suspends it when hidden', async () => {
     vi.useFakeTimers();
     const props = panelProps();
-    function Both() { return createElement('div', {}, createElement(NativePanelActions, props as any), createElement(RemoteToolsPane, props as any)); }
+    const ssh = remote(); ssh.config.mockResolvedValue(ok(config(['gpu'])));
+    function Both() { return createElement('div', {},
+      createElement(SshRemotePanel, { ssh, connectionStatus: props.connectionStatus } as any),
+      createElement(NativePanelActions, props as any), createElement(RemoteToolsPane, props as any)); }
     await render(Both, {});
     expect(props.statuses).toHaveBeenCalledTimes(1);
+    expect(ssh.statuses).not.toHaveBeenCalled();
     expect(container.querySelectorAll('[data-ssh-status="connected"]')).toHaveLength(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(props.statuses).toHaveBeenCalledTimes(2);

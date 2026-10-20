@@ -1,5 +1,5 @@
 import { type Workbench } from './workbench.js';
-import { ConnectionStatusStore } from './connection-status.js';
+import type { ConnectionStatusStore } from './connection-status.js';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
@@ -15,18 +15,12 @@ type InfoResult = {
 declare const tools: readonly [{
     readonly kind: "ssh-quick-open";
     readonly bit: 2;
-    readonly title: "快速打开";
-    readonly description: "查找并预览远端文件";
 }, {
     readonly kind: "ssh-transfers";
     readonly bit: 4;
-    readonly title: "文件传输";
-    readonly description: "上传和下载文件或目录";
 }, {
     readonly kind: "ssh-ports";
     readonly bit: 8;
-    readonly title: "端口转发";
-    readonly description: "访问远端运行的网页服务";
 }];
 type PanelKind = 'ssh-tools' | typeof tools[number]['kind'];
 interface NativePanelInjected {

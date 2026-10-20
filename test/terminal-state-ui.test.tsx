@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalStatePane } from '../client/terminal-state.js';
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
-  const { createElement: h } = await import('react'); return { Button: ({ size: _size, children, ...props }: any) => h('button', props, children) };
+  const { createElement: h } = await import('react'); return { ...(await import('./native-control-stubs.js')).nativeControls, Button: ({ size: _size, children, ...props }: any) => h('button', props, children) };
 });
 beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });

@@ -1,5 +1,13 @@
 import type { ConnectionGenerationState } from '@deepseek-ai/dsh-client-connection/client';
+import type { Context } from '@deepseek-ai/cordis';
 import type { HelperHostStatus, RemoteResult } from 'dsh-ssh-remote/ssh';
+declare module '@deepseek-ai/cordis' {
+    interface Context {
+        sshConnectionStatus: ConnectionStatusStore;
+    }
+}
+/** One Cordis-scoped observer; settings and conversation surfaces share it. */
+export declare function mountConnectionStatus(ctx: Context): () => Promise<void>;
 export interface ConnectionStatusSnapshot {
     readonly generation?: number;
     readonly hosts: Readonly<Record<string, HelperHostStatus>>;
@@ -28,6 +36,9 @@ export declare class ConnectionStatusStore {
     private timer;
     private deadline;
     private disposed;
+    /** RPCs have no abort parameter: never stack another read behind a timeout. */
+    private inFlight;
+    private refreshPending;
     private readonly stopGeneration;
     constructor(load: () => Promise<RemoteResult<Record<string, HelperHostStatus>>>, generation: ConnectionGenerationState, recheck?: ((alias: string) => Promise<unknown>) | undefined, options?: ConnectionStatusOptions);
     getSnapshot: () => ConnectionStatusSnapshot;

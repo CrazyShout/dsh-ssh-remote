@@ -96,9 +96,9 @@ describe('source and version policy', () => {
 });
 
 describe('shared update controller', () => {
-  it('explains mixed old-Host/new-client loading and can retry after Host restart', async () => {
+  it('preserves a failed info response without guessing its type from text and permits a later retry', async () => {
     const s = setup(); s.remote.info.mockResolvedValueOnce({ ok: false, error: { message: 'transport failure: HTTP 404' } } as never);
-    await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, error: expect.stringContaining('重启当前 DSH') });
+    await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, error: '无法读取插件版本：transport failure: HTTP 404' });
     expect(s.remote.check).not.toHaveBeenCalled();
     await ready(s); expect(s.store.available()).toEqual(target); expect(s.store.getSnapshot().error).toBe('');
   });

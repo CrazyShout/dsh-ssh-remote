@@ -26,7 +26,10 @@ export interface LocalDirectory {
     getFileHandle(name: string, options?: {
         create?: boolean;
     }): Promise<LocalFileHandle>;
-    entries(): AsyncIterable<[string, LocalDirectory | LocalFileHandle]>;
+    entries(): AsyncIterable<[
+        string,
+        LocalDirectory | LocalFileHandle
+    ]>;
     removeEntry(name: string, options?: {
         recursive?: boolean;
     }): Promise<void>;
@@ -39,6 +42,7 @@ export declare function hashFile(file: Blob, signal: AbortSignal, progress?: (by
 export declare function validateLocalManifest(files: LocalFile[]): void;
 export declare function selectedFiles(files: Iterable<File>): LocalFile[];
 export declare function directoryFiles(root: LocalDirectory): Promise<LocalFile[]>;
+export declare function canPickLocalDirectory(): boolean;
 export declare function pickLocalDirectory(mode: 'read' | 'readwrite'): Promise<LocalDirectory>;
 export declare function localDirectory(root: LocalDirectory, path: string, create?: boolean): Promise<LocalDirectory>;
 interface TargetVersion {
