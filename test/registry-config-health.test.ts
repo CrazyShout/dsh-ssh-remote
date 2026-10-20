@@ -15,7 +15,7 @@ vi.mock('../src/ssh-config.js', async importOriginal => {
 afterEach(() => vi.clearAllMocks());
 
 describe('SshRemoteService configuration during remote health failures', () => {
-  it('retains all discovered hosts and successful refreshes when one connected host loses transport', async () => {
+  it('reads cached host status without probing or waiting for any remote environment', async () => {
     vi.mocked(discoverSshHosts).mockResolvedValue([
       { host: 'down', hostName: 'down.example', port: 2222, user: 'alice' },
       { host: 'healthy', hostName: 'healthy.example', port: 22, user: 'bob' },
@@ -45,6 +45,8 @@ describe('SshRemoteService configuration during remote health failures', () => {
       status: vi.fn((alias: string) => statuses[alias]),
       client: vi.fn(),
     };
+    statuses.down = { ...statuses.down, state: 'reconnecting', attempt: 1, errorCode: 'SSH_NETWORK', retryable: true };
+    statuses.healthy = { ...statuses.healthy, environment: { search: { available: true } } };
     const service = Object.create(SshRemoteService.prototype) as SshRemoteService;
     Object.defineProperties(service, {
       helpers: { value: helpers },
@@ -64,9 +66,7 @@ describe('SshRemoteService configuration during remote health failures', () => {
       alias: 'healthy', host: 'healthy.example', port: 22, user: 'bob',
       helper: { status: 'connected', environment: { search: { available: true } } },
     });
-    expect(helpers.refreshEnvironment).toHaveBeenCalledTimes(2);
-    expect(helpers.refreshEnvironment).toHaveBeenCalledWith('down');
-    expect(helpers.refreshEnvironment).toHaveBeenCalledWith('healthy');
+    expect(helpers.refreshEnvironment).not.toHaveBeenCalled();
     expect(helpers.client).not.toHaveBeenCalled();
   });
 });

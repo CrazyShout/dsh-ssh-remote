@@ -117,9 +117,8 @@ export class SshRemoteService extends TypertRemoteService {
   async config(): Promise<SshConfig> {
     const configPath = userSshConfigPath();
     const hosts = await discoverSshHosts(configPath);
-    // A transient failure of one remote host must not hide local directories
-    // or other configured hosts. Its manager snapshot carries the error.
-    await Promise.allSettled(hosts.map(host => this.helpers.refreshEnvironment(host.host)));
+    // Configuration discovery must not wait for remote health checks. Connect,
+    // diagnostics and the visible degraded-host observer own those probes.
     return {
       configPath,
       configExists: existsSync(configPath),
