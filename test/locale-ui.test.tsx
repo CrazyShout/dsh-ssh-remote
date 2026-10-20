@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { en, zh } from '../client/messages.js';
-import { installLocale, localized, t } from '../client/locale.js';
+import { installLocale, localized, t, formatDateTime } from '../client/locale.js';
 import { localeFixture } from './locale-fixture.js';
 import { RemoteEditorPane } from '../client/editor.js';
 import { EditorModel } from '../client/editor-model.js';
@@ -67,6 +67,7 @@ describe('official locale integration', () => {
       input.focus(); input.setSelectionRange(2, 5);
       expect(element.textContent).toContain('保存');
       await act(async () => fixture.change('en'));
+      expect(formatDateTime(Date.UTC(2026, 9, 20, 8))).toContain('Oct');
       expect(element.querySelector('textarea')).toBe(input);
       expect(input.value).toBe('unsaved draft');
       expect(input.selectionStart).toBe(2); expect(input.selectionEnd).toBe(5);
@@ -75,6 +76,7 @@ describe('official locale integration', () => {
       expect(rpc.save).not.toHaveBeenCalled(); expect(rpc.read).toHaveBeenCalledTimes(1);
       expect(model.sessionId).toBe('original-session');
       await act(async () => fixture.change('zh'));
+      expect(formatDateTime(Date.UTC(2026, 9, 20, 8))).toContain('年');
       expect(input.value).toBe('unsaved draft');
       expect(element.querySelector('section')?.getAttribute('aria-label')).toBe('远程文本编辑器');
     } finally {

@@ -387,12 +387,9 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
                   <span style={subtleText}>
                     {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
                   </span>
-                  <span style={dimmedText}>
-                    Helper · {helperStateLabel(host.helper.status)}
-                    {host.helper.version ? ` · ${host.helper.version}` : ''}
-                  </span>
+                  <span style={dimmedText}>{helperStateLabel(host.helper.status)}</span>
                   {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
-                  <span style={dimmedText}>{searchSummary(host.helper)}</span>
+                  {host.helper.environment?.search.available === false && <span style={dimmedText}>{searchSummary(host.helper)}</span>}
                 </Button>))}
               {!configLoading && config?.hosts.length === 0 && (<div style={subtleText}>{t('~/.ssh/config 中没有可用的具体 Host。')}</div>)}
             </div>

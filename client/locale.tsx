@@ -13,10 +13,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 // used by standalone model/component tests before plugin activation.
 const source: Translate<MessageKey> = (key, params) =>
   key.replace(/\{(\w+)\}/gu, (placeholder, name: string) => params?.[name] === undefined ? placeholder : String(params[name]));
-const idle = { translate: source, subscribe: (_listener: () => void) => () => {}, snapshot: () => 0 };
+const idle = { translate: source, subscribe: (_listener: () => void) => () => {}, snapshot: () => 0, language: () => 'zh' };
 let binding = idle;
 
 export const t: Translate<MessageKey> = (key, params) => binding.translate(key, params);
+export const formatDateTime = (value: number) => new Intl.DateTimeFormat(binding.language(), {
+  dateStyle: 'medium', timeStyle: 'short',
+}).format(new Date(value));
 
 export function installLocale(locale: LocaleRuntime): () => void {
   const unregister = locale.register(LOCALE_NAMESPACE, { en, zh });
@@ -24,6 +27,7 @@ export function installLocale(locale: LocaleRuntime): () => void {
     translate: locale.bind(LOCALE_NAMESPACE),
     subscribe: (listener: () => void) => locale.subscribe(listener),
     snapshot: () => locale.getSnapshot().revision,
+    language: () => locale.getSnapshot().active,
   };
   binding = current;
   return () => { unregister(); if (binding === current) binding = idle; };

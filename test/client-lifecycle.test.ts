@@ -251,6 +251,7 @@ describe('client lifecycle', () => {
     const dispose = mountNativePanels({ inject: (_dependencies: string[], callback: (scope: unknown) => unknown) => ({ dispose: callback(scope) }) } as never, new Workbench());
     await vi.waitFor(() => expect(tabs.get('ssh-tools')?.guide).toHaveLength(1));
     expect(tabs.get('ssh-tools').guide[0].title()).toBe('远程工作台');
+    expect(tabs.get('ssh-tools').keepMounted).toBe(true);
     expect(tabs.size).toBe(1);
     selected = 'local'; listeners.forEach(listener => listener());
     expect(tabs.size).toBe(0);

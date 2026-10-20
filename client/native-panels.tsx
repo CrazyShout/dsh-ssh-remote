@@ -96,7 +96,7 @@ export function mountNativePanels(ctx: Context, workbench: Workbench): () => Pro
                 clearTimeout(timeout);
                 if (result.ok && result.value) {
                     unregister = scope.sidebarRightTabs.register({
-                        id: TOOLS_ID, kind: 'ssh-tools', title: () => t('远程工作台'),
+                        id: TOOLS_ID, kind: 'ssh-tools', keepMounted: true, title: () => t('远程工作台'),
                         guide: [{ id: TOOLS_ID, order: 40, title: () => t('远程工作台'), icon: IconGlobeOutlineRegular }],
                     });
                 }
@@ -144,7 +144,7 @@ export function BlankNativePanelActions(props: BlankNativePanelProps) {
     return <NativePanelActions {...props} presentation="dock"/>;
 }
 /** Session identity comes from the SDK; SSH identity comes only from the Host's saved mapping. */
-function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionStatus }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo' | 'connectionStatus'>) {
+function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionStatus }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo' | 'connectionStatus'>, visible: boolean) {
     const { generation } = useSyncExternalStore(connectionStatus.subscribe, connectionStatus.getSnapshot, connectionStatus.getSnapshot);
     const cwd: string | undefined = useSessions((snapshot: SessionListState) => snapshot.byId[sessionId]?.cwd);
     const key = `${sessionId}\0${cwd ?? ''}`;
@@ -155,7 +155,7 @@ function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionS
     } | null>(null);
     useEffect(() => {
         let active = true;
-        if (cwd === undefined || cwd === '' || generation === undefined)
+        if (!visible || cwd === undefined || cwd === '' || generation === undefined)
             return;
         // The lookup reads a local mapping only. Bound a wedged Remote, and never
         // infer SSH identity from a title, basename, URI-looking string or prefix.
@@ -168,7 +168,7 @@ function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionS
                 setResolved({ key, generation, info: null });
         }).finally(() => clearTimeout(timeout));
         return () => { active = false; clearTimeout(timeout); };
-    }, [key, cwd, generation, workspaceInfo]);
+    }, [key, cwd, generation, workspaceInfo, visible]);
     // Keep an already verified identity during an outage (with an unknown dot),
     // but revalidate it before accepting any new connection generation's status.
     const current = resolved?.key === key && (generation === undefined || generation === resolved.generation);
@@ -220,8 +220,8 @@ function statusTooltip(info: RemoteWorkspaceInfo, status: ReturnType<typeof conn
 }
 export function NativePanelActions(props: NativePanelProps) {
     const { openPanel, availablePanels, subscribePanels, presentation = 'header' } = props;
-    const { key, info } = useRemoteWorkspace(props);
     const visible = usePageVisible();
+    const { key, info } = useRemoteWorkspace(props, visible);
     const status = useConnectionStatus(props.connectionStatus, key, info?.alias, visible);
     const [failure, setFailure] = useState<{
         key: string;
@@ -251,7 +251,8 @@ export function NativePanelActions(props: NativePanelProps) {
 }
 export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected) {
     const { tab } = props.useTabInfo();
-    const { key, info, pending } = useRemoteWorkspace(props);
+    const visible = usePageVisible(tab.visible);
+    const { key, info, pending } = useRemoteWorkspace(props, visible);
     useSyncExternalStore(props.workbench.subscribe, props.workbench.snapshot, props.workbench.snapshot);
     const selected = props.workbench.selected(props.sessionId);
     const navigation = tab.navigation;
@@ -260,7 +261,6 @@ export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & 
         if (requested && sections.some(section => section.id === requested))
             props.workbench.select(props.sessionId, requested);
     }, [props.workbench, props.sessionId, tab.id, navigation?.revision, requested]);
-    const visible = usePageVisible(tab.visible);
     const [menu, setMenu] = useState(false), [width, setWidth] = useState(0);
     const status = useConnectionStatus(props.connectionStatus, key, info?.alias, visible);
     const container = useRef<HTMLElement>(null);

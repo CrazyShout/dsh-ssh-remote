@@ -1,4 +1,4 @@
-import { t, localized } from './locale.js';
+import { t, localized, formatDateTime } from './locale.js';
 import { useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -50,7 +50,7 @@ export function UpdateSection(props: DetailProps) {
       </div>
     </div>}
     <Checkbox checked={state.automatic} onChange={checked => props.updates.setAutomatic(checked)} label={t('自动检查稳定版更新（每 6 小时）')}/>
-    {release?.checkedAt && <span style={hint}>{t('上次检查：')}{new Date(release.checkedAt).toLocaleString()}</span>}
+    {release?.checkedAt && <span style={hint}>{t('上次检查：')}{formatDateTime(release.checkedAt)}</span>}
     <details style={{ ...hint, overflowWrap: 'anywhere' }}>
       <summary style={{ cursor: 'pointer' }}>{t('安装来源与更新说明')}</summary>
       <p>{t('只查询本项目的 GitHub Release，不上传会话、SSH 配置或项目内容。安装、依赖审批和是否需要重启由 DSH 判断。')}</p>

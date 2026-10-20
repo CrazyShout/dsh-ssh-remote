@@ -9,6 +9,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     }
 }
 export declare const t: Translate<MessageKey>;
+export declare const formatDateTime: (value: number) => string;
 export declare function installLocale(locale: LocaleRuntime): () => void;
 /** Re-render a slot subtree on the official locale revision, without remounting it. */
 export declare function localized<P extends object>(Component: (props: P) => ReactNode): (props: P) => import("react").FunctionComponentElement<P>;

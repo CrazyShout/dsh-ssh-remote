@@ -691,6 +691,7 @@ describe('native remote workspace panel entry points', () => {
     props.useTabInfo = () => ({ tab: { id: 'hidden', visible: false } });
     await render(RemoteToolsPane, props);
     expect(props.statuses).not.toHaveBeenCalled();
+    expect(props.workspaceInfo).not.toHaveBeenCalled();
     props.workspaceInfo.mockResolvedValue(ok(null) as any);
     await render(NativePanelActions, { ...props, sessionId: 'local', useSessions: (select: any) => select({ byId: { local: { cwd: '/local' } } }) });
     expect(props.statuses).not.toHaveBeenCalled();
