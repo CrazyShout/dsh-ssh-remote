@@ -21,6 +21,8 @@ try:
  with tempfile.TemporaryDirectory(prefix='dsh-sandbox-required-',dir='/tmp') as root, \
       tempfile.NamedTemporaryFile(prefix='dsh-host-marker-',dir='/tmp') as marker:
   marker.write(b'host-only');marker.flush()
+  private=os.path.join(root,'helper-control');os.mkdir(private,0o700)
+  socket_path=m.runtime_socket(os.path.join(private,'test.sock'));m.transport_key(socket_path,True)
   def run(mode,tty,command,label):
    wid=label+'-workspace'
    server.dispatch('workspace/open',{'path':root,'access':mode,'workspaceId':wid,'operationId':'open-'+wid})
@@ -44,6 +46,8 @@ try:
   run('workspace-write',False,policy+'printf restricted-pipe','restricted-pipe')
   run('workspace-write',True,policy+'printf restricted-pty','restricted-pty')
   run('read-only',False,'if printf forbidden > proof; then exit 61; fi; printf restricted-readonly','restricted-readonly')
+  for mode in ('read-only','workspace-write'):
+   run(mode,False,'set -eu; test ! -e '+shlex.quote(socket_path+'.auth')+'; printf hidden-control-'+mode,'hidden-control-'+mode)
   assert not os.path.exists(os.path.join(root,'proof'))
   marker.seek(0);assert marker.read()==b'host-only'
  print(json.dumps({'sandbox':'bwrap','workspaceWrite':True,'readOnly':True,'pty':True}))

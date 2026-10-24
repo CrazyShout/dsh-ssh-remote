@@ -19,6 +19,7 @@ import { TransferManager, SshRemoteTransfers, mountTransferHttp } from './transf
 import { TerminalStateManager, SshRemoteTerminalState } from './terminal-state.js';
 import { mountRemoteSkills } from './remote-skills.js';
 import { SshRemoteUpdates } from './updates.js';
+import { installRemotePtcRouter } from './ptc-router.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -71,6 +72,10 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   );
   const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
   const userSubprocess = installRemoteUserSubprocessRouter(ctx, ctx.subprocess, helpers, resolveRemotePath, terminalState);
+  const ptcFiber = ctx.inject(['ptcRuntime', 'sandbox'], scope => {
+    const router = installRemotePtcRouter(scope.ptcRuntime, scope.fs, scope.subprocess, scope.sandbox, helpers, resolveRemotePath);
+    return () => router.dispose();
+  });
   const workspaceFilesFiber = ctx.inject(['workspaceFiles'], scope => installRemoteWorkspaceFilesRouter(
     scope.workspaceFiles,
     helpers,
@@ -117,6 +122,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
   return async () => {
     // Child capability adapters own live remote processes and must quiesce
     // before the host-level helper session is explicitly closed.
+    const ptcResults = await Promise.allSettled([ptcFiber.dispose()]);
     const childResults = await Promise.allSettled([
       updatesFiber.dispose(),
       terminalFiber.dispose(),
@@ -134,6 +140,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     restoreFileSystem();
     const shellResult = await Promise.allSettled([shellProcesses.dispose(), fileIndex.dispose(), portForwards.dispose(), transfers.dispose()]);
     const results = [
+      ...ptcResults,
       ...childResults,
       ...shellResult,
       ...await Promise.allSettled([service.dispose(), helpers.dispose()]),

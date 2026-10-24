@@ -187,4 +187,4 @@ jobs:
           bwrap --die-with-parent --unshare-pid --ro-bind / / --proc /proc --dev /dev --tmpfs /tmp -- /bin/true
       - run: npm ci
       - name: Require positive restricted-execution coverage
-        run: npx vitest run test/helper-sandbox-required.integration.test.ts test/helper-python.integration.test.ts
+        run: npx vitest run test/helper-sandbox-required.integration.test.ts test/helper-python.integration.test.ts test/helper-auth.integration.test.ts test/helper-control.integration.test.ts test/ptc-router.integration.test.ts --maxWorkers=1 --minWorkers=1

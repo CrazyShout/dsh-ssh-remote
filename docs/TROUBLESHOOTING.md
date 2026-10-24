@@ -2,6 +2,28 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## 远程 run_code 与控制连接 / Remote PTC and control transport
+
+0.13.1 修复旧版将本机 Node、bootstrap 和 sandbox runner 路径发送到远端、并丢失独立控制通道的问题（#35）。保持官方 PTC provider，无需改成其他执行器。远端仍需要可用的 Node：
+
+```sh
+ssh devbox 'sh -lc "command -v node; node --version"'
+```
+
+若报 `E_NODE_RUNTIME_UNSUPPORTED`，登录 PATH 选中的 Node 没有 `stripTypeScriptTypes`（例如系统 Node 12 与 NVM Node 24 并存）。请让远端登录环境选择受支持 Node，或在远程专用 profile 中显式配置官方 PTC launch；不要把本机绝对路径当作远端路径。插件不会自动安装 Node 或修改 PATH。`E_SANDBOX_UNAVAILABLE` 需修复远端 bubblewrap，不应通过自动提升权限绕过。
+
+升级会产生新的 helper 内容哈希。保存工作后重载并重连；旧 daemon 不会被强制结束，也不会原地获得认证修复（#36）。认证错误应检查当前包/连接是否匹配，不删除凭据、关闭校验或清空所有 helper 目录来“修复”。
+
+English: use the official PTC provider with remote Node supporting TypeScript
+stripping. A bundled Desktop Node is not a remote runtime. A stale login PATH can
+select an older system Node despite a newer NVM installation. Correct that
+environment or use an explicit official launch configuration in a remote-only
+profile. No automatic installation, local execution or full-access fallback is
+performed. Reload/reconnect after upgrading; existing old daemons are not patched
+in place. Authentication errors must not be worked around by disabling checks or
+deleting control credentials. The security boundary excludes unrestricted
+programs already running as the same Unix account.
+
 ## 0.11.1：fish、目录路径与远程技能
 
 - fish/tcsh 主机在 helper 安装时报引号语法错误：升级到 0.11.1 后重试，无需更改登录 shell。仍需要远端 PATH 中的 Python 3.8+。fish 的命令状态 hook 不在本次范围，原生终端仍可使用。

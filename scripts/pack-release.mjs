@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { loadHelperAsset } from '../lib/helper/installer.js';
 
 export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
-export const expectedHelperSha256 = '3c3b35a6a6c20703053cb06d8ee770031d92266750d7909bc41e96087f8d09be';
+export const expectedHelperSha256 = '8bb08ba35d929bcc964eb9bc3af7dc390501e55e984f6e1e06b6220e453816d8';
 
 function exportPaths(value) {
   if (typeof value === 'string') return [value.replace(/^\.\//u, '')];
@@ -45,12 +45,12 @@ export function packRelease({ output = join(repositoryRoot, 'dist'), version } =
   }));
   validatePackage(manifest, packed.files.map(file => file.path), version);
   const helper = loadHelperAsset();
-  assert.equal(helper.sha256, expectedHelperSha256, 'Helper asset differs from the reviewed 0.11.0 build');
+  assert.equal(helper.sha256, expectedHelperSha256, 'Helper asset differs from the reviewed 0.13.1 build');
   const archive = join(target, packed.filename);
   const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const report = { name: manifest.name, version: manifest.version, filename: packed.filename,
     sha256, size: packed.size, unpackedSize: packed.unpackedSize, entryCount: packed.entryCount,
-    dshVersion: '0.2.0-rc.2', dshVersions: ['0.2.0-rc.2', '0.2.1-rc.2'], helperVersion: '0.11.0', helperSha256: helper.sha256,
+    dshVersion: '0.2.0-rc.2', dshVersions: ['0.2.0-rc.2', '0.2.1-rc.2'], helperVersion: '0.13.1', helperSha256: helper.sha256,
     commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim() };
   writeFileSync(join(target, 'SHA256SUMS'), `${sha256}  ${packed.filename}\n`);
   writeFileSync(join(target, 'release-manifest.json'), JSON.stringify(report, null, 2) + '\n');

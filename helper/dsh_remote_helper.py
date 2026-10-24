@@ -24,6 +24,7 @@ import subprocess
 import socket
 import sys
 import threading
+import tempfile
 import time
 import importlib.util
 from collections import deque
@@ -36,7 +37,7 @@ import termios
 # DSH_BUNDLED_EXTENSIONS
 
 PROTOCOL = "1"
-VERSION = "0.11.0"
+VERSION = "0.13.1"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -59,6 +60,7 @@ ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SENSITIVE_ENV_PATTERN = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 PROCESS_RESERVED = object()
 TRANSFER_MODULE_LOCK = threading.Lock()
+PRIVATE_RUNTIME_ROOTS: Any = set()
 
 
 def terminal_state_module() -> Any:
@@ -246,6 +248,11 @@ def resolve_executable(params: Dict[str, Any]) -> Dict[str, str]:
         candidate = command if os.path.isabs(command) else shutil.which(command, path=env.get("PATH", os.defpath))
     if candidate is None or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
         raise RpcError("E_EXECUTABLE_NOT_FOUND", "executable is not installed in the remote execution environment")
+    if params.get('nodePtc') is True:
+        startup = {key: value for key, value in env.items() if key in ('PATH', 'HOME', 'LANG', 'LC_ALL')}
+        output, error = capture_environment_probe([candidate, '-p', "typeof require('node:module').stripTypeScriptTypes"], startup)
+        if error is not None or output.strip() != 'function':
+            raise RpcError('E_NODE_RUNTIME_UNSUPPORTED', 'Remote run_code needs Node.js 22.13+ (or newer) with stripTypeScriptTypes; select it in the remote login PATH or the official PTC launch configuration. No runtime was installed.')
     return {"path": os.path.realpath(candidate)}
 
 
@@ -350,6 +357,7 @@ class Workspace:
             raise RpcError("E_INVALID_PARAMS", "invalid workspace access")
         if not os.path.isabs(path): raise RpcError("E_INVALID_PATH", "workspace root must be absolute")
         self.path = os.path.realpath(path)
+        deny_private_runtime_path(self.path)
         try: self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc: raise fail_os(exc)
         self.access = access; self.lock = threading.Lock(); self.cleanup_error: Optional[str] = None
@@ -372,6 +380,7 @@ class Workspace:
             except OSError as exc: raise fail_os(exc)
 
     def dirfd(self, parts: List[str]) -> int:
+        deny_private_runtime_path(os.path.join(self.path, *parts))
         fd = self.dup_root()
         try:
             for part in parts:
@@ -383,6 +392,7 @@ class Workspace:
 
     def parent(self, path: Any) -> Tuple[int, str, List[str]]:
         parts = path_parts(path)
+        deny_private_runtime_path(os.path.join(self.path, *parts))
         return self.dirfd(parts[:-1]), parts[-1] if parts else "", parts
 
     def open_file(self, path: Any) -> int:
@@ -463,7 +473,9 @@ class Server:
                                  "coordinationScope": self.write_coordinator.scope},
             },
             "process": {"supported": True, "sandbox": "bwrap" if bwrap_available() else "none",
-                        "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked", "sequencedWrite": True},
+                        "restrictedFailClosed": True, "cwdConfinement": "dirfd-checked", "sequencedWrite": True,
+                        "controlPipe": {"version": 1, "maxChunkBytes": 65536, "maxBufferedBytes": 524288},
+                        "ptcBootstrap": {"version": 1, "maxBytes": 524288}},
             "pty": {"supported": hasattr(os, "openpty"), "resize": True, "foregroundPgid": "verified",
                     "sequencedResize": True},
             "session": {"resume": self.resume_supported},
@@ -834,6 +846,10 @@ class Server:
         if method == "fs/write": return self.write(p)
         if method == "process/start": return self.guarded(p.get("operationId"), p, lambda: self.start_process(p))
         if method == "process/read": return self.process(p).read(p)
+        if method == "process/controlRead": return self.process(p).read_control(p)
+        if method == "process/controlWrite":
+            record = self.process(p)
+            return record.control_write_lane.apply(p, record.write_control)
         if method == "process/shellState":
             record = self.process(p)
             if record.shell_observation is None: raise RpcError("E_UNSUPPORTED", "terminal has no shell observation hook")
@@ -1127,6 +1143,11 @@ class Server:
                     workspace_under_tmp = True
                     command += ["--dir", ws.path, "--bind-fd", "__DSH_WORKSPACE_FD__", ws.path]
                 else: command += ["--bind", ws.path, ws.path]
+            # Read-only mounts do not prevent connecting to a Unix socket.
+            # Hide control credentials/listeners after all writable binds, even
+            # when the selected workspace contains the runtime directory.
+            for private in sorted(private_runtime_roots()):
+                if os.path.isdir(private): command += ["--tmpfs", private, "--remount-ro", private]
             command += ["--chdir", cwd, "--"] + list(argv); cwd = "/"
         supplied: Dict[str, Any] = {}
         for source_name in ("env", "dshEnv"):
@@ -1134,6 +1155,9 @@ class Server:
             if not isinstance(source, dict): raise RpcError("E_INVALID_PARAMS", source_name + " must be an object")
             supplied.update(source)
         tty = p.get("tty"); stdin_mode = p.get("stdin", "pipe")
+        program_control = p.get('control')
+        if program_control not in (None, 'pipe') or (program_control and isinstance(tty, dict)):
+            raise RpcError('E_INVALID_PARAMS', 'control pipe requires a non-PTY process')
         if stdin_mode not in ("pipe", "closed"): raise RpcError("E_INVALID_PARAMS", "stdin must be pipe or closed")
         if isinstance(tty, dict) and stdin_mode != "pipe": raise RpcError("E_INVALID_PARAMS", "PTY stdin cannot start closed")
         with self.resources_lock:
@@ -1151,7 +1175,8 @@ class Server:
                 command = [str(workspace_fd) if value == "__DSH_WORKSPACE_FD__" else value for value in command]
             record = ProcessRecord(process_id, command, cwd, supplied, tty, stdin_mode, inherited_fds,
                                    inside_sandbox=ws.access != "danger-full-access",
-                                   shell_observation=p.get('shellObservation') is True and isinstance(tty, dict) and ws.access == 'danger-full-access')
+                                   shell_observation=p.get('shellObservation') is True and isinstance(tty, dict) and ws.access == 'danger-full-access',
+                                   program_control=program_control == 'pipe', bootstrap=p.get('ptcBootstrap'))
         except Exception:
             with self.resources_lock:
                 if self.processes.get(process_id) is PROCESS_RESERVED: self.processes.pop(process_id, None)
@@ -1343,7 +1368,8 @@ class InputLane:
 class ProcessRecord:
     def __init__(self, process_id: str, argv: List[str], cwd: str, supplied_env: Any, tty: Any,
                  stdin_mode: str, inherited_fds: Tuple[int, ...] = (), inside_sandbox: bool = False,
-                 output_consumer: Any = None, shell_observation: bool = False):
+                 output_consumer: Any = None, shell_observation: bool = False, program_control: bool = False,
+                 bootstrap: Any = None):
         self.output_consumer = output_consumer
         self.process_id, self.tty = process_id, isinstance(tty, dict)
         self.lock, self.changed = threading.Lock(), threading.Condition(threading.Lock())
@@ -1356,10 +1382,17 @@ class ProcessRecord:
         self.terminate_lock = threading.Lock(); self.terminate_results: Dict[bool, Dict[str, Any]] = {}
         self.io_stopping = threading.Event(); self.write_cancelled = threading.Event()
         self.write_lane, self.resize_lane = InputLane(), InputLane()
+        self.program_control: Any = None; self.control_eof = False
+        self.control_changed = threading.Condition(); self.control_buffer = bytearray(); self.control_offset = 0
+        self.control_write_lane = InputLane(); self.control_write_lock = threading.Lock()
         self.reader_threads: List[threading.Thread] = []
+        self.bootstrap_directory: Any = None
         self.stdin: Any = None; self.stdout_stream: Any = None; self.stderr_stream: Any = None
         self.readers = 1 if self.tty else 2
         env = process_environment(supplied_env)
+        if bootstrap is not None:
+            env = {key: value for key, value in env.items()
+                   if key in ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL')}
         self.shell_observation = terminal_state_module().ShellObservation(argv, env) if shell_observation else None
         shell_fd = -1
         if self.shell_observation is not None:
@@ -1368,9 +1401,29 @@ class ProcessRecord:
             if shell_fd >= 0: inherited_fds += (shell_fd,)
         endpoint, remote_endpoint = socket.socketpair()
         self.control = SupervisorChannel(endpoint, self._supervisor_event)
-        slave: Optional[int] = None
+        slave: Optional[int] = None; payload_control: Any = None
         launch_fds: List[int] = []; payload_fds: Tuple[int, ...] = ()
         try:
+            if bootstrap is not None:
+                if not program_control or not isinstance(bootstrap, dict): raise RpcError('E_INVALID_PARAMS', 'bootstrap requires control pipe')
+                try: source = base64.b64decode(bootstrap.get('data', ''), validate=True)
+                except Exception: raise RpcError('E_INVALID_PARAMS', 'invalid bootstrap bytes')
+                if not source or len(source) > 524288 or hashlib.sha256(source).hexdigest() != bootstrap.get('sha256'):
+                    raise RpcError('E_INVALID_PARAMS', 'bootstrap size or digest mismatch')
+                if argv.count('__DSH_PTC_BOOTSTRAP__') != 1: raise RpcError('E_INVALID_PARAMS', 'missing bootstrap argument')
+                self.bootstrap_directory = tempfile.TemporaryDirectory(prefix='dsh-ptc-')
+                bootstrap_path = os.path.join(self.bootstrap_directory.name, 'process.mjs')
+                fd = os.open(bootstrap_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, 'wb') as stream: stream.write(source)
+                os.chmod(bootstrap_path, 0o400)
+                argv = [bootstrap_path if value == '__DSH_PTC_BOOTSTRAP__' else value for value in argv]
+                if inside_sandbox:
+                    split = argv.index('--')
+                    argv = argv[:split] + ['--ro-bind', self.bootstrap_directory.name, self.bootstrap_directory.name] + argv[split:]
+            if program_control:
+                self.program_control, payload_control = socket.socketpair()
+                self.program_control.setblocking(False)
+                inherited_fds += (payload_control.fileno(),)
             if self.tty:
                 master, slave = os.openpty(); self.master = master
                 os.set_blocking(master, False)
@@ -1390,11 +1443,13 @@ class ProcessRecord:
                       "--control-fd", str(remote_endpoint.fileno())]
             if self.tty: runner += ["--tty-master-fd", str(self.master)]
             if shell_fd >= 0: runner += ["--shell-state-fd", str(shell_fd)]
+            if payload_control is not None: runner += ['--program-control-fd', str(payload_control.fileno())]
             if inside_sandbox:
                 split = argv.index("--")
                 inner = [sys.executable, os.path.abspath(__file__), "supervise-exec", "--control-fd", "3"]
                 if self.tty: inner += ["--tty-master-fd", "4"]
                 inner += ["--stdio-fds", "5,6,7"]
+                if payload_control is not None: inner += ['--program-control-fd', '8']
                 # Bubblewrap preserves explicitly inherited descriptors. Do
                 # not add --preserve-fds: supported releases such as 0.6.1 do
                 # not recognize that option (it belongs to other runtimes).
@@ -1403,6 +1458,7 @@ class ProcessRecord:
                           str(remote_endpoint.fileno())]
                 if self.tty: runner += ["--tty-master-fd", str(self.master)]
                 runner += ["--stdio-fds", ",".join(str(fd) for fd in payload_fds)]
+                if payload_control is not None: runner += ['--program-control-fd', str(payload_control.fileno())]
                 runner += ["--"] + sandbox
             else: runner += ["--"] + argv
             if self.tty:
@@ -1433,11 +1489,18 @@ class ProcessRecord:
                 self._start_reader(self.stdout_stream.fileno(), "stdout")
                 self._start_reader(self.stderr_stream.fileno(), "stderr")
             if self.shell_observation is not None: self.shell_observation.launched()
+            if payload_control is not None:
+                payload_control.close(); payload_control = None
+                reader = threading.Thread(target=self._control_reader, daemon=True)
+                self.reader_threads.append(reader); reader.start()
             remote_endpoint.close(); self.control.start()
             if not self.ready.wait(15): raise RpcError("E_SUPERVISOR_TIMEOUT", "remote process startup timed out")
             if self.start_error is not None: raise self.start_error
             if self.pid <= 0: raise RpcError("E_SUPERVISOR_CLOSED", "remote process supervisor closed during startup")
         except Exception as exc:
+            if self.bootstrap_directory is not None: self.bootstrap_directory.cleanup()
+            if payload_control is not None: payload_control.close()
+            if self.program_control is not None: self.program_control.close()
             if self.shell_observation is not None: self.shell_observation.close()
             remote_endpoint.close(); self.control.close()
             self.io_stopping.set()
@@ -1473,6 +1536,63 @@ class ProcessRecord:
         elif event == "closed":
             self.supervisor_closed = True; self.ready.set()
             with self.changed: self.changed.notify_all()
+
+    def _control_reader(self) -> None:
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(self.program_control, selectors.EVENT_READ)
+            while not self.io_stopping.is_set():
+                with self.control_changed:
+                    if len(self.control_buffer) >= 524288:
+                        self.control_changed.wait(.1); continue
+                    remaining = 524288 - len(self.control_buffer)
+                if not selector.select(.1): continue
+                try: data = self.program_control.recv(min(65536, remaining))
+                except BlockingIOError: continue
+                if not data: break
+                with self.control_changed:
+                    self.control_buffer.extend(data); self.control_changed.notify_all()
+        except (OSError, ValueError): pass
+        finally:
+            selector.close()
+            with self.control_changed:
+                self.control_eof = True; self.control_changed.notify_all()
+
+    def read_control(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        if self.program_control is None: raise RpcError('E_NO_CONTROL', 'process has no control pipe')
+        try:
+            after = int(p.get('afterSeq', '0')); maximum = int(p.get('maxBytes', 65536)); wait = int(p.get('waitMs', 0))
+        except (ValueError, TypeError): raise RpcError('E_INVALID_PARAMS', 'invalid control cursor')
+        if not 1 <= maximum <= 65536 or not 0 <= wait <= 1000: raise RpcError('E_INVALID_PARAMS', 'invalid control read bounds')
+        with self.control_changed:
+            skip = after - self.control_offset
+            if skip < 0 or skip > len(self.control_buffer): raise RpcError('E_CURSOR', 'control cursor is stale or ahead')
+            del self.control_buffer[:skip]; self.control_offset = after; self.control_changed.notify_all()
+            if not self.control_buffer and not self.control_eof and wait: self.control_changed.wait(wait / 1000)
+            data = bytes(self.control_buffer[:maximum]); next_offset = after + len(data)
+            return {'data': base64.b64encode(data).decode(), 'nextSeq': str(next_offset),
+                    'eof': self.control_eof and len(data) == len(self.control_buffer)}
+
+    def write_control(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        if self.program_control is None: raise RpcError('E_NO_CONTROL', 'process has no control pipe')
+        try: data = base64.b64decode(p.get('data', ''), validate=True)
+        except Exception: raise RpcError('E_INVALID_PARAMS', 'invalid control bytes')
+        if len(data) > 65536: raise RpcError('E_INVALID_PARAMS', 'control chunk exceeds 64 KiB')
+        with self.control_write_lock:
+            selector = selectors.DefaultSelector(); sent = 0
+            try:
+                selector.register(self.program_control, selectors.EVENT_WRITE)
+                while sent < len(data):
+                    if self.write_cancelled.is_set(): raise RpcError('E_CONTROL_CLOSED', 'control write cancelled')
+                    if not selector.select(.05): continue
+                    try: count = self.program_control.send(data[sent:])
+                    except BlockingIOError: continue
+                    if count <= 0: raise RpcError('E_CONTROL_CLOSED', 'control channel closed')
+                    sent += count
+                if p.get('eof') is True: self.program_control.shutdown(socket.SHUT_WR)
+                return {'written': sent, 'eof': p.get('eof') is True}
+            except (OSError, ValueError): raise RpcError('E_CONTROL_CLOSED', 'control channel closed')
+            finally: selector.close()
 
     def _start_reader(self, fd: int, stream: str) -> None:
         thread = threading.Thread(target=self._reader_fd, args=(fd, stream), daemon=True)
@@ -1632,7 +1752,13 @@ class ProcessRecord:
             finally:
                 self.control.close()
                 if self.shell_observation is not None: self.shell_observation.close()
+                if self.bootstrap_directory is not None: self.bootstrap_directory.cleanup()
                 self.io_stopping.set()
+                if self.program_control is not None:
+                    try: self.program_control.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    self.program_control.close()
+                    with self.control_changed: self.control_changed.notify_all()
                 for reader in self.reader_threads: reader.join(0.5)
                 readers_stopped = all(not reader.is_alive() for reader in self.reader_threads)
                 if not readers_stopped: errors.append(RpcError("E_CLEANUP_TIMEOUT", "process output readers did not stop"))
@@ -2021,13 +2147,9 @@ def serve_protocol(input_stream: Any, output: Any, state: Optional[DaemonState] 
         if state is None and server is not None: server.close()
 
 
-def runtime_socket(explicit: Optional[str]) -> str:
+def runtime_socket_path(explicit: Optional[str]) -> str:
     if explicit:
-        path = os.path.abspath(explicit); base = os.path.dirname(path)
-        os.makedirs(base, mode=0o700, exist_ok=True); info = os.stat(base)
-        if info.st_uid != os.getuid() or statmod.S_IMODE(info.st_mode) & 0o077:
-            raise RpcError("E_PERMISSION_DENIED", "explicit socket directory must be owned by the user and mode 0700")
-        return path
+        return os.path.abspath(explicit)
     else:
         base = os.environ.get("DSH_REMOTE_HELPER_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR")
         if base: base = os.path.join(base, "dsh-remote-helper")
@@ -2037,9 +2159,157 @@ def runtime_socket(explicit: Optional[str]) -> str:
             suffix = hashlib.sha256(base.encode()).hexdigest()[:12]
             base = os.path.join("/tmp", f"dsh-rh-{os.getuid()}-{suffix}")
             path = os.path.join(base, "d-" + build_id() + ".sock")
-    os.makedirs(base, mode=0o700, exist_ok=True)
-    if os.stat(base).st_uid != os.getuid(): raise RpcError("E_PERMISSION_DENIED", "runtime directory has the wrong owner")
-    os.chmod(base, 0o700); return path
+    return path
+
+
+def private_runtime_roots() -> Any:
+    roots = set(PRIVATE_RUNTIME_ROOTS)
+    roots.add(os.path.realpath(os.path.dirname(runtime_socket_path(None))))
+    roots.add(os.path.realpath(os.path.join('/tmp', 'dsh-remote-helper-' + str(os.getuid()))))
+    return roots
+
+
+def deny_private_runtime_path(path: str) -> None:
+    candidate = os.path.realpath(path)
+    if any(candidate == root or candidate.startswith(root + os.sep) for root in private_runtime_roots()):
+        raise RpcError('E_PERMISSION_DENIED', 'helper control state is private')
+
+
+def runtime_socket(explicit: Optional[str]) -> str:
+    path = runtime_socket_path(explicit); base = os.path.dirname(path)
+    os.makedirs(base, mode=0o700, exist_ok=True); info = os.lstat(base)
+    if not statmod.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or statmod.S_IMODE(info.st_mode) & 0o077:
+        raise RpcError('E_PERMISSION_DENIED', 'socket directory must be a private user-owned directory')
+    PRIVATE_RUNTIME_ROOTS.add(os.path.realpath(base))
+    return path
+
+
+def transport_key(path: str, create: bool = False) -> bytes:
+    """Only the SSH-launched connector and daemon read this private credential.
+
+    No key is placed in argv, child environments or protocol messages. This
+    does not claim isolation from an unrestricted process with the same UID.
+    """
+    filename = path + '.auth'
+    if create and not os.path.lexists(filename):
+        temporary = filename + '.new-' + secrets.token_hex(16)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            key = secrets.token_bytes(32)
+            if os.write(fd, key) != len(key): raise RpcError('E_AUTH', 'helper credential write failed')
+            os.fsync(fd)
+            try: os.link(temporary, filename, follow_symlinks=False)
+            except FileExistsError: pass
+        finally: os.close(fd); os.unlink(temporary)
+    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not statmod.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or statmod.S_IMODE(info.st_mode) != 0o600 or info.st_size != 32:
+            raise RpcError('E_AUTH', 'unsafe helper credential file')
+        key = os.read(fd, 33)
+        if len(key) != 32: raise RpcError('E_AUTH', 'invalid helper credential file')
+        return key
+    finally: os.close(fd)
+
+
+def verify_socket_peer(client: socket.socket) -> None:
+    if hasattr(socket, 'SO_PEERCRED'):
+        _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    else:
+        # Darwin/BSD expose getpeereid through libc, not every Python build.
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        check = getattr(libc, 'getpeereid', None)
+        if check is None: raise RpcError('E_AUTH', 'peer credentials are unavailable')
+        uid_value, gid = ctypes.c_uint(), ctypes.c_uint()
+        check.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+        check.restype = ctypes.c_int
+        if check(client.fileno(), ctypes.byref(uid_value), ctypes.byref(gid)) != 0:
+            raise RpcError('E_AUTH', 'could not validate helper socket peer')
+        uid = uid_value.value
+    if uid != os.geteuid(): raise RpcError('E_AUTH', 'helper socket peer has a different uid')
+
+
+def auth_line(client: socket.socket, deadline: float) -> bytes:
+    data = bytearray()
+    while len(data) < 256:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: raise RpcError('E_AUTH', 'helper socket authentication timed out')
+        client.settimeout(remaining)
+        chunk = client.recv(1)
+        if not chunk: raise RpcError('E_AUTH', 'helper socket authentication ended')
+        data.extend(chunk)
+        if chunk == b'\n': return bytes(data[:-1])
+    raise RpcError('E_AUTH', 'invalid helper authentication frame')
+
+
+def authenticate_socket(client: socket.socket, key: bytes, server: bool) -> Tuple[bytes, bytes]:
+    verify_socket_peer(client); deadline = time.monotonic() + 5
+    digest = lambda value: hmac.new(key, value, hashlib.sha256).digest()
+    nonce = lambda value: len(value) == 64 and all(c in b'0123456789abcdef' for c in value)
+    if server:
+        server_nonce = secrets.token_hex(32).encode()
+        client.sendall(b'DSH-AUTH-1 ' + server_nonce + b'\n')
+        fields = auth_line(client, deadline).split(b' ')
+        if len(fields) != 2 or not nonce(fields[0]): raise RpcError('E_AUTH', 'helper socket authentication failed')
+        client_nonce, proof = fields
+        transcript = server_nonce + b':' + client_nonce
+        if not hmac.compare_digest(proof, digest(b'client:' + transcript).hex().encode()):
+            raise RpcError('E_AUTH', 'helper socket authentication failed')
+        client.sendall(b'OK ' + digest(b'server:' + transcript).hex().encode() + b'\n')
+    else:
+        greeting = auth_line(client, deadline)
+        if not greeting.startswith(b'DSH-AUTH-1 ') or not nonce(greeting[11:]):
+            raise RpcError('E_AUTH', 'helper socket does not support authenticated transport')
+        server_nonce = greeting[11:]; client_nonce = secrets.token_hex(32).encode()
+        transcript = server_nonce + b':' + client_nonce
+        client.sendall(client_nonce + b' ' + digest(b'client:' + transcript).hex().encode() + b'\n')
+        expected = b'OK ' + digest(b'server:' + transcript).hex().encode()
+        if not hmac.compare_digest(auth_line(client, deadline), expected):
+            raise RpcError('E_AUTH', 'helper socket server authentication failed')
+    client.settimeout(None)
+    outgoing, incoming = digest(b'server-record:' + transcript), digest(b'client-record:' + transcript)
+    return (outgoing, incoming) if server else (incoming, outgoing)
+
+
+class AuthenticatedReader:
+    """Bounded, directional, sequenced HMAC records on the local Unix hop.
+
+    SSH provides encryption on the external hop. These records authenticate
+    local traffic and reject tampering/replay; they are not encryption.
+    """
+    def __init__(self, stream: Any, key: bytes): self.stream, self.key, self.sequence = stream, key, 0
+    def exact(self, size: int, eof: bool = False) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < size:
+            data = self.stream.read(size - len(chunks))
+            if not data:
+                if eof and not chunks: return b''
+                raise RpcError('E_AUTH', 'authenticated helper record was truncated')
+            chunks.extend(data)
+        return bytes(chunks)
+    def readline(self, limit: int) -> bytes:
+        header = self.exact(12, True)
+        if not header: return b''
+        sequence, length = struct.unpack('!QI', header)
+        if sequence != self.sequence or length > min(limit, MAX_FRAME) or length < 1:
+            raise RpcError('E_AUTH', 'invalid authenticated helper record')
+        mac, data = self.exact(32), self.exact(length)
+        if not data.endswith(b'\n') or not hmac.compare_digest(mac, hmac.new(self.key, header + data, hashlib.sha256).digest()):
+            raise RpcError('E_AUTH', 'helper record authentication failed')
+        self.sequence += 1
+        return data
+
+
+class AuthenticatedWriter:
+    def __init__(self, stream: Any, key: bytes): self.stream, self.key, self.sequence = stream, key, 0
+    def write(self, data: bytes) -> None:
+        if not data or len(data) > MAX_FRAME or not data.endswith(b'\n'):
+            raise RpcError('E_AUTH', 'invalid authenticated helper record')
+        header = struct.pack('!QI', self.sequence, len(data))
+        self.stream.write(header + hmac.new(self.key, header + data, hashlib.sha256).digest() + data)
+        self.sequence += 1
+    def flush(self) -> None: self.stream.flush()
 
 
 def socket_connect(path: str) -> socket.socket:
@@ -2067,29 +2337,39 @@ def ensure_daemon(path: str) -> None:
 
 
 def proxy_stdio(path: str) -> int:
-    ensure_daemon(path); remote = socket_connect(path); remote.setblocking(False)
-    selector = selectors.DefaultSelector(); selector.register(remote, selectors.EVENT_READ); selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-    stdin_open = True
+    ensure_daemon(path); remote = socket_connect(path)
+    try: outgoing, incoming = authenticate_socket(remote, transport_key(path), False)
+    except BaseException:
+        remote.close(); raise
+    source, destination = remote.makefile('rb'), remote.makefile('wb')
+    reader, writer = AuthenticatedReader(source, incoming), AuthenticatedWriter(destination, outgoing)
+    def upload() -> None:
+        pending = bytearray()
+        try:
+            while True:
+                chunk = os.read(sys.stdin.fileno(), 65536)
+                if not chunk:
+                    if pending: raise RpcError('E_AUTH', 'incomplete helper request')
+                    remote.shutdown(socket.SHUT_WR); return
+                pending.extend(chunk)
+                while b'\n' in pending:
+                    line, _, rest = pending.partition(b'\n'); pending = bytearray(rest)
+                    writer.write(bytes(line) + b'\n'); writer.flush()
+                if len(pending) >= MAX_FRAME: raise RpcError('E_FRAME_TOO_LARGE', 'request exceeds 1 MiB')
+        except (OSError, RpcError, ValueError):
+            try: remote.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+    uploader = threading.Thread(target=upload, daemon=True); uploader.start()
     try:
         while True:
-            for key, _ in selector.select():
-                if key.fileobj is remote:
-                    try: data = remote.recv(65536)
-                    except BlockingIOError: continue
-                    if not data: return 0
-                    sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
-                else:
-                    data = os.read(sys.stdin.fileno(), 65536)
-                    if not data:
-                        selector.unregister(sys.stdin.buffer); stdin_open = False
-                        try: remote.shutdown(socket.SHUT_WR)
-                        except OSError: pass
-                    else:
-                        remote.setblocking(True)
-                        try: remote.sendall(data)
-                        finally: remote.setblocking(False)
-            if not stdin_open and state_closed(remote): return 0
-    finally: selector.close(); remote.close()
+            data = reader.readline(MAX_FRAME)
+            if not data: return 0
+            sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
+    finally:
+        try: remote.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        uploader.join(1)
+        source.close(); destination.close(); remote.close()
 
 
 def state_closed(sock: socket.socket) -> bool:
@@ -2098,7 +2378,7 @@ def state_closed(sock: socket.socket) -> bool:
 
 
 def run_daemon(path: str, idle_timeout: float) -> int:
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    path = runtime_socket(path); key = transport_key(path, create=True)
     try:
         old = os.lstat(path)
         if old.st_uid != os.getuid() or not statmod.S_ISSOCK(old.st_mode):
@@ -2123,9 +2403,11 @@ def run_daemon(path: str, idle_timeout: float) -> int:
                     with client:
                         streams = []
                         try:
+                            outgoing, incoming = authenticate_socket(client, key, True)
                             inp = client.makefile("rb"); streams.append(inp)
                             out = client.makefile("wb"); streams.append(out)
-                            serve_protocol(inp, out, state)
+                            serve_protocol(AuthenticatedReader(inp, incoming), AuthenticatedWriter(out, outgoing), state)
+                        except (OSError, RpcError, ValueError): pass
                         finally:
                             for stream in streams:
                                 try: stream.close()
@@ -2165,9 +2447,12 @@ class ProcessSupervisor:
     PTYs instead retain the real task's unreaped PID so its controlling session
     can end normally. Both prevent reuse rather than racing killpg(pgid, 0).
     """
-    def __init__(self, control_fd: int, tty_master_fd: Optional[int], shell_state_fd: Optional[int] = None):
+    def __init__(self, control_fd: int, tty_master_fd: Optional[int], shell_state_fd: Optional[int] = None,
+                 program_control_fd: Optional[int] = None):
         self.control = socket.socket(fileno=control_fd); self.tty = tty_master_fd is not None
         self.shell_fds = set() if shell_state_fd is None else {shell_state_fd}
+        self.program_control_fd = program_control_fd
+        if program_control_fd is not None: self.shell_fds.add(program_control_fd)
         self.tty_master_fd = tty_master_fd
         self.pid = 0; self.guardian = 0; self.guard_write = -1; self.code: Optional[int] = None
         self.group_owned = False; self.generation = 0; self.deadline: Optional[Tuple[int, float]] = None
@@ -2195,6 +2480,13 @@ class ProcessSupervisor:
                 close_fds_except({0, 1, 2, gate_read, error_write} | self.shell_fds)
                 if os.read(gate_read, 1) != b"1": os._exit(127)
                 os.close(gate_read)
+                if self.program_control_fd is not None:
+                    if error_write == 7:
+                        error_write = fcntl.fcntl(error_write, fcntl.F_DUPFD, 10)
+                        os.set_inheritable(error_write, False)
+                    os.dup2(self.program_control_fd, 7, inheritable=True)
+                    if self.program_control_fd != 7: os.close(self.program_control_fd)
+                    os.environ['DSH_SUBPROCESS_CONTROL'] = 'pipe'
                 for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGPIPE"):
                     signalmod.signal(getattr(signalmod, name), signalmod.SIG_DFL)
                 os.execvpe(argv[0], argv, os.environ)
@@ -2425,13 +2717,14 @@ class ProcessSupervisor:
         finally: selector.close()
 
 
-def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Optional[str], argv: List[str], shell_state_fd: Optional[int] = None) -> int:
+def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Optional[str], argv: List[str], shell_state_fd: Optional[int] = None,
+                   program_control_fd: Optional[int] = None) -> int:
     if argv and argv[0] == "--": argv = argv[1:]
     if stdio_fds is not None:
         for target, source in enumerate(int(value) for value in stdio_fds.split(",")):
             os.dup2(source, target)
         for fd in {int(value) for value in stdio_fds.split(",")}: os.close(fd)
-    supervisor = ProcessSupervisor(control_fd, tty_master_fd, shell_state_fd)
+    supervisor = ProcessSupervisor(control_fd, tty_master_fd, shell_state_fd, program_control_fd)
     try:
         if not argv: raise RpcError("E_INVALID_PARAMS", "process argv is empty")
         supervisor.start(argv); supervisor.run(); return 0
@@ -2450,12 +2743,13 @@ def run_supervised(control_fd: int, tty_master_fd: Optional[int], stdio_fds: Opt
         supervisor.control.close()
 
 
-def run_sandbox_exec(control_fd: int, tty_master_fd: Optional[int], stdio_fds: str, argv: List[str]) -> int:
+def run_sandbox_exec(control_fd: int, tty_master_fd: Optional[int], stdio_fds: str, argv: List[str], program_control_fd: Optional[int] = None) -> int:
     """Pass task I/O as extra FDs; bwrap's reaper retains only its DEVNULL stdio."""
     if argv and argv[0] == "--": argv = argv[1:]
     # Move bind descriptors before reserving 3/4 for control and the PTY master.
     mapping = [(control_fd, 3)] + ([] if tty_master_fd is None else [(tty_master_fd, 4)])
     mapping += [(int(fd), index + 5) for index, fd in enumerate(stdio_fds.split(","))]
+    if program_control_fd is not None: mapping += [(program_control_fd, 8)]
     reserved = {target for _, target in mapping}
     for index, value in enumerate(argv[:argv.index("--")]):
         if value == "--bind-fd" and int(argv[index + 1]) in reserved:
@@ -2488,14 +2782,16 @@ def main() -> int:
     daemon = sub.add_parser("daemon"); daemon.add_argument("--socket"); daemon.add_argument("--idle-timeout", type=float, default=600)
     pty_exec = sub.add_parser("pty-exec"); pty_exec.add_argument("--slave-fd", type=int, required=True); pty_exec.add_argument("argv", nargs=argparse.REMAINDER)
     supervised = sub.add_parser("supervise-exec"); supervised.add_argument("--control-fd", type=int, required=True); supervised.add_argument("--tty-master-fd", type=int); supervised.add_argument("--stdio-fds"); supervised.add_argument("--shell-state-fd", type=int); supervised.add_argument("argv", nargs=argparse.REMAINDER)
+    supervised.add_argument('--program-control-fd', type=int)
     sandbox_exec = sub.add_parser("sandbox-exec"); sandbox_exec.add_argument("--control-fd", type=int, required=True); sandbox_exec.add_argument("--tty-master-fd", type=int); sandbox_exec.add_argument("--stdio-fds", required=True); sandbox_exec.add_argument("argv", nargs=argparse.REMAINDER)
+    sandbox_exec.add_argument('--program-control-fd', type=int)
     version = sub.add_parser("version"); version.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "version":
         print(json.dumps({"version": VERSION, "buildId": build_id(), "protocol": {"min": 1, "max": 1}}) if args.json else VERSION); return 0
     if args.command == "pty-exec": return run_pty_exec(args.slave_fd, args.argv)
-    if args.command == "supervise-exec": return run_supervised(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv, args.shell_state_fd)
-    if args.command == "sandbox-exec": return run_sandbox_exec(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv)
+    if args.command == "supervise-exec": return run_supervised(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv, args.shell_state_fd, args.program_control_fd)
+    if args.command == "sandbox-exec": return run_sandbox_exec(args.control_fd, args.tty_master_fd, args.stdio_fds, args.argv, args.program_control_fd)
     if args.command == "daemon": return run_daemon(runtime_socket(args.socket), max(30, args.idle_timeout))
     if not args.stdio: parser.error("connect requires --stdio")
     if args.direct: serve_protocol(sys.stdin.buffer, sys.stdout.buffer); return 0
