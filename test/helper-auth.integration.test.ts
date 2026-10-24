@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='dsh-auth-') as root:
   try:child.wait(timeout=3)
   except subprocess.TimeoutExpired:child.kill();child.wait(timeout=3)
 `;
-  const result = await run('python3', ['-c', program, helper], { timeout: 12_000 });
+  const result = await run('python3', ['-c', program, helper], { timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   expect(JSON.parse(result.stdout)).toEqual({ unauthenticatedRejected: true });
 }, 15_000);
 
@@ -60,7 +60,7 @@ except m.RpcError as error:assert error.code=='E_AUTH'
 thread.join(2);left.close();right.close();assert key not in b''.join(seen)
 print(json.dumps({'mutual':True,'tamperingRejected':True,'replayRejected':True,'bounded':True,'forgedServerRejected':True}))
 `;
-  const result = await run('python3', ['-c', program, helper], { timeout: 12_000 });
+  const result = await run('python3', ['-c', program, helper], { timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   expect(JSON.parse(result.stdout)).toEqual({ mutual: true, tamperingRejected: true, replayRejected: true, bounded: true, forgedServerRejected: true });
 }, 15_000);
 
@@ -90,6 +90,6 @@ with tempfile.TemporaryDirectory(prefix='dsh-auth-paths-') as root:
  except OSError:pass
 print(json.dumps({'permissions':True,'privateNamespace':True,'symlinkRejected':True}))
 `;
-  const result = await run('python3', ['-c', program, helper], { timeout: 12_000 });
+  const result = await run('python3', ['-c', program, helper], { timeout: 12_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   expect(JSON.parse(result.stdout)).toEqual({ permissions: true, privateNamespace: true, symlinkRejected: true });
 }, 15_000);

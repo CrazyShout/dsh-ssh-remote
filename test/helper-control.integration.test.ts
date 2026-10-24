@@ -40,6 +40,6 @@ try:
   print(json.dumps({'lossless':True,'bounded':True,'replay':True,'isolated':True}))
 finally:server.close()
 `;
-  const result = await promisify(execFile)('python3', ['-c', program, helper], { timeout: 15_000 });
+  const result = await promisify(execFile)('python3', ['-c', program, helper], { timeout: 15_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   expect(JSON.parse(result.stdout)).toEqual({ lossless: true, bounded: true, replay: true, isolated: true });
 }, 20_000);

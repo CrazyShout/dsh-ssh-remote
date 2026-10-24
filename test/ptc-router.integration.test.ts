@@ -17,7 +17,7 @@ async function setup(options: Record<string, unknown> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-ptc-test-')));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const child = spawn('python3', [fileURLToPath(new URL('../helper/dsh_remote_helper.py', import.meta.url)), 'connect', '--stdio', '--direct'], {
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '--definitely-invalid-option' },
+    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '--definitely-invalid-option', PYTHONDONTWRITEBYTECODE: '1' },
   });
   const exited = once(child, 'exit');
   const client = new RemoteHelperRpcClient({ readable: child.stdout, writable: child.stdin });

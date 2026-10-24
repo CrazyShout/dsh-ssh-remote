@@ -97,7 +97,9 @@ jobs:
           test -z "$(git status --porcelain)"
 
   helper-python:
-    runs-on: ubuntu-latest
+    # Keep the promised Python 3.8/3.9 matrix on an image with official builds.
+    # ubuntu-latest moved to 26.04, which no longer has those setup-python assets.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
