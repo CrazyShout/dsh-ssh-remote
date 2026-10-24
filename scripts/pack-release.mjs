@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { loadHelperAsset } from '../lib/helper/installer.js';
 
 export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
-export const expectedHelperSha256 = '8bb08ba35d929bcc964eb9bc3af7dc390501e55e984f6e1e06b6220e453816d8';
+export const expectedHelperSha256 = 'c853353b330d790813fdd2a2d641c9a4738c6b96f50b53c2f4aa53acec31901f';
 
 function exportPaths(value) {
   if (typeof value === 'string') return [value.replace(/^\.\//u, '')];

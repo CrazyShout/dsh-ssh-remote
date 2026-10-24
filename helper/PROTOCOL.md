@@ -18,6 +18,11 @@ carry an increasing uint64 sequence, uint32 length, 32-byte MAC, and the JSONL
 payload. Length is checked before allocation and is capped at 1 MiB. This is
 authentication/integrity, **not encryption**; SSH encrypts the external hop.
 The helper filesystem and bwrap workloads cannot access the control directory.
+Trusted helper code is mapped read-only even when its installation is under
+`/tmp`, which workspace-write replaces. Filesystem RPCs cannot modify that code.
+Native DSH grep/glob exclude reserved `*.sock.auth` credentials; explicit roots
+are checked after remote realpath resolution so a symlink cannot bypass the
+credential guard. Ordinary search filtering and SSH stdout/exit status remain.
 Unrestricted same-UID programs and compromised account credentials are outside
 this boundary. Old helper builds remain old until their users disconnect.
 

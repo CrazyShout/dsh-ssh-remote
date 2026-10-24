@@ -1143,6 +1143,11 @@ class Server:
                     workspace_under_tmp = True
                     command += ["--dir", ws.path, "--bind-fd", "__DSH_WORKSPACE_FD__", ws.path]
                 else: command += ["--bind", ws.path, ws.path]
+            # The supervisor is trusted execution-plane code, not workspace
+            # payload. Keep it visible when /tmp is replaced (isolated SDKs
+            # may install it there) and read-only even inside a writable root.
+            helper_code = os.path.realpath(os.path.dirname(__file__))
+            command += ['--ro-bind', helper_code, helper_code]
             # Read-only mounts do not prevent connecting to a Unix socket.
             # Hide control credentials/listeners after all writable binds, even
             # when the selected workspace contains the runtime directory.
@@ -2171,7 +2176,8 @@ def private_runtime_roots() -> Any:
 
 def deny_private_runtime_path(path: str) -> None:
     candidate = os.path.realpath(path)
-    if any(candidate == root or candidate.startswith(root + os.sep) for root in private_runtime_roots()):
+    protected = private_runtime_roots() | {os.path.realpath(os.path.dirname(__file__))}
+    if any(candidate == root or candidate.startswith(root + os.sep) for root in protected):
         raise RpcError('E_PERMISSION_DENIED', 'helper control state is private')
 
 

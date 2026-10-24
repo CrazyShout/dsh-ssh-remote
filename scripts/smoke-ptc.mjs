@@ -18,11 +18,11 @@ const ssh = command => execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'Connec
 // Keep helper code outside /tmp, which workspace-write intentionally replaces.
 const root = ssh('mktemp -d "$HOME/.dsh-ptc-smoke.XXXXXXXX"').trim();
 assert.match(root, /^\/(?:[^/\0]+\/)*\.dsh-ptc-smoke\.[a-zA-Z0-9]{8}$/);
+ssh(`mkdir -m 700 ${quote(root + '/code')} ${quote(root + '/runtime')} ${quote(root + '/work')}`);
 execFileSync('scp', ['-q', ...['dsh_remote_helper.py', 'dsh_transfer.py', 'dsh_terminal_state.py'].map(name =>
-  fileURLToPath(new URL(`../helper/${name}`, import.meta.url))), `${alias}:${root}/`], { timeout: 30000 });
-ssh(`mkdir -m 700 ${quote(root + '/runtime')} ${quote(root + '/work')}`);
+  fileURLToPath(new URL(`../helper/${name}`, import.meta.url))), `${alias}:${root}/code/`], { timeout: 30000 });
 const socket = root + '/runtime/daemon.sock';
-const command = `DSH_REMOTE_HELPER_ALLOW_SHUTDOWN=1 python3 ${quote(root + '/dsh_remote_helper.py')} connect --stdio --socket ${quote(socket)}`;
+const command = `DSH_REMOTE_HELPER_ALLOW_SHUTDOWN=1 python3 ${quote(root + '/code/dsh_remote_helper.py')} connect --stdio --socket ${quote(socket)}`;
 const connections = [];
 let client;
 let router;

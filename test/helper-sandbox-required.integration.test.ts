@@ -9,7 +9,11 @@ const helper = fileURLToPath(new URL('../helper/dsh_remote_helper.py', import.me
 it.skipIf(process.env.DSH_REQUIRE_BWRAP !== '1')('requires real bwrap execution for restricted non-PTY and PTY tasks', () => {
   expect(process.platform, 'DSH_REQUIRE_BWRAP requires a Linux runner').toBe('linux');
   const program = String.raw`
-import base64,importlib.util,json,os,shlex,sys,tempfile,time
+import base64,importlib.util,json,os,shlex,shutil,sys,tempfile,time
+source=tempfile.TemporaryDirectory(prefix='dsh-helper-code-',dir='/tmp')
+for name in ('dsh_remote_helper.py','dsh_transfer.py','dsh_terminal_state.py'):
+ shutil.copyfile(os.path.join(os.path.dirname(sys.argv[1]),name),os.path.join(source.name,name))
+sys.argv[1]=os.path.join(source.name,'dsh_remote_helper.py')
 spec=importlib.util.spec_from_file_location('helper',sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 server=m.Server()
@@ -48,11 +52,14 @@ try:
   run('read-only',False,'if printf forbidden > proof; then exit 61; fi; printf restricted-readonly','restricted-readonly')
   for mode in ('read-only','workspace-write'):
    run(mode,False,'set -eu; test ! -e '+shlex.quote(socket_path+'.auth')+'; printf hidden-control-'+mode,'hidden-control-'+mode)
+   check="import os;assert os.statvfs("+repr(source.name)+").f_flag & os.ST_RDONLY"
+   run(mode,False,'set -eu; '+shlex.quote(sys.executable)+' -c '+shlex.quote(check)+'; printf readonly-code-'+mode,'readonly-code-'+mode)
   assert not os.path.exists(os.path.join(root,'proof'))
   marker.seek(0);assert marker.read()==b'host-only'
  print(json.dumps({'sandbox':'bwrap','workspaceWrite':True,'readOnly':True,'pty':True}))
 finally:
  server.close()
+ source.cleanup()
 `;
   const result = spawnSync('python3', ['-c', program, helper], {
     encoding: 'utf8', timeout: 40_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
