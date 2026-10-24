@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 0.13.1
+
+- 修复 #35：远程 `run_code` 复用当前 DSH 的官方 Node worker，将执行目录、Node 发现、bootstrap、独立 fd 7 控制通道和沙箱统一路由到同一 SSH/helper 会话。支持 0.2.1 的持久内存模式；保留官方工具回调、取消与权限策略，不回退本机或完全权限。
+- 修复 #36：Unix 控制连接在 hello/initialize 前进行双向挑战认证、对端 UID 检查及有界消息完整性/重放校验。文件 RPC 与受限进程隐藏控制凭据和监听目录。它不隔离同一 Unix 用户下的非受限恶意程序，也不替代外层 SSH 加密。
+- 原生搜索排除控制凭据，显式路径按远端真实路径检查，防止符号链接绕过；helper 代码单独只读挂载，修复 `/tmp` 安装在沙箱启动时被遮蔽的问题。
+- helper 更新为 0.13.1；旧 daemon 不会被原地修改或强制终止。保存工作后重载插件并重连；不应把仍存活的旧版本连接视为已修复。
+- 远端 `run_code` 需要支持 TypeScript stripping 的 Node（22.13+ 或较新版本）；受限模式仍需要 bubblewrap。不自动安装 Node、不修改 SSH/PATH 配置。其他文件与终端功能不新增 Node 前提。
+- Zod 更新到 4.6.6，修复 GHSA-mrhx-c7xc-m3w5；未扩大升级其他插件或 DSH 的范围。
+- English: remote PTC now uses the active official worker with a bounded lossless fd-7 bridge, matching remote cwd and sandbox, including owner-scoped persistent mode. Helper Unix transport authenticates both peers and rejects tampering/replay before dispatch. Restricted workloads cannot access the control namespace; unrestricted same-UID programs remain outside this boundary. Reconnect after loading helper 0.13.1; existing old daemons are not silently patched. Remote Node and bubblewrap requirements are explicit, with no installation or privilege fallback.
+
 ## 0.13.0
 
 - 连接设置、SSH 标识和工作台共用一个可见性门控的状态观察器；超时后的在途查询不叠加，操作完成后立即重新确认。

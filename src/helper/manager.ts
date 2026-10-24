@@ -147,7 +147,7 @@ export class RemoteHelperManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 20_000;
     this.clientName = options.clientName ?? 'dsh-ssh-remote';
-    this.clientVersion = options.clientVersion ?? '0.11.0';
+    this.clientVersion = options.clientVersion ?? '0.13.1';
     this.retentionMs = options.retentionMs ?? 120_000;
     this.aliasValidator = options.aliasValidator;
     this.random = options.random ?? Math.random;
@@ -907,6 +907,7 @@ const READ_ONLY_METHODS = new Set([
   'fs/read',
   'fs/readNext',
   'process/read',
+  'process/controlRead',
   'process/status',
   'process/inspectForeground',
 ]);
