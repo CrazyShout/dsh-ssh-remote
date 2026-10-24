@@ -170,7 +170,10 @@ export class UpdateStore {
             this.patch({ checking: false });
             clearTimeout(this.timer);
             if (this.visible && this.state.automatic)
-                this.timer = setTimeout(() => { void this.check(false); }, 6 * 60 * 60000);
+                // Match the Host's five-minute failure cache. A transient outage
+                // must not leave a visible error stuck for the six-hour success TTL.
+                this.timer = setTimeout(() => { void this.check(false); },
+                    this.state.error || this.state.release?.error ? 5 * 60000 : 6 * 60 * 60000);
         });
         this.checkTask = task;
         return task;

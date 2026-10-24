@@ -2,8 +2,10 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { UpdateAction, UpdateBadge, UpdateNotice, UpdateSection } from '../client/updates.js';
+import { UpdateAction, UpdateBadge, UpdateNotice, UpdateSection, updateFailureText } from '../client/updates.js';
 import { UpdateStore } from '../client/update-store.js';
+import { installLocale } from '../client/locale.js';
+import { localeFixture } from './locale-fixture.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const { createElement: h } = await import('react');
@@ -36,6 +38,24 @@ function button(label: string) { const b = [...element.querySelectorAll('button'
 async function click(label: string) { await act(async () => { button(label).click(); }); }
 
 describe('update entry and confirmation', () => {
+  it('localizes typed network diagnostics without guessing from raw error strings', () => {
+    const fixture = localeFixture(), dispose = installLocale(fixture.locale);
+    try {
+      fixture.change('en');
+      expect(updateFailureText({ latest: null, checkedAt: 1, error: '中文原始错误', failure: { kind: 'network', stage: 'manifest', code: 'ECONNRESET' } })).toBe('Cannot reach GitHub. The latest version has not been confirmed.');
+      expect(updateFailureText({ latest: null, checkedAt: 1, error: 'legacy Host error' })).toBe('legacy Host error');
+    } finally { dispose(); }
+  });
+  it('replaces an old failure with neutral progress while manually rechecking', async () => {
+    const s = await render({ error: 'offline' });
+    let finish!: (result: any) => void;
+    s.remote.check.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await click('检查更新');
+    expect(element.querySelector('[role=alert]')).toBeNull();
+    expect(element.textContent).toContain('正在检查');
+    await act(async () => finish({ ok: true, value: { latest: target, checkedAt: 2, error: '' } }));
+    expect(element.textContent).not.toContain('offline');
+  });
   it('does not say up to date when installed files are newer than the running code', async () => {
     await render({ installedVersion: '0.12.0' });
     expect(element.textContent).toContain('重新加载或重启后生效');

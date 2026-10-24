@@ -6,7 +6,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
 import { Button, Checkbox, Modal, Toast } from '@deepseek-ai/dsh-client-ui-primitives';
 import { GettingStarted } from './start-guide.js';
-import type { ReleaseTarget } from 'dsh-ssh-remote/updates';
+import type { ReleaseCheck, ReleaseTarget } from 'dsh-ssh-remote/updates';
+import { cardStyle, mutedStyle, rowStyle } from './presentation.js';
 import { UpdateStore, browserStorage } from './update-store.js';
 import { usePageVisible } from './workbench.js';
 interface Injected {
@@ -15,30 +16,50 @@ interface Injected {
 }
 type DetailProps = PropsRuntime<'plugins.detail.section'> & Injected;
 const mine = (props: Pick<DetailProps, 'subject'>) => props.subject.kind === 'bundle' && props.subject.pkg.name === 'dsh-ssh-remote';
-const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 };
+const hint = mutedStyle;
+export function updateFailureText(release: ReleaseCheck | undefined) {
+    if (!release?.failure) return release?.error || '';
+    switch (release.failure.kind) {
+        case 'network': return t('无法连接 GitHub，暂时无法确认最新版本。');
+        case 'timeout': return t('检查更新超时，暂时无法确认最新版本。');
+        case 'rate-limit': return t('GitHub 暂时限制了检查请求，请稍后重试。');
+        case 'http': return t('检查更新失败（HTTP {status}）。', { status: release.failure.httpStatus ?? '—' });
+        default: return t('发布信息校验失败，未提供更新安装。');
+    }
+}
 export function UpdateSection(props: DetailProps) {
     const state = useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);
     const [confirm, setConfirm] = useState<ReleaseTarget>();
     if (!mine(props))
         return null;
     const { info, release, operation } = state, available = props.updates.available();
-    const busy = props.updates.busy(), failure = state.error || release?.error;
+    const busy = props.updates.busy(), failure = state.error || updateFailureText(release);
     const latest = release?.latest;
     return <section aria-label={t('SSH 插件版本更新')} style={{ marginTop: 24, display: 'grid', gap: 12, minWidth: 0, fontSize: 13 }}>
     <GettingStarted />
-    <h4 style={{ margin: 0 }}>{t('版本更新')}</h4>
+    <div style={cardStyle}>
+    <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('版本更新')}</h4>
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
       <span>{t('当前运行 {version}', { version: info?.runningVersion || t('正在读取…') })}</span>
       {available && <strong>{t('可更新至 {version}', { version: available.version })}</strong>}
-      {!available && latest && info && !failure && <span style={hint}>{info.installedVersion === latest.version && info.runningVersion === latest.version ? t('已是最新稳定版') : t('最新稳定版 {value1}', { value1: latest.version })}</span>}
+      {!state.checking && !available && latest && info && !failure && <span style={hint}>{info.installedVersion === latest.version && info.runningVersion === latest.version ? t('已是最新稳定版') : t('最新稳定版 {value1}', { value1: latest.version })}</span>}
       {state.checking && <span role="status" style={hint}>{t('正在检查…')}</span>}
     </div>
     {info && info.runningVersion !== info.installedVersion && <p role="status" style={{ margin: 0 }}>{t('已安装 {version}，重新加载或重启后生效。', { version: info.installedVersion })}</p>}
-    {failure && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{failure}</p>}
-    {failure && <details style={hint}><summary>{t('更新排错建议')}</summary><p>{t('如果刚升级插件，请先保存工作并重启当前 DSH，再检查更新。其他错误请保留原始详情，在官方插件页核查；不会自动重装。')}</p></details>}
+    {!state.checking && failure && <div style={{ display: 'grid', gap: 8 }}>
+      <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{failure}</p>
+      <details style={hint}><summary style={{ cursor: 'pointer' }}>{t('更新排错建议')}</summary>
+        {release?.failure ? <>
+          <p>{t('失败阶段：{stage}', { stage: release.failure.stage === 'release' ? t('获取版本信息') : t('获取校验清单') })}{release.failure.code ? ` · ${release.failure.code}` : ''}</p>
+          <p>{t('检查由运行 DSH 的主机发起。需要代理时，请检查该主机的网络和 DSH 启动环境；不会修改系统代理或跳过证书校验。')}</p>
+          {state.automatic && <p>{t('页面可见时约 5 分钟后自动复查，也可点击“检查更新”。')}</p>}
+          {release.failure.kind === 'invalid-response' && <p>{release.error}</p>}
+        </> : <p>{t('如果刚升级插件，请先保存工作并重启当前 DSH，再检查更新。其他错误请保留原始详情，在官方插件页核查；不会自动重装。')}</p>}
+      </details>
+    </div>}
     {info?.sourceKind === 'development' && <p style={{ ...hint, margin: 0 }}>{t('当前使用源码链接，请使用 Git 同步。此处不会用安装包覆盖你的开发目录。')}</p>}
     {info?.sourceKind === 'unsupported' && <p style={{ ...hint, margin: 0 }}>{t('此安装来源不支持直接更新，请使用官方插件页安装固定版本。')}</p>}
-    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+    <div style={rowStyle}>
       {available && info?.sourceKind === 'release' && <Button variant="primary" disabled={busy} onClick={() => setConfirm(available)}>{t('更新到 {version}', { version: available.version })}</Button>}
       {latest && <a href={latest.url} target="_blank" rel="noreferrer" style={{ ...hint, color: 'var(--dsw-alias-label-link)' }}>{t('更新说明')}</a>}
     </div>
@@ -51,6 +72,7 @@ export function UpdateSection(props: DetailProps) {
     </div>}
     <Checkbox checked={state.automatic} onChange={checked => props.updates.setAutomatic(checked)} label={t('自动检查稳定版更新（每 6 小时）')}/>
     {release?.checkedAt && <span style={hint}>{t('上次检查：')}{formatDateTime(release.checkedAt)}</span>}
+    </div>
     <details style={{ ...hint, overflowWrap: 'anywhere' }}>
       <summary style={{ cursor: 'pointer' }}>{t('安装来源与更新说明')}</summary>
       <p>{t('只查询本项目的 GitHub Release，不上传会话、SSH 配置或项目内容。安装、依赖审批和是否需要重启由 DSH 判断。')}</p>

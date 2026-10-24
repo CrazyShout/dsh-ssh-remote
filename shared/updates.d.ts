@@ -21,6 +21,13 @@ export interface ReleaseCheck {
   checkedAt: number;
   latest: ReleaseTarget | null;
   error: string;
+  /** Sanitized transport diagnostics; never raw URLs, proxy credentials or response bodies. */
+  failure?: {
+    kind: 'network' | 'timeout' | 'rate-limit' | 'http' | 'invalid-response';
+    stage: 'release' | 'manifest';
+    code?: string;
+    httpStatus?: number;
+  };
 }
 export interface UpdatesRemote {
   info(): Promise<RemoteResult<UpdateInfo>>;

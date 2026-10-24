@@ -77,6 +77,35 @@ describe('bounded public release catalog', () => {
     const invalid = new ReleaseCatalog(vi.fn(async () => new Response(JSON.stringify({ tag_name: 'v0.12.1/../../evil', draft: false, prerelease: false }))));
     expect(await invalid.check(false)).toMatchObject({ latest: null, error: expect.stringContaining('稳定版') }); invalid.dispose();
   });
+  it('keeps the failed stage and standard error code without exposing transport secrets', async () => {
+    const { release } = fixtures();
+    const request = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(release)))
+      .mockRejectedValueOnce(new TypeError('fetch failed', { cause: Object.assign(new Error('proxy http://user:secret@private:9999'), { code: 'ECONNRESET' }) }));
+    const catalog = new ReleaseCatalog(request);
+    const answer = await catalog.check(true);
+    expect(answer).toMatchObject({ latest: null, failure: { kind: 'network', stage: 'manifest', code: 'ECONNRESET' } });
+    expect(JSON.stringify(answer)).not.toMatch(/secret|private|9999/u);
+    request.mockRejectedValueOnce(new Error('unexpected transport http://user:secret@private'));
+    expect(JSON.stringify(await catalog.check(true))).not.toMatch(/secret|private/u);
+    catalog.dispose();
+  });
+  it('distinguishes invalid metadata from transport failures and can recover manually', async () => {
+    const { release, manifest } = fixtures();
+    const request = vi.fn().mockResolvedValueOnce(new Response('not json: private-response'));
+    const catalog = new ReleaseCatalog(request);
+    expect(await catalog.check(true)).toMatchObject({ latest: null, failure: { kind: 'invalid-response', stage: 'release' } });
+    request.mockResolvedValueOnce(new Response(JSON.stringify(release))).mockResolvedValueOnce(new Response(JSON.stringify(manifest)));
+    expect(await catalog.check(true)).toMatchObject({ latest: target, error: '' });
+    catalog.dispose();
+  });
+  it('does not label every HTTP 403 as a GitHub rate limit', async () => {
+    const request = vi.fn().mockResolvedValueOnce(new Response('', { status: 403 }))
+      .mockResolvedValueOnce(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    const catalog = new ReleaseCatalog(request);
+    expect(await catalog.check(true)).toMatchObject({ failure: { kind: 'http', httpStatus: 403 } });
+    expect(await catalog.check(true)).toMatchObject({ failure: { kind: 'rate-limit', httpStatus: 403 } });
+    catalog.dispose();
+  });
 });
 
 describe('source and version policy', () => {
@@ -96,6 +125,24 @@ describe('source and version policy', () => {
 });
 
 describe('shared update controller', () => {
+  it('recovers a transient failure after five minutes, then returns to six-hour success checks', async () => {
+    vi.useFakeTimers(); const s = setup();
+    s.remote.check.mockResolvedValueOnce(ok({ checkedAt: Date.now(), latest: null, error: 'network unavailable' }) as never);
+    await ready(s); expect(s.remote.check).toHaveBeenCalledTimes(1);
+    expect(s.store.getSnapshot().release?.error).toBe('network unavailable');
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1); expect(s.remote.check).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); expect(s.remote.check).toHaveBeenCalledTimes(2);
+    expect(s.store.getSnapshot().release?.error).toBe(''); expect(s.store.available()).toEqual(target);
+    await vi.advanceTimersByTimeAsync(5 * 60_000); expect(s.remote.check).toHaveBeenCalledTimes(2);
+  });
+  it('does not recover in the background while hidden or opted out', async () => {
+    vi.useFakeTimers(); const s = setup();
+    s.remote.check.mockResolvedValue(ok({ checkedAt: Date.now(), latest: null, error: 'offline' }) as never);
+    await ready(s); s.store.setVisible(false);
+    await vi.advanceTimersByTimeAsync(10 * 60_000); expect(s.remote.check).toHaveBeenCalledTimes(1);
+    s.store.setVisible(true); await s.store.check(false); expect(s.remote.check).toHaveBeenCalledTimes(2);
+    s.store.setAutomatic(false); await vi.advanceTimersByTimeAsync(10 * 60_000); expect(s.remote.check).toHaveBeenCalledTimes(2);
+  });
   it('preserves a failed info response without guessing its type from text and permits a later retry', async () => {
     const s = setup(); s.remote.info.mockResolvedValueOnce({ ok: false, error: { message: 'transport failure: HTTP 404' } } as never);
     await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, error: '无法读取插件版本：transport failure: HTTP 404' });

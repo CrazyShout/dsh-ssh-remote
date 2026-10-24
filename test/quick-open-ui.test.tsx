@@ -25,6 +25,46 @@ async function render() {
   return { remote, container, root, open, close: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 describe('quick open interaction and native menu refresh', () => {
+  it('retains selected file identity after returning from preview and reordering the refreshed list', async () => {
+    vi.useFakeTimers(); const f = await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    const input = f.container.querySelector('[role=combobox]')!;
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    await act(async () => f.root.render(createElement(QuickOpenPane, { sessionId: 'a', remote: f.remote, open: f.open, active: false })));
+    f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [{ path: 'other.md', kind: 'file' }, { path: '中文 space.txt', kind: 'file' }] })));
+    await act(async () => f.root.render(createElement(QuickOpenPane, { sessionId: 'a', remote: f.remote, open: f.open, active: true })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    expect(f.container.querySelector('[aria-selected=true]')?.getAttribute('aria-label')).toBe('中文 space.txt');
+    await act(async () => f.container.querySelector<HTMLButtonElement>('footer button')!.click());
+    expect(f.open).toHaveBeenCalledExactlyOnceWith('中文 space.txt', true, expect.any(AbortSignal));
+    await f.close();
+  });
+  it('selects the last file for the first ArrowUp and removes Edit when that file disappears', async () => {
+    vi.useFakeTimers(); const f = await render();
+    f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [{ path: 'first.md', kind: 'file' }, { path: 'last.md', kind: 'file' }] })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    await act(async () => f.container.querySelector('[role=combobox]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })));
+    expect(f.container.querySelector('[aria-selected=true]')?.getAttribute('aria-label')).toBe('last.md');
+    f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [{ path: 'first.md', kind: 'file' }] })));
+    await act(async () => [...f.container.querySelectorAll('button')].find(button => button.textContent === '刷新索引')!.click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    expect(f.container.querySelector('footer button')).toBeNull(); expect(f.open).not.toHaveBeenCalled();
+    await f.close();
+  });
+  it('separates nested file names from directories while retaining the exact preview path', async () => {
+    vi.useFakeTimers(); const f = await render();
+    const path = '中文目录/long folder/report.md';
+    f.remote.query.mockResolvedValueOnce(ok(state({ candidates: [{ path, kind: 'file' }] })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(151); });
+    const option = f.container.querySelector<HTMLElement>('[role=option]')!;
+    expect(option.getAttribute('aria-label')).toBe(path);
+    expect(option.textContent).toContain('report.md');
+    expect(option.textContent).toContain('中文目录/long folder');
+    await act(async () => option.click());
+    expect(f.open).toHaveBeenCalledWith(path, false, expect.any(AbortSignal));
+    expect(f.container.querySelector('footer button')?.textContent).toBe('编辑');
+    await f.close();
+  });
   it('does not open a candidate when Enter confirms an IME composition', async () => {
     vi.useFakeTimers(); const f = await render();
     await act(async () => { await vi.advanceTimersByTimeAsync(151); });

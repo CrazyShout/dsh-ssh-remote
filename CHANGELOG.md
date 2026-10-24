@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 0.13.2
+
+- 修复更新失败后仍等待六小时的问题：自动检查开启且页面可见时，失败五分钟后重新检查；成功后恢复六小时间隔。手动检查继续立即发起，不增加循环安装或更换代理。
+- 更新诊断区分网络、超时、HTTP 限流和发布校验错误，显示失败阶段及脱敏错误码。再次检查时隐藏旧错误，保持“尚未确认”和“已是最新”状态准确；中英文同步。
+- 工作台窄面板使用全宽原生分区菜单，长主机名稳定省略；搜索列表分层显示文件名与父目录，帮助与编辑操作放在底部，减少查找文件时的干扰。继续复用官方文件预览、终端和安装器。
+- 修复从预览返回后刷新清除已选文件的问题：按路径而非列表序号保留选择，结果重排不误编辑其他文件；首次向上键正确选择最后一项。
+- 增加 DSH 0.2.1-rc.3 SDK 与实际安装包 CI，保留 0.2.0-rc.2 / 0.2.1-rc.2。真实 PTC 验收脚本支持正常登录 PATH 发现 Node，而非仅用显式二进制路径。
+- helper 保持 0.13.1 和原哈希；插件不自动修改远端 Node、PATH 或 SSH 配置。
+- English: retry visible automatic update checks five minutes after failure instead of waiting six hours; show sanitized, localized transport diagnostics and neutral recheck progress. Refine narrow workbench navigation and file-result hierarchy without replacing native workflows. Add the 0.2.1-rc.3 SDK/install CI matrix and default-login-PATH PTC smoke coverage. Helper content remains unchanged.
+
 ## 0.13.1
 
 - 修复 #35：远程 `run_code` 复用当前 DSH 的官方 Node worker，将执行目录、Node 发现、bootstrap、独立 fd 7 控制通道和沙箱统一路由到同一 SSH/helper 会话。支持 0.2.1 的持久内存模式；保留官方工具回调、取消与权限策略，不回退本机或完全权限。

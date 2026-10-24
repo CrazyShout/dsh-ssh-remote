@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 // Keep the release build pinned to the oldest supported SDK. Test newer SDKs
 // in a disposable source copy rather than rewriting the developer's lockfile.
 const version = process.argv[2];
-assert(['0.2.0-rc.2', '0.2.1-rc.2'].includes(version), 'Specify an explicitly supported DSH SDK');
+assert(['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3'].includes(version), 'Specify an explicitly supported DSH SDK');
 const source = fileURLToPath(new URL('../', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-sdk-check-')));
 const files = execFileSync('git', ['ls-files', '-z'], { cwd: source, encoding: 'utf8' }).split('\0').filter(Boolean);

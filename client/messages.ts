@@ -1,5 +1,16 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export const en = {
+  '无法连接 GitHub，暂时无法确认最新版本。': 'Cannot reach GitHub. The latest version has not been confirmed.',
+  '检查更新超时，暂时无法确认最新版本。': 'The update check timed out. The latest version has not been confirmed.',
+  'GitHub 暂时限制了检查请求，请稍后重试。': 'GitHub temporarily limited update checks. Try again later.',
+  '检查更新失败（HTTP {status}）。': 'Update check failed (HTTP {status}).',
+  '发布信息校验失败，未提供更新安装。': 'Release verification failed. No update is offered.',
+  '失败阶段：{stage}': 'Failed stage: {stage}',
+  '获取版本信息': 'Release metadata',
+  '获取校验清单': 'Checksum manifest',
+  '检查由运行 DSH 的主机发起。需要代理时，请检查该主机的网络和 DSH 启动环境；不会修改系统代理或跳过证书校验。': 'Checks run on the DSH host. If a proxy is required, check that host’s network and DSH launch environment. System proxy settings and certificate checks are left unchanged.',
+  '页面可见时约 5 分钟后自动复查，也可点击“检查更新”。': 'Checks resume in about 5 minutes while visible. You can also select Check for updates.',
+  '选择文件以预览': 'Select a file to preview',
   '远端端口暂不可达，请确认服务已启动。': 'The remote port is unavailable. Check that the service is running.',
   '远端端口状态尚未确认。': 'The remote port has not been confirmed yet.',
   '检查详情': 'Check details',

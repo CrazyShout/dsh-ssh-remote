@@ -6,7 +6,7 @@ on:
       version:
         description: Package version to release from main
         required: true
-        default: '0.13.1'
+        default: '0.13.2'
 
 permissions:
   contents: read
