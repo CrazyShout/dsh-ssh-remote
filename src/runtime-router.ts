@@ -213,17 +213,29 @@ function remoteArgv(cwd: SshUri, argv: readonly string[], resolveRemotePath?: Re
     || (options.includes('--json') && options.some(value => value.startsWith('--regexp=')))
   );
   if (!dshSearch) return rewritten;
+  const protect = (args: string[]): string[] => {
+    const end = args.indexOf('--');
+    // Native grep bypasses ctx.fs. Keep control credentials out of recursive
+    // results, and reject explicit paths after realpath so a workspace symlink
+    // cannot turn grep into a reader for the helper authentication key.
+    args.splice(end, 0, '--iglob=!*.sock.auth');
+    return ['python3', '-c',
+      "import os,sys; a=sys.argv[1:]; paths=a[a.index('--')+1:]; "
+      + "blocked=any(os.path.realpath(p).lower().endswith('.sock.auth') for p in paths); "
+      + "sys.exit('helper control credentials are private') if blocked else os.execvp(a[0],a)",
+      ...args];
+  };
   // In particular, pathless grep must search cwd, not the SSH stdin pipe.
-  if (separator === -1) return [...rewritten, '--', '.'];
-  if (separator === rewritten.length - 1) return [...rewritten, '.'];
-  return rewritten.map((value, index) => {
+  if (separator === -1) return protect([...rewritten, '--', '.']);
+  if (separator === rewritten.length - 1) return protect([...rewritten, '.']);
+  return protect(rewritten.map((value, index) => {
     if (index <= separator) return value;
     const mapped = isSshPath(value) ? value : resolveRemotePath?.(value);
     if (mapped === undefined) return value;
     const mappedUri = parseSshUri(mapped);
     if (!sameRemote(cwd, mappedUri)) throw new Error('remote ripgrep search root belongs to a different SSH host');
     return mappedUri.path;
-  });
+  }));
 }
 
 /** Build the local OpenSSH argv used for a remote process or terminal. */

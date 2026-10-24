@@ -128,9 +128,12 @@ describe('durable human transfers', () => {
     await expect(f.call('stat', { path: 'outside/file' })).rejects.toThrow();
   });
   it('loads the identical transfer extension from a standalone deployment bundle', async () => {
-    const f = await fixture(), bundle = join(f.root, 'standalone.py'); await writeFile(bundle, loadHelperAsset().content);
+    const f = await fixture(), code = join(f.root, 'code'); await mkdir(code);
+    const bundle = join(code, 'standalone.py'); await writeFile(bundle, loadHelperAsset().content);
     const next = await f.connect(bundle);
     expect(next.client.capabilities.transfers).toMatchObject({ version: 1, persistent: true, maxBytes: 2 ** 40 });
     expect(next.installation).toBe(f.installation);
+    await expect(next.client.call('workspace/open', { path: code, access: 'workspace-write',
+      workspaceId: 'control-code', operationId: 'open-control-code' })).rejects.toMatchObject({ code: 'E_PERMISSION_DENIED' });
   });
 });

@@ -8,6 +8,49 @@ whether a working Bubblewrap sandbox is available.
 
 ## Transport and lifecycle
 
+### Authenticated Unix hop and PTC control (helper 0.13.1)
+
+SSH stdio remains JSONL. The local Unix connector/daemon hop requires same-UID
+peer validation and mutual HMAC-SHA-256 challenges before the protocol hello.
+A private 32-byte credential (0600 in a 0700 directory) never enters argv, env or
+wire messages. Per-connection nonces derive directional record keys; records
+carry an increasing uint64 sequence, uint32 length, 32-byte MAC, and the JSONL
+payload. Length is checked before allocation and is capped at 1 MiB. This is
+authentication/integrity, **not encryption**; SSH encrypts the external hop.
+The helper filesystem and bwrap workloads cannot access the control directory.
+Trusted helper code is mapped read-only even when its installation is under
+`/tmp`, which workspace-write replaces. Filesystem RPCs cannot modify that code.
+Native DSH grep/glob exclude reserved `*.sock.auth` credentials; explicit roots
+are checked after remote realpath resolution so a symlink cannot bypass the
+credential guard. Ordinary search filtering and SSH stdout/exit status remain.
+Unrestricted same-UID programs and compromised account credentials are outside
+this boundary. Old helper builds remain old until their users disconnect.
+
+`process.controlPipe.version=1` permits non-PTY `process/start {control:"pipe"}`.
+The supervised payload receives a duplex fd 7 and the standard
+`DSH_SUBPROCESS_CONTROL=pipe` startup marker. This channel is independent of
+stdout/stderr, the supervisor and terminal-observation channels.
+
+- `process/controlRead {processId,afterSeq,maxBytes,waitMs}` returns base64 `data`,
+  byte cursor `nextSeq` and `eof`. The next request acknowledges received bytes;
+  a lost response can repeat its cursor. Reads are at most 64 KiB, waits 1 second,
+  retained bytes 512 KiB. A full buffer backpressures the worker without dropping
+  control frames. Stale/ahead cursors fail explicitly.
+- `process/controlWrite {processId,operationId,afterSeq,data,eof}` uses its own
+  sequenced input lane, one acknowledged mutation at a time, up to 64 KiB.
+  Exact retries return the receipt, not duplicate input; cancellation unblocks
+  writes. Process terminate/release remain the existing ownership primitives.
+- `process.ptcBootstrap.version=1` accepts `ptcBootstrap:{data,sha256}` on start,
+  capped at 512 KiB. One `__DSH_PTC_BOOTSTRAP__` argv entry is replaced with a
+  private temporary copy of the active official SDK asset, bound read-only in
+  bwrap and removed on release/start failure. No model code changes or second
+  runtime implementation are introduced. Worker startup environment is minimal.
+- `environment/resolveExecutable {nodePtc:true}` also verifies the remote Node's
+  `stripTypeScriptTypes` capability in the same selected login environment.
+
+These capabilities are optional. Older helpers fail clearly before a PTC
+program starts; neither local execution nor full-access fallback is permitted.
+
 ### Optional durable human transfers (helper 0.9.0)
 
 `capabilities.transfers = {version:1, persistent:true, maxBytes:1099511627776,

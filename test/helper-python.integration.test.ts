@@ -546,6 +546,7 @@ for failure in ('input-close','output-close','makefile'):
  m.socket.socket=lambda *args:Listener()
  m.threading.Thread=Thread
  m.DaemonState=State
+ m.authenticate_socket=lambda *args:(b'x'*32,b'y'*32)
  m.serve_protocol=lambda *args:None
  with tempfile.TemporaryDirectory() as root:
   m.run_daemon(os.path.join(root,'daemon.sock'),600)

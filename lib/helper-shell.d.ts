@@ -1,4 +1,5 @@
 import type { ShellExecutor, ShellProcess } from '@deepseek-ai/dsh-shell';
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemotePathResolver } from './runtime-router.js';
 /**
@@ -15,4 +16,5 @@ export declare class RemoteShellProcessTracker {
     track<T extends ShellProcess>(process: T): T;
     dispose(): Promise<void>;
 }
+export declare function resolveRemoteExecutionUri(path: string, policy: SandboxExecutionPolicy | undefined, resolveRemotePath: RemotePathResolver): string | undefined;
 //# sourceMappingURL=helper-shell.d.ts.map
