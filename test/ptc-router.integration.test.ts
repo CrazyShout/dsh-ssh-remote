@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { NodePtcRuntime } from '@deepseek-ai/dsh-ptc-runtime-node';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,10 +37,10 @@ async function setup(options: Record<string, unknown> = {}) {
     ...options,
   });
   const helpers = { client: async () => client };
-  const router = installRemotePtcRouter(runtime, ctx.fs, ctx.subprocess, ctx.sandbox, helpers,
+  const router = installRemotePtcRouter(ctx.ptcRuntime, ctx.fs, ctx.subprocess, ctx.sandbox, helpers,
     path => path === '/virtual-anchor' ? `ssh://fixture${root}` : undefined);
   cleanup.push(() => router.dispose());
-  const run = (program: string, options: Record<string, unknown> = {}) => runtime.run(runtime.resolve({
+  const run = (program: string, options: Record<string, unknown> = {}) => ctx.ptcRuntime.run(ctx.ptcRuntime.resolve({
     program, cwd: '/virtual-anchor', bindings: [], sandboxPolicy: policy, ...options,
   }));
   return { root, runtime, run, client, ctx, localSpawn, localResolve, router, helpers };
@@ -65,23 +65,37 @@ it('runs the unmodified official Node worker, remote file APIs and host binding 
 }, 20_000);
 
 it.skipIf(!('release' in NodePtcRuntime.prototype))('preserves official owner-scoped persistent state without crossing workspaces', async () => {
-  const { run, runtime, ctx } = await setup({ executionMode: 'persistent-in-memory' });
+  const { run, runtime, ctx, root } = await setup({ executionMode: 'persistent-in-memory' });
   const owner = {};
   const first = await run('var answer = 40; answer', { stateOwner: owner });
   expect(first.error).toBeUndefined(); expect(first.value).toBe(40);
   const second = await run('answer += 2; answer', { stateOwner: owner });
   expect(second.error).toBeUndefined(); expect(second.value).toBe(42);
+  await mkdir(join(root, 'subdir'));
+  const moved = await run('[answer, process.cwd()]', { stateOwner: owner, cwd: join(root, 'subdir') });
+  expect(moved.error).toBeUndefined(); expect(moved.value).toEqual([42, join(root, 'subdir')]);
   const callback = await run('await tools.lookup(1)', { stateOwner: owner,
     bindings: [{ global: 'tools', functions: { lookup: async () => ctx.subprocess.resolveExecutable('sh') } }],
   });
   expect(callback.value).toBe('/local/node');
   const isolated = await run('typeof answer', { stateOwner: {} });
   expect(isolated.error).toBeUndefined(); expect(isolated.value).toBe('undefined');
-  expect(() => run('answer', { stateOwner: owner, cwd: '/local-project' })).toThrow('workspace changed');
+  expect(() => run('answer', { stateOwner: owner, cwd: '/local-project',
+    sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/local-project' } })).toThrow('workspace changed');
   await (runtime as NodePtcRuntime & { release(owner: object): Promise<void> }).release(owner);
   const reset = await run('typeof answer', { stateOwner: owner });
   expect(reset.value).toBe('undefined');
 }, 20_000);
+
+it('routes execution-world cwd after the official working-directory service changes directory', async () => {
+  const { run, root, localSpawn } = await setup();
+  await mkdir(join(root, 'subdir'));
+  const result = await run('return process.cwd()', { cwd: join(root, 'subdir') });
+  expect(result.error).toBeUndefined(); expect(result.value).toBe(join(root, 'subdir'));
+  expect(localSpawn).not.toHaveBeenCalled();
+  expect(() => run('return 1', { cwd: '/tmp',
+    sandboxPolicy: { mode: 'workspace-write', workspaceRoot: '/virtual-anchor' } })).toThrow('workspace policy');
+}, 15_000);
 
 it('fails closed without remote confinement and bounds cancellation of an infinite program', async () => {
   const { run, client, localSpawn } = await setup();
@@ -119,6 +133,21 @@ it('quiesces a delayed remote launch before restoring local service methods on d
   await disposing;
   expect(result.error?.kind).toBe('abort');
   expect(localSpawn).not.toHaveBeenCalled();
+}, 15_000);
+
+it('reports cancellation, not cleanup failure, when a reserved start is retired before publishing', async () => {
+  const { run, client, helpers } = await setup();
+  const abort = new AbortController();
+  helpers.client = async () => ({ ...client, call: async (method: string, params: Record<string, unknown>, options: unknown) => {
+    if (method === 'process/start') {
+      abort.abort(new Error('cancel during allocation'));
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    return client.call(method, params, options as never);
+  } } as typeof client);
+  const result = await run('return 1', { signal: abort.signal });
+  expect(result.error?.kind).toBe('abort');
+  expect(await client.call('health/status')).toMatchObject({ processes: 0, workspaces: 0, openingWorkspaces: 0 });
 }, 15_000);
 
 it.skipIf(process.env.DSH_REQUIRE_BWRAP !== '1')('executes the official worker under real read-only and workspace-write policies', async () => {

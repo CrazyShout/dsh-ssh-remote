@@ -11,6 +11,7 @@ import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemoteHelperClient, RemoteHelperCallOptions } from './helper/rpc-client.js';
 import type { RemotePathResolver } from './runtime-router.js';
 import { parseSshUri } from './types.js';
+import { resolveRemoteExecutionUri } from './helper-shell.js';
 
 const BOOTSTRAP = '__DSH_PTC_BOOTSTRAP__';
 const CHUNK = 64 * 1024;
@@ -45,11 +46,12 @@ export function installRemotePtcRouter(
   const mapped = (path: string) => path.startsWith('ssh://') ? path : resolve(path);
 
   runtime.run = function (spec: PtcRunSpec) {
-    const uri = mapped(spec.cwd);
+    const uri = resolveRemoteExecutionUri(spec.cwd, spec.sandboxPolicy, resolve);
+    const rootUri = spec.sandboxPolicy === undefined ? undefined : mapped(spec.sandboxPolicy.workspaceRoot);
     if (disposed && uri !== undefined) throw new Error('remote PTC router is disposed');
     const ownerKey = (spec as PtcRunSpec & { stateOwner?: object }).stateOwner;
     if (ownerKey !== undefined) {
-      const identity = uri ?? `local:${spec.cwd}`;
+      const identity = uri === undefined ? `local:${spec.sandboxPolicy?.workspaceRoot ?? spec.cwd}` : rootUri ?? uri;
       const previous = owners.get(ownerKey);
       if (previous !== undefined && previous !== identity) throw new Error('PTC execution workspace changed; release the retained environment before reusing its owner');
       owners.set(ownerKey, identity);
@@ -60,7 +62,12 @@ export function installRemotePtcRouter(
     const mode = policy.mode;
     const owner = parseSshUri(uri);
     const signal = spec.signal === undefined ? lifetime.signal : AbortSignal.any([spec.signal, lifetime.signal]);
-    const rootUri = policy === undefined ? undefined : mapped(policy.workspaceRoot);
+    if (rootUri !== undefined) {
+      const authority = parseSshUri(rootUri);
+      if (authority.host !== owner.host || authority.user !== owner.user || authority.port !== owner.port) {
+        throw new Error('remote PTC cwd and workspace belong to different SSH hosts');
+      }
+    }
     const root = mode === 'danger-full-access' ? '/' : rootUri === undefined ? undefined : parseSshUri(rootUri);
     if (root === undefined || (typeof root !== 'string' && (
       root.host !== owner.host || root.user !== owner.user || root.port !== owner.port
@@ -198,11 +205,14 @@ class RemotePtcProcess implements SubprocessHandle {
     if (signal?.aborted) return false;
     let abort!: () => void;
     const aborted = new Promise<false>(resolve => { abort = () => resolve(false); signal?.addEventListener('abort', abort, { once: true }); });
+    const confirmed = () => {
+      if (!this.releaseConfirmed) throw new Error('remote process cleanup was not confirmed');
+      return true;
+    };
     try {
-      return await Promise.race([this.done.then(() => {
-        if (!this.releaseConfirmed) throw new Error('remote process cleanup was not confirmed');
-        return true;
-      }), aborted]);
+      // A cancelled allocation may reject done without ever publishing a
+      // process. Its acknowledged retirement still proves the range is empty.
+      return await Promise.race([this.done.then(confirmed, confirmed), aborted]);
     } finally { signal?.removeEventListener('abort', abort); }
   }
   private async writeControl(bytes: Buffer, eof: boolean): Promise<void> {
@@ -261,7 +271,7 @@ class RemotePtcProcess implements SubprocessHandle {
         } finally {
           if (opened) await this.call('workspace/close', { workspaceId: this.workspace, operationId: randomUUID() }, { mutation: true, timeoutMs: 5000 });
         }
-      }
+      } else this.releaseConfirmed = true; // No allocation was dispatched.
     }
   }
   private async readControl(): Promise<void> {

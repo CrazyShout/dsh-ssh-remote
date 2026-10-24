@@ -50,9 +50,9 @@ try {
     executionMode: persistent ? 'persistent-in-memory' : 'per-call',
     launch: { kind: 'node-script', executable: remoteNode } };
   const runtime = new NodePtcRuntime(ctx, config);
-  router = installRemotePtcRouter(runtime, ctx.fs, ctx.subprocess, ctx.sandbox, { client: async () => client },
+  router = installRemotePtcRouter(ctx.ptcRuntime, ctx.fs, ctx.subprocess, ctx.sandbox, { client: async () => client },
     path => path === '/isolated-anchor' ? `ssh://${alias}${root}/work` : undefined);
-  const run = (program, mode, bindings = [], extra = {}) => runtime.run(runtime.resolve({
+  const run = (program, mode, bindings = [], extra = {}) => ctx.ptcRuntime.run(ctx.ptcRuntime.resolve({
     program: persistent ? `await (async () => { ${program} })()` : program, cwd: '/isolated-anchor', bindings,
     sandboxPolicy: { mode, workspaceRoot: '/isolated-anchor' }, ...extra,
   }));
