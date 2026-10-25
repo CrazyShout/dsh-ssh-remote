@@ -8,11 +8,14 @@ import { NodePtcRuntime } from '@deepseek-ai/dsh-ptc-runtime-node';
 import { RemoteHelperRpcClient } from '../lib/helper/rpc-client.js';
 import { installRemotePtcRouter } from '../lib/ptc-router.js';
 
-const [alias, remoteNode] = process.argv.slice(2);
+const [alias, requestedNode = 'auto'] = process.argv.slice(2);
+// 'auto' uses the same login-shell discovery as a normal DSH run_code call.
+// An explicit path remains useful for testing an alternate installed runtime.
+const remoteNode = requestedNode === 'auto' ? 'node' : requestedNode;
 const persistent = process.argv[4] === 'persistent';
 if (persistent) assert.equal(typeof NodePtcRuntime.prototype.release, 'function');
 assert.match(alias ?? '', /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/);
-assert.ok(remoteNode?.startsWith('/') && !remoteNode.includes('\0'), 'Pass an existing remote Node executable');
+assert.ok(remoteNode === 'node' || (remoteNode.startsWith('/') && !remoteNode.includes('\0')), 'Pass auto or an existing remote Node executable');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const ssh = command => execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', alias, command], { encoding: 'utf8', timeout: 30000 });
 // Keep helper code outside /tmp, which workspace-write intentionally replaces.
@@ -27,7 +30,8 @@ const connections = [];
 let client;
 let router;
 let success = false;
-const report = { alias, node: ssh(`${quote(remoteNode)} --version`).trim(), checks: {} };
+const report = { alias, discovery: requestedNode === 'auto' ? 'login-PATH' : 'explicit',
+  node: ssh(`bash -lc ${quote(`${quote(remoteNode)} --version`)}`).trim(), checks: {} };
 async function connect(resumeToken) {
   const child = spawn('ssh', ['-o', 'BatchMode=yes', alias, command], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = once(child, 'exit'); child.stderr.on('data', data => process.stderr.write(data));

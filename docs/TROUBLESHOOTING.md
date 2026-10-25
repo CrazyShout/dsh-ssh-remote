@@ -114,6 +114,14 @@ Start with the first error, not the last generic hint. Check the running DSH pro
 - Restricted processes: require Linux and a usable bubblewrap runner. Human terminals retain the SSH account's permissions.
 - Old v0 history errors belong to DSH history conversion, not plugin installation.
 
+## 更新检查与远端 Node / Updates and remote Node
+
+- 更新检查在运行 DSH 的 **Host** 发起，不在浏览器或 SSH 远端发起。展开插件详情中的“更新排错建议”，区分版本元数据、校验清单，以及 `ECONNRESET` / `ENOTFOUND` / 超时 / HTTP 限流；不要通过关闭 TLS 校验解决。
+- 自动检查开启时，失败后在页面可见时约五分钟复查，成功后回到六小时间隔；关闭自动检查或隐藏页面不会继续轮询。手动“检查更新”跳过缓存。源码链接只检查，不被安装包覆盖。
+- `run_code` 需要远端登录环境中的 Node，Desktop 自带 Node 不能代替。先比较 `ssh devbox 'node --version'` 与 `ssh devbox 'bash -lc "node --version"'`。若 NVM 位于 `.bashrc` 的非交互提前返回之后，DSH 可能仍选中旧系统 Node。由用户选择已安装的新版本，并让其 bin 目录在对应 shell 的非交互 PATH 中可见；插件不自动改 shell 配置。
+- Update checks run on the DSH host, not in the browser or on the SSH server. Check the sanitized failure stage/code in plugin details and the host's proxy environment. TLS verification stays enabled. Failed visible automatic checks recover after five minutes; successful checks return to six hours.
+- Remote PTC needs Node on the remote login PATH. An NVM setup placed after Bash's noninteractive return may leave that PATH on an old system Node. Select a suitable installed runtime explicitly and check both SSH command and login-shell versions; this is not a reason to reinstall the plugin.
+
 ## Older DSH versions and installation failures
 
 If you must keep DSH `0.1.x`, preserve your existing working combination first.

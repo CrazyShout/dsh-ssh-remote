@@ -1,5 +1,16 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export declare const en: {
+    readonly '\u65E0\u6CD5\u8FDE\u63A5 GitHub\uFF0C\u6682\u65F6\u65E0\u6CD5\u786E\u8BA4\u6700\u65B0\u7248\u672C\u3002': "Cannot reach GitHub. The latest version has not been confirmed.";
+    readonly '\u68C0\u67E5\u66F4\u65B0\u8D85\u65F6\uFF0C\u6682\u65F6\u65E0\u6CD5\u786E\u8BA4\u6700\u65B0\u7248\u672C\u3002': "The update check timed out. The latest version has not been confirmed.";
+    readonly 'GitHub \u6682\u65F6\u9650\u5236\u4E86\u68C0\u67E5\u8BF7\u6C42\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002': "GitHub temporarily limited update checks. Try again later.";
+    readonly '\u68C0\u67E5\u66F4\u65B0\u5931\u8D25\uFF08HTTP {status}\uFF09\u3002': "Update check failed (HTTP {status}).";
+    readonly '\u53D1\u5E03\u4FE1\u606F\u6821\u9A8C\u5931\u8D25\uFF0C\u672A\u63D0\u4F9B\u66F4\u65B0\u5B89\u88C5\u3002': "Release verification failed. No update is offered.";
+    readonly '\u5931\u8D25\u9636\u6BB5\uFF1A{stage}': "Failed stage: {stage}";
+    readonly 获取版本信息: "Release metadata";
+    readonly 获取校验清单: "Checksum manifest";
+    readonly '\u68C0\u67E5\u7531\u8FD0\u884C DSH \u7684\u4E3B\u673A\u53D1\u8D77\u3002\u9700\u8981\u4EE3\u7406\u65F6\uFF0C\u8BF7\u68C0\u67E5\u8BE5\u4E3B\u673A\u7684\u7F51\u7EDC\u548C DSH \u542F\u52A8\u73AF\u5883\uFF1B\u4E0D\u4F1A\u4FEE\u6539\u7CFB\u7EDF\u4EE3\u7406\u6216\u8DF3\u8FC7\u8BC1\u4E66\u6821\u9A8C\u3002': "Checks run on the DSH host. If a proxy is required, check that host’s network and DSH launch environment. System proxy settings and certificate checks are left unchanged.";
+    readonly '\u9875\u9762\u53EF\u89C1\u65F6\u7EA6 5 \u5206\u949F\u540E\u81EA\u52A8\u590D\u67E5\uFF0C\u4E5F\u53EF\u70B9\u51FB\u201C\u68C0\u67E5\u66F4\u65B0\u201D\u3002': "Checks resume in about 5 minutes while visible. You can also select Check for updates.";
+    readonly 选择文件以预览: "Select a file to preview";
     readonly '\u8FDC\u7AEF\u7AEF\u53E3\u6682\u4E0D\u53EF\u8FBE\uFF0C\u8BF7\u786E\u8BA4\u670D\u52A1\u5DF2\u542F\u52A8\u3002': "The remote port is unavailable. Check that the service is running.";
     readonly '\u8FDC\u7AEF\u7AEF\u53E3\u72B6\u6001\u5C1A\u672A\u786E\u8BA4\u3002': "The remote port has not been confirmed yet.";
     readonly 检查详情: "Check details";

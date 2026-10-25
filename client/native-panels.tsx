@@ -11,7 +11,7 @@ import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-ui-conversati
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type {} from '@deepseek-ai/dsh-client-ui-session/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client';
-import { Button, Menu, SegmentedTabs, Tooltip, PathLabel, IconGlobeOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import { Button, Menu, SegmentedTabs, Tooltip, PathLabel, IconGlobeOutlineRegular, IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { RemoteWorkspaceInfo } from './typert.remote-client.js';
 type InfoResult = {
     ok: true;
@@ -282,23 +282,23 @@ export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & 
     return <section ref={container} aria-label={t('远程工作台')} className="dsh-ssh-workbench" style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden', color: 'var(--dsw-alias-label-primary)', fontSize: 13 }}>
     <style>{`.dsh-ssh-workbench *{box-sizing:border-box}.dsh-ssh-workbench textarea,.dsh-ssh-workbench select{font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;max-width:100%;min-width:0}.dsh-ssh-workbench textarea,.dsh-ssh-workbench select{padding:8px}.dsh-ssh-workbench small,.dsh-ssh-workbench summary{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-ssh-workbench summary{cursor:pointer}.dsh-ssh-workbench [role=alert]{color:var(--dsw-alias-label-error);overflow-wrap:anywhere}.dsh-ssh-workbench progress{width:100%;height:5px;accent-color:var(--dsw-alias-brand-primary,#4d7fff)}`}</style>
     {info ? <>
-      <header style={{ padding: '16px 16px 12px', display: 'grid', gap: 8, borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
+      <header style={{ padding: '16px 16px 12px', display: 'grid', gap: 12, borderBottom: '1px solid var(--dsw-alias-border-l2)', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <IconGlobeOutlineRegular size={16}/>
-          <strong title={info.alias} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>SSH · {info.alias}</strong>
+          <span style={{ display: 'flex', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' }}><IconGlobeOutlineRegular size={18}/></span>
+          <strong title={info.alias} style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, fontWeight: 600 }}>SSH · {info.alias}</strong>
           <Tooltip label={statusTooltip(info, status)} side="bottom" align="end" portal maxWidth={360} delayMs={300}>
             <small role="status" tabIndex={0} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <StatusDot status={status}/>{status.label}
             </small>
           </Tooltip>
         </div>
-        <PathLabel path={info.remotePath} style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}/>
+        <PathLabel path={info.remotePath} style={{ color: 'var(--dsw-alias-label-secondary)', fontSize: 12, minWidth: 0 }}/>
         {width >= 520
                 ? <SegmentedTabs label={t('远程工作台分区')} items={tabs as [
                         typeof tabs[number],
                         ...typeof tabs
                     ]} value={selected} onChange={choose}/>
-                : <Menu open={menu} onClose={() => setMenu(false)} selectedId={selected} items={sections.map(section => ({ id: section.id, label: section.title }))} onSelect={id => choose(id as typeof selected)} anchor={<Button size="sm" variant="outline" aria-label={t('选择工作台分区')} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>{sections.find(section => section.id === selected)!.title} ▾</Button>}/>}
+                : <Menu open={menu} onClose={() => setMenu(false)} selectedId={selected} items={sections.map(section => ({ id: section.id, label: section.title }))} onSelect={id => choose(id as typeof selected)} anchor={<Button size="sm" variant="outline" aria-label={t('选择工作台分区')} aria-haspopup="menu" aria-expanded={menu} style={{ width: '100%', justifyContent: 'space-between', gap: 8 }} onClick={() => setMenu(!menu)}><span>{sections.find(section => section.id === selected)!.title}</span><IconChevronDownOutlineRegular size={16}/></Button>}/>}
       </header>
       {sections.map(section => <div key={section.id} id={`${tab.id}-panel-${section.id}`} role="tabpanel" aria-label={section.title} aria-labelledby={width >= 520 ? `${tab.id}-tab-${section.id}` : undefined} hidden={selected !== section.id} style={{ flex: 1, minHeight: 0, overflow: 'auto', display: selected === section.id ? 'block' : 'none' }}>
         {props.workbench.render(section.id, { ...props, active: visible && selected === section.id })}

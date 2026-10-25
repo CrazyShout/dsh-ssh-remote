@@ -143,6 +143,13 @@ const releaseCheckSchema = { parse(value: unknown) {
   const row = object(value, 'release check');
   if (typeof row.checkedAt !== 'number') throw new Error('invalid check timestamp');
   stringSchema.parse(row.error);
+  if (row.failure !== undefined) {
+    const failure = object(row.failure, 'release diagnostic');
+    if (!['network', 'timeout', 'rate-limit', 'http', 'invalid-response'].includes(String(failure.kind))
+      || !['release', 'manifest'].includes(String(failure.stage))) throw new Error('invalid release diagnostic');
+    if (failure.code !== undefined) stringSchema.parse(failure.code);
+    if (failure.httpStatus !== undefined && !Number.isInteger(failure.httpStatus)) throw new Error('invalid release HTTP status');
+  }
   if (row.latest !== null) {
     const latest = object(row.latest, 'release');
     for (const key of ['version', 'url', 'packageUrl', 'publishedAt', 'sha256']) stringSchema.parse(latest[key]);

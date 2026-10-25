@@ -73,7 +73,9 @@ const updateInfo = z.object({ profileId: string, runningVersion: string, install
   sourceKind: z.enum(['release', 'development', 'unsupported']), enabled: z.boolean() });
 const releaseTarget = z.object({ version: string, url: string, packageUrl: string, publishedAt: string,
   sha256: string, testedDshVersions: z.array(string) });
-const releaseCheck = z.object({ checkedAt: z.number(), latest: releaseTarget.nullable(), error: string });
+const releaseCheck = z.object({ checkedAt: z.number(), latest: releaseTarget.nullable(), error: string,
+  failure: z.object({ kind: z.enum(['network', 'timeout', 'rate-limit', 'http', 'invalid-response']),
+    stage: z.enum(['release', 'manifest']), code: string.optional(), httpStatus: z.number().optional() }).optional() });
 
 /** Deterministic host-face descriptor discovered through package export ./typert. */
 export const TYPERT = {

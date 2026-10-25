@@ -13,7 +13,7 @@ import { Button, Input, FileTypeIcon, Checkbox, PathLabel } from '@deepseek-ai/d
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path';
 import type { EditorBridge, FileIndexResult, FileIndexStatus, FileSearchRemote } from './file-search-types.js';
 import './file-search-schema.js';
-import { panelStyle } from './presentation.js';
+import { panelStyle, mutedStyle, rowStyle } from './presentation.js';
 const KIND = 'ssh-quick-open';
 const ID = 'dsh-ssh-remote.quick-open';
 export function safePreviewPath(path: string): string {
@@ -109,9 +109,8 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
     const visible = usePageVisible(active);
     const composing = useRef(false);
     const listId = useId();
-    const [selected, setSelected] = useState(-1);
+    const [selectedPath, setSelectedPath] = useState<string>();
     const list = useRef<HTMLDivElement>(null);
-    useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }); }, [selected]);
     const [query, setQuery] = useState('');
     const [ignored, setIgnored] = useState(false);
     const [revision, setRevision] = useState(0);
@@ -125,7 +124,7 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
     const queryKey = JSON.stringify([sessionId, query, ignored]);
     const lifetime = useRef(new AbortController());
     useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, [sessionId]);
-    useEffect(() => { setQuery(''); setIgnored(false); setResult(undefined); setStatus(undefined); setError(''); }, [sessionId]);
+    useEffect(() => { setQuery(''); setIgnored(false); setSelectedPath(undefined); setResult(undefined); setStatus(undefined); setError(''); }, [sessionId]);
     useEffect(() => {
         if (!visible)
             return;
@@ -147,7 +146,6 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
                 }
                 setResult({ key: queryKey, value: response.value });
                 setStatus(response.value);
-                setSelected(-1);
             }, error => {
                 if (live)
                     setError(String(error));
@@ -213,7 +211,12 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
         }
     };
     const current = result?.key === queryKey && result.value.sessionId === sessionId ? result.value : undefined;
-    return <section aria-label={t('远程快速打开')} style={panelStyle}>
+    // A visibility refresh can reorder the results. Keep the chosen identity,
+    // not its old row index; returning from preview must not lose the Edit action.
+    const selected = current?.candidates.findIndex(candidate => candidate.path === selectedPath) ?? -1;
+    useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }); }, [selected]);
+    return <section aria-label={t('远程快速打开')} style={{ ...panelStyle, gap: 12 }}>
+    <style>{'.dsh-ssh-workbench .dsh-ssh-file-option:hover{background:var(--dsw-alias-bg-hover,rgba(128,128,128,.08))}'}</style>
     <form onSubmit={event => { event.preventDefault(); if (!composing.current) choose(query); }} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 6, minWidth: 0 }}>
       <Input aria-label={t('搜索远程文件')} role="combobox" aria-autocomplete="list"
         aria-expanded={Boolean(current?.candidates.length)} aria-controls={listId}
@@ -221,18 +224,20 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
         value={query} placeholder={t('文件名或完整路径')}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { composing.current = false; }}
-        onChange={event => { setQuery(event.target.value); setSelected(-1); }}
+        onChange={event => { setQuery(event.target.value); setSelectedPath(undefined); }}
         onKeyDown={event => {
             if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229)
                 return;
             const candidates = current?.candidates ?? [];
             if (event.key === 'Escape') {
                 event.preventDefault();
-                setSelected(-1);
+                setSelectedPath(undefined);
             }
             else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault();
-                setSelected(index => candidates.length ? (index + (event.key === 'ArrowDown' ? 1 : -1) + candidates.length) % candidates.length : -1);
+                const next = selected < 0 ? (event.key === 'ArrowDown' ? 0 : candidates.length - 1)
+                    : (selected + (event.key === 'ArrowDown' ? 1 : -1) + candidates.length) % candidates.length;
+                setSelectedPath(candidates[next]?.path);
             }
             else if (event.key === 'Enter') {
                 event.preventDefault();
@@ -253,12 +258,11 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
         }} style={{ width: '100%', minWidth: 0 }}/>
       <Button type="submit" disabled={!query}>{t('按路径预览')}</Button>
     </form>
-    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+    <div style={{ ...rowStyle, justifyContent: 'space-between' }}>
       <Checkbox checked={ignored} onChange={setIgnored} label={t('包含忽略项')}/>
       <Button size="sm" variant="ghost" onClick={() => void refresh()}>{t('刷新索引')}</Button>
     </div>
-    <details><summary>{t('搜索帮助')}</summary><small>{t('方向键选择，Enter 预览，Escape 取消选择。默认只读；编辑保留草稿保护。包含忽略项仅影响本次搜索，不改变 @ 补全。')}</small></details>
-    <div role="status" style={{ fontSize: 12, overflowWrap: 'anywhere' }}>
+    <div role="status" style={mutedStyle}>
       {pending ? (current ? t('正在更新，以下为旧结果（可能过期）…') : t('正在搜索远程文件…')) : status?.state === 'error' ? t('索引暂不可用') : ''}
       {!pending && status?.stale && t(' 结果已过期。')}
       {!pending && status && t(' 已索引 {value1} 项{value2}', { value1: status.count, value2: status.complete ? '' : t('（索引不完整，未命中不代表不存在）') })}
@@ -266,18 +270,23 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
     </div>
     {!pending && status?.message && <details><summary>{t('索引详情')}</summary><small>{status.message}</small></details>}
     {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', overflowWrap: 'anywhere' }}>{error}</div>}
-    <div ref={list} id={listId} role="listbox" aria-label={t('远程文件搜索结果')} style={{ flex: 1, minHeight: 100, overflow: 'auto' }}>
-      {current?.candidates.map((candidate, index) => <div role="option" id={`${listId}-${index}`} aria-selected={selected === index} key={candidate.path} title={candidate.path} onClick={() => { setSelected(index); candidate.kind === 'directory' ? setQuery(`${candidate.path}/`) : choose(candidate.path); }} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '10px 8px', borderRadius: 8,
-                background: selected === index ? 'var(--dsw-alias-bg-hover,rgba(128,128,128,.12))' : undefined }}>
+    <div ref={list} id={listId} role="listbox" aria-label={t('远程文件搜索结果')} style={{ flex: 1, minHeight: 100, overflow: 'auto', borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 }}>
+      {current?.candidates.map((candidate, index) => <div role="option" id={`${listId}-${index}`} aria-selected={selected === index} aria-label={candidate.path} key={candidate.path} title={candidate.path} onClick={() => { setSelectedPath(candidate.path); candidate.kind === 'directory' ? setQuery(`${candidate.path}/`) : choose(candidate.path); }} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '10px 8px', borderRadius: 8,
+                background: selected === index ? 'var(--dsw-alias-bg-hover,rgba(128,128,128,.12))' : undefined }} className="dsh-ssh-file-option">
         <span style={{ flexShrink: 0, display: 'flex' }}>{candidate.kind === 'directory' ? <FileTypeIcon kind="folder" size={18}/> : <FileTypeIcon path={candidate.path} size={18}/>}</span>
-        <PathLabel path={candidate.path} style={{ flex: 1, minWidth: 0 }}/>
+        <span style={{ display: 'grid', gap: 2, minWidth: 0, flex: 1 }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>{candidate.path.split('/').filter(Boolean).at(-1)}</span>
+          {candidate.path.includes('/') && <PathLabel path={candidate.path.slice(0, candidate.path.lastIndexOf('/')) || '/'} style={{ ...mutedStyle, minWidth: 0 }}/>}</span>
       </div>)}
     </div>
     {!pending && current?.candidates.length === 0 && <p>{status?.complete ? t('当前搜索没有匹配项。') : t('暂未发现匹配项；可输入完整路径直接预览。')}</p>}
-    {selected >= 0 && current?.candidates[selected]?.kind === 'file' && <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <footer style={{ display: 'grid', gap: 8, paddingTop: 10, borderTop: '1px solid var(--dsw-alias-border-l2)' }}>
+    {selected >= 0 && current?.candidates[selected]?.kind === 'file' ? <div style={rowStyle}>
       <Button size="sm" variant="outline" onClick={() => choose(current.candidates[selected].path, true)}>{t('编辑')}</Button>
       <PathLabel path={current.candidates[selected].path} style={{ fontSize: 12, flex: 1 }}/>
-    </div>}
+    </div> : <span style={mutedStyle}>{t('选择文件以预览')}</span>}
+    <details><summary>{t('搜索帮助')}</summary><small>{t('方向键选择，Enter 预览，Escape 取消选择。默认只读；编辑保留草稿保护。包含忽略项仅影响本次搜索，不改变 @ 补全。')}</small></details>
+    </footer>
   </section>;
 }
 /** Only the public menu refresh API is called: never mutate input/caret or reopen. */

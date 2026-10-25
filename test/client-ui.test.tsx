@@ -22,6 +22,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
     IconFolderCloseRegular: () => null,
     IconPlusOutlineRegular: () => null,
     IconGlobeOutlineRegular: () => null,
+    IconChevronDownOutlineRegular: () => null,
     IconDownloadOutlineRegular: () => null,
     IconSearchOutlineRegular: () => null,
     IconLinkOutlineRegular: () => null,

@@ -17,7 +17,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
         node: [22, 24]
-        dsh: ['0.2.0-rc.2', '0.2.1-rc.2']
+        dsh: ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +49,10 @@ jobs:
 
   next-sdk:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh: ['0.2.1-rc.2', '0.2.1-rc.3']
     env:
       DSH_REQUIRE_FISH: '1'
     steps:
@@ -57,7 +61,7 @@ jobs:
         with:
           node-version: 24
       - run: sudo apt-get update && sudo apt-get install --yes ripgrep fish tcsh zsh
-      - run: node scripts/check-dsh-sdk.mjs 0.2.1-rc.2
+      - run: node scripts/check-dsh-sdk.mjs '${{ matrix.dsh }}'
 
   windows-skills:
     # Verify Windows host path handling without claiming a full Windows SSH/UI run.
