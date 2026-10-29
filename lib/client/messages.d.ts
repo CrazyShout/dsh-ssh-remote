@@ -1,5 +1,25 @@
 /** Source-message keys keep copy reviewable; DSH owns language selection and fallback. */
 export declare const en: {
+    readonly '\u4E0A\u6B21\u66F4\u65B0\u8BB0\u5F55\u65E0\u6CD5\u8BFB\u53D6\u3002\u8BF7\u6838\u5BF9\u5F53\u524D\u7248\u672C\uFF0C\u5E76\u5728\u5B98\u65B9\u63D2\u4EF6\u9875\u5904\u7406\u3002': "The previous update record cannot be read. Check the current version and use the official plugin page.";
+    readonly 'DSH \u4E2D\u5DF2\u627E\u4E0D\u5230\u8FD9\u6B21\u5B89\u88C5\u8BF7\u6C42\u3002\u5F53\u524D\u7248\u672C\u5DF2\u91CD\u65B0\u8BFB\u53D6\u3002': "DSH no longer has this installation request. The current version has been checked again.";
+    readonly 当前安装信息未确认: "Current installation not confirmed";
+    readonly '\u5DF2\u5B89\u88C5 {version}\uFF0C\u6B63\u5728\u786E\u8BA4\u662F\u5426\u751F\u6548\u3002': "Installed {version}; checking activation.";
+    readonly '\u66F4\u65B0\u672A\u5B8C\u6210\u3002': "The update did not finish.";
+    readonly 更新详情: "Update details";
+    readonly '\u5904\u7406\u9636\u6BB5\uFF1A{stage}': "Stage: {stage}";
+    readonly '\u5B98\u65B9\u5B89\u88C5\u65E5\u5FD7\uFF1A': "Official installation log:";
+    readonly 复制日志路径: "Copy log path";
+    readonly '\u5DF2\u590D\u5236\u65E5\u5FD7\u8DEF\u5F84\u3002': "Log path copied.";
+    readonly '\u526A\u8D34\u677F\u4E0D\u53EF\u7528\uFF0C\u8BF7\u624B\u52A8\u590D\u5236\u8DEF\u5F84\u3002': "Clipboard unavailable. Copy the path manually.";
+    readonly 结束这次提示: "Dismiss this notice";
+    readonly '\u7ED3\u675F\u8FD9\u6B21\u63D0\u793A\uFF1F': "Dismiss this notice?";
+    readonly '\u53EA\u6E05\u7406\u672C\u9875\u7684\u65E7\u66F4\u65B0\u8BB0\u5F55\uFF0C\u4E0D\u4F1A\u53D6\u6D88\u5B89\u88C5\u3001\u56DE\u9000\u7248\u672C\u6216\u5220\u9664\u6587\u4EF6\u3002\u8FD9\u4E0D\u4EE3\u8868\u4E0A\u6B21\u5B89\u88C5\u5DF2\u53D6\u6D88\u3002': "This only clears the old update record on this page. It does not cancel installation, roll back a version, or delete files. It does not mean the previous installation was cancelled.";
+    readonly '\u4E4B\u540E\u53EF\u4EE5\u91CD\u65B0\u68C0\u67E5\u7248\u672C\uFF0C\u518D\u624B\u52A8\u786E\u8BA4\u66F4\u65B0\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u88C5\u3002': "You can then check versions and confirm another update yourself. Nothing will be reinstalled automatically.";
+    readonly 保留提示: "Keep notice";
+    readonly 确认结束提示: "Confirm dismissal";
+    readonly 安装: "Installation";
+    readonly 启用: "Activation";
+    readonly 卸载: "Removal";
     readonly '\u65E0\u6CD5\u8FDE\u63A5 GitHub\uFF0C\u6682\u65F6\u65E0\u6CD5\u786E\u8BA4\u6700\u65B0\u7248\u672C\u3002': "Cannot reach GitHub. The latest version has not been confirmed.";
     readonly '\u68C0\u67E5\u66F4\u65B0\u8D85\u65F6\uFF0C\u6682\u65F6\u65E0\u6CD5\u786E\u8BA4\u6700\u65B0\u7248\u672C\u3002': "The update check timed out. The latest version has not been confirmed.";
     readonly 'GitHub \u6682\u65F6\u9650\u5236\u4E86\u68C0\u67E5\u8BF7\u6C42\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002': "GitHub temporarily limited update checks. Try again later.";

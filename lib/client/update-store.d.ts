@@ -1,13 +1,17 @@
 import type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client';
 import type { ReleaseCheck, ReleaseTarget, UpdateInfo, UpdatesRemote } from 'dsh-ssh-remote/updates';
 type Installer = Pick<ClientRemote['pluginManager'], 'installBundle' | 'waitForInstall' | 'cancelInstall'>;
-type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+import { type StorageLike } from './update-receipt.js';
 type Phase = 'installing' | 'applying' | 'unknown' | 'failed' | 'cancelled' | 'restart' | 'done';
 export interface UpdateOperation {
     requestId: string;
     target: ReleaseTarget;
     phase: Phase;
     message: string;
+    canDismiss?: boolean;
+    recovering?: boolean;
+    logPath?: string;
+    stage?: string;
 }
 export interface UpdateSnapshot {
     info?: UpdateInfo;
@@ -16,13 +20,15 @@ export interface UpdateSnapshot {
     automatic: boolean;
     dismissed: string;
     error: string;
+    infoError: string;
+    receiptError: string;
     operation?: UpdateOperation;
 }
 /** Releases are stable triples; an installed prerelease of that same triple precedes the stable version. */
 export declare function newerRelease(target: string, current: string): boolean;
 export declare function validTarget(value: unknown): value is ReleaseTarget;
 export declare function browserStorage(kind: 'localStorage' | 'sessionStorage'): StorageLike | undefined;
-/** One instance per client. No package writes except DSH's public installer; disposal never cancels an install. */
+/** One controller per client. Package writes remain owned by the official installer. */
 export declare class UpdateStore {
     private readonly remote;
     private readonly installer;
@@ -31,8 +37,12 @@ export declare class UpdateStore {
     private state;
     private readonly listeners;
     private epoch;
+    private operationGeneration;
+    private infoSequence;
     private disposed;
     private key;
+    private pending?;
+    private infoTask?;
     private checkTask?;
     private recovery?;
     private timer?;
@@ -41,7 +51,15 @@ export declare class UpdateStore {
     getSnapshot: () => UpdateSnapshot;
     subscribe: (listener: () => void) => () => void;
     private patch;
-    private receipt;
+    private acceptInfo;
+    /** Post-operation callers force a new read instead of joining a pre-install snapshot. */
+    private readInfo;
+    /** Public plugin-manager/changed notifications coalesce within one event turn. */
+    private refreshTask?;
+    refreshInstallation(): Promise<void>;
+    private remember;
+    private forget;
+    private guard;
     start(): Promise<void>;
     setVisible(visible: boolean): void;
     setAutomatic(automatic: boolean): void;
@@ -50,11 +68,11 @@ export declare class UpdateStore {
     check(force?: boolean): Promise<void>;
     available(): ReleaseTarget | undefined;
     busy(): boolean;
-    /** Called only by the explicit confirmation button. Recheck installation identity before any write. */
     install(target: ReleaseTarget): Promise<void>;
     progress(requestId: string, phase: string): void;
     cancel(): Promise<void>;
     reconcile(): Promise<void>;
+    finishUnknown(): Promise<void>;
     private installed;
     private result;
     dispose(): void;

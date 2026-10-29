@@ -116,6 +116,11 @@ Start with the first error, not the last generic hint. Check the running DSH pro
 
 ## 更新检查与远端 Node / Updates and remote Node
 
+- 0.13.3 的“检查更新”同时刷新本机安装与运行版本。安装后激活失败不等于文件没有更新，先看这两个版本和失败详情。
+- 上次结果未知时，仍可检查版本。只有官方已找不到那个活动请求、当前版本也已重新读取，才会提供“结束这次提示”。结束提示不取消安装、不回退，也不自动重装。
+- 恢复记录损坏或超限会明确提示；先核对版本，按官方插件页处理。不要靠反复点更新掩盖旧错误。详情中的日志路径来自 DSH；完整输出不存入恢复记录。
+- In 0.13.3, Check for updates also refreshes installation facts. Dismissing a confirmed orphaned notice only removes local UI state; it never cancels, rolls back or automatically retries an installation. Unreadable records remain visible, and full output stays in the official installer log.
+
 - 更新检查在运行 DSH 的 **Host** 发起，不在浏览器或 SSH 远端发起。展开插件详情中的“更新排错建议”，区分版本元数据、校验清单，以及 `ECONNRESET` / `ENOTFOUND` / 超时 / HTTP 限流；不要通过关闭 TLS 校验解决。
 - 自动检查开启时，失败后在页面可见时约五分钟复查，成功后回到六小时间隔；关闭自动检查或隐藏页面不会继续轮询。手动“检查更新”跳过缓存。源码链接只检查，不被安装包覆盖。
 - `run_code` 需要远端登录环境中的 Node，Desktop 自带 Node 不能代替。先比较 `ssh devbox 'node --version'` 与 `ssh devbox 'bash -lc "node --version"'`。若 NVM 位于 `.bashrc` 的非交互提前返回之后，DSH 可能仍选中旧系统 Node。由用户选择已安装的新版本，并让其 bin 目录在对应 shell 的非交互 PATH 中可见；插件不自动改 shell 配置。

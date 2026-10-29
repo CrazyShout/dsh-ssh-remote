@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[中文](README.md) · [Download 0.13.2](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.2) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
+[中文](README.md) · [Download 0.13.3](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.3) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 Open an SSH workspace inside DeepSeek Harness. Browse files and run commands in its native panels, with remote editing, `@` references, port forwarding and file transfers. Reuse `~/.ssh/config`; no full DSH installation is needed on the server.
 
@@ -15,7 +15,7 @@ Already have working **DSH** and an **SSH alias**? Start here. Desktop includes 
 3. Choose **Add workspace**, select your SSH host and folder, then use native **Workspace files** and **New terminal**.
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.2/dsh-ssh-remote-0.13.2.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.3/dsh-ssh-remote-0.13.3.tgz
 ~~~
 
 No clone, build or manual plugin-directory copying. The installer still downloads runtime dependencies.
@@ -27,7 +27,7 @@ Expand **Getting started** in the official plugin details for connection steps. 
 ### CLI / Web: one install command
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.2/dsh-ssh-remote-0.13.2.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.3/dsh-ssh-remote-0.13.3.tgz'
 ~~~
 
 Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its terminal first. **For Desktop, use the application's own Plugins page.**
@@ -40,7 +40,7 @@ Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its termina
 Fixed Git tag (requires local Git):
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.2'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.3'
 ~~~
 
 You can also download the release `.tgz` and enter its absolute path in Plugins. Verify downloads with `SHA256SUMS`. Review dependency-script prompts in the official installer, without globally allowing unknown scripts. Version 0.11.0 removed the `ssh2` / `cpu-features` native-build dependencies.
@@ -113,12 +113,14 @@ After a failed check, visible automatic checks resume in about five minutes. Exp
 
 Package installation uses DSH's official service, including dependency approvals and compatibility checks. Installed and running versions are shown separately. Save drafts and pause transfers first: **reloading the SSH plugin may end its terminals and port forwards. It never automatically restarts DSH.** If a response is lost, choose **重新确认结果** to reconcile the result instead of automatically reinstalling.
 
+Check for updates also refreshes local installation facts. When the old request is no longer active in this DSH host and the current version has been read again, **Dismiss this notice** clears only the notice, not an installation. A new update still needs your confirmation. Short diagnostics and the official log path are available in Details; full logs are not stored in browser recovery records.
+
 Source `link:` / local-directory installs show version information only and must be synchronized with Git; archives never replace them automatically. Version 0.11.2 and earlier need one manual installation of the current release to gain this feature. [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) remain available for manual selection. If DSH refuses to replace a source directly, follow its plugin-page guidance; this feature does not remove the old package first. Web CLI users can still repeat `add` in the same profile.
 
-**Roll back to 0.13.1:** install the previous official release in Plugins, or run:
+**Roll back to 0.13.2:** install the previous official release in Plugins, or run:
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.1/dsh-ssh-remote-0.13.1.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.2/dsh-ssh-remote-0.13.2.tgz'
 ~~~
 
 Restart when requested; migrated OpenSSH settings remain. **Version 0.13.0 and earlier lack this release's control-connection authentication fix. Rollback is for isolated diagnostics, not a security-equivalent long-term alternative.**

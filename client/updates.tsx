@@ -1,14 +1,14 @@
 import { t, localized, formatDateTime } from './locale.js';
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
-import { Button, Checkbox, Modal, Toast } from '@deepseek-ai/dsh-client-ui-primitives';
+import { Button, Checkbox, Modal, Toast, writeClipboard } from '@deepseek-ai/dsh-client-ui-primitives';
 import { GettingStarted } from './start-guide.js';
 import type { ReleaseCheck, ReleaseTarget } from 'dsh-ssh-remote/updates';
 import { cardStyle, mutedStyle, rowStyle } from './presentation.js';
-import { UpdateStore, browserStorage } from './update-store.js';
+import { UpdateStore, browserStorage, type UpdateOperation } from './update-store.js';
 import { usePageVisible } from './workbench.js';
 interface Injected {
     updates: UpdateStore;
@@ -27,25 +27,49 @@ export function updateFailureText(release: ReleaseCheck | undefined) {
         default: return t('发布信息校验失败，未提供更新安装。');
     }
 }
+function OperationDetails({ operation }: { operation: UpdateOperation }) {
+    const [copied, setCopied] = useState<boolean>();
+    const stage = operation.stage === 'install' ? t('安装') : operation.stage === 'enable' ? t('启用') : operation.stage === 'remove' ? t('卸载') : operation.stage;
+    return <details style={hint}>
+      <summary style={{ cursor: 'pointer' }}>{t('更新详情')}</summary>
+      {operation.phase === 'failed' && <p style={{ whiteSpace: 'pre-wrap' }}>{operation.message}</p>}
+      {stage && <p>{t('处理阶段：{stage}', { stage })}</p>}
+      {operation.logPath && <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
+        <span>{t('官方安装日志：')}</span>
+        <code style={{ overflowWrap: 'anywhere', userSelect: 'text' }}>{operation.logPath}</code>
+        <div><Button size="sm" variant="outline" onClick={() => void writeClipboard(operation.logPath!).then(setCopied, () => setCopied(false))}>{t('复制日志路径')}</Button></div>
+        {copied !== undefined && <span role="status">{copied ? t('已复制日志路径。') : t('剪贴板不可用，请手动复制路径。')}</span>}
+      </div>}
+    </details>;
+}
 export function UpdateSection(props: DetailProps) {
     const state = useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);
     const [confirm, setConfirm] = useState<ReleaseTarget>();
+    const [finishRequestId, setFinishRequestId] = useState<string>();
+    useEffect(() => {
+        if (finishRequestId && (state.operation?.requestId !== finishRequestId || !state.operation.canDismiss || state.infoError || state.receiptError))
+            setFinishRequestId(undefined);
+    }, [finishRequestId, state.operation?.requestId, state.operation?.canDismiss, state.infoError, state.receiptError]);
     if (!mine(props))
         return null;
     const { info, release, operation } = state, available = props.updates.available();
     const busy = props.updates.busy(), failure = state.error || updateFailureText(release);
+    const installationUnconfirmed = Boolean(state.infoError || state.receiptError);
+    const active = operation && (['installing', 'applying', 'unknown'].includes(operation.phase) || operation.recovering);
     const latest = release?.latest;
     return <section aria-label={t('SSH 插件版本更新')} style={{ marginTop: 24, display: 'grid', gap: 12, minWidth: 0, fontSize: 13 }}>
     <GettingStarted />
     <div style={cardStyle}>
     <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{t('版本更新')}</h4>
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-      <span>{t('当前运行 {version}', { version: info?.runningVersion || t('正在读取…') })}</span>
+      <span>{state.infoError ? t('当前安装信息未确认') : t('当前运行 {version}', { version: info?.runningVersion || t('正在读取…') })}</span>
       {available && <strong>{t('可更新至 {version}', { version: available.version })}</strong>}
-      {!state.checking && !available && latest && info && !failure && <span style={hint}>{info.installedVersion === latest.version && info.runningVersion === latest.version ? t('已是最新稳定版') : t('最新稳定版 {value1}', { value1: latest.version })}</span>}
+      {!state.checking && !available && latest && info && !failure && !installationUnconfirmed && operation?.phase !== 'failed' && <span style={hint}>{info.installedVersion === latest.version && info.runningVersion === latest.version ? t('已是最新稳定版') : t('最新稳定版 {value1}', { value1: latest.version })}</span>}
       {state.checking && <span role="status" style={hint}>{t('正在检查…')}</span>}
     </div>
-    {info && info.runningVersion !== info.installedVersion && <p role="status" style={{ margin: 0 }}>{t('已安装 {version}，重新加载或重启后生效。', { version: info.installedVersion })}</p>}
+    {info && !state.infoError && info.runningVersion !== info.installedVersion && <p role="status" style={{ margin: 0 }}>{active ? t('已安装 {version}，正在确认是否生效。', { version: info.installedVersion }) : t('已安装 {version}，重新加载或重启后生效。', { version: info.installedVersion })}</p>}
+    {state.infoError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{state.infoError}</p>}
+    {state.receiptError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{state.receiptError}</p>}
     {!state.checking && failure && <div style={{ display: 'grid', gap: 8 }}>
       <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{failure}</p>
       <details style={hint}><summary style={{ cursor: 'pointer' }}>{t('更新排错建议')}</summary>
@@ -60,14 +84,16 @@ export function UpdateSection(props: DetailProps) {
     {info?.sourceKind === 'development' && <p style={{ ...hint, margin: 0 }}>{t('当前使用源码链接，请使用 Git 同步。此处不会用安装包覆盖你的开发目录。')}</p>}
     {info?.sourceKind === 'unsupported' && <p style={{ ...hint, margin: 0 }}>{t('此安装来源不支持直接更新，请使用官方插件页安装固定版本。')}</p>}
     <div style={rowStyle}>
-      {available && info?.sourceKind === 'release' && <Button variant="primary" disabled={busy} onClick={() => setConfirm(available)}>{t('更新到 {version}', { version: available.version })}</Button>}
+      {available && info?.sourceKind === 'release' && <Button variant="primary" disabled={busy || installationUnconfirmed} onClick={() => setConfirm(available)}>{t('更新到 {version}', { version: available.version })}</Button>}
       {latest && <a href={latest.url} target="_blank" rel="noreferrer" style={{ ...hint, color: 'var(--dsw-alias-label-link)' }}>{t('更新说明')}</a>}
     </div>
     {operation && <div role={operation.phase === 'failed' ? 'alert' : 'status'} aria-live="polite" style={{ display: 'grid', gap: 8, overflowWrap: 'anywhere', color: operation.phase === 'failed' ? 'var(--dsw-alias-label-error)' : undefined }}>
-      <span>{operation.message}</span>
+      <span>{operation.phase === 'failed' ? t('更新未完成。') : operation.message}</span>
+      {(operation.phase === 'failed' || operation.logPath) && <OperationDetails key={`${operation.requestId}:${operation.logPath ?? ''}`} operation={operation} />}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {operation.phase === 'installing' && operation.requestId && <Button size="sm" variant="outline" onClick={() => void props.updates.cancel()}>{t('取消安装')}</Button>}
-        {['unknown', 'restart'].includes(operation.phase) && <Button size="sm" variant="outline" onClick={() => void props.updates.reconcile()}>{t('重新确认结果')}</Button>}
+        {['unknown', 'restart'].includes(operation.phase) && <Button size="sm" variant="outline" disabled={operation.recovering} onClick={() => void props.updates.reconcile()}>{t('重新确认结果')}</Button>}
+        {operation.phase === 'unknown' && operation.canDismiss && !installationUnconfirmed && <Button size="sm" variant="outline" disabled={operation.recovering} onClick={() => setFinishRequestId(operation.requestId)}>{t('结束这次提示')}</Button>}
       </div>
     </div>}
     <Checkbox checked={state.automatic} onChange={checked => props.updates.setAutomatic(checked)} label={t('自动检查稳定版更新（每 6 小时）')}/>
@@ -88,16 +114,19 @@ export function UpdateSection(props: DetailProps) {
             }}>{t('确认更新')}</Button></>}>
       <p style={{ ...hint, overflowWrap: 'anywhere' }}>{confirm?.packageUrl}</p>
     </Modal>
+    <Modal open={Boolean(finishRequestId && finishRequestId === operation?.requestId && operation.canDismiss && !installationUnconfirmed)} onClose={() => setFinishRequestId(undefined)} closeLabel={t('取消')} title={t('结束这次提示？')} description={t('只清理本页的旧更新记录，不会取消安装、回退版本或删除文件。这不代表上次安装已取消。')} footer={<><Button variant="outline" data-modal-autofocus onClick={() => setFinishRequestId(undefined)}>{t('保留提示')}</Button><Button variant="primary" onClick={() => {
+        const requestId = finishRequestId;
+        setFinishRequestId(undefined);
+        if (requestId && props.updates.getSnapshot().operation?.requestId === requestId)
+            void props.updates.finishUnknown();
+    }}>{t('确认结束提示')}</Button></>}>
+      <p style={hint}>{t('之后可以重新检查版本，再手动确认更新；不会自动重装。')}</p>
+    </Modal>
   </section>;
 }
 export function UpdateAction(props: PropsRuntime<'plugins.detail.actions'> & Injected) {
     const state = useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);
-    return mine(props) ? <Button disabled={state.checking || props.updates.busy()} onClick={() => {
-            if (state.info)
-                void props.updates.check(true);
-            else
-                void props.updates.start();
-        }}>{t('检查更新')}</Button> : null;
+    return mine(props) ? <Button disabled={state.checking} onClick={() => void props.updates.check(true)}>{t('检查更新')}</Button> : null;
 }
 export function UpdateBadge(props: PropsRuntime<'plugins.detail.badge'> & Injected) {
     useSyncExternalStore(props.updates.subscribe, props.updates.getSnapshot, props.updates.getSnapshot);
@@ -123,6 +152,7 @@ export function mountPluginUpdates(ctx: Context) {
             scope.slots.inject('plugins.detail.section', () => scope.slots.register({ name: 'plugins.detail.section', id: 'ssh-updates.section', order: 50, inject }, localized(UpdateSection))),
             scope.slots.inject('shell.overlay', () => scope.slots.register({ name: 'shell.overlay', id: 'ssh-updates.notice', inject }, localized(UpdateNotice))),
             scope.remote.$on('plugin-manager/install-state', event => updates.progress(event.requestId, event.phase)),
+            scope.remote.$on('plugin-manager/changed', () => { void updates.refreshInstallation(); }),
             scope.on('connection/reset', () => { void updates.start(); }),
         ];
         const visibility = () => updates.setVisible(!document.hidden);
