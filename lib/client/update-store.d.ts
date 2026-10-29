@@ -42,6 +42,7 @@ export declare class UpdateStore {
     private disposed;
     private key;
     private pending?;
+    private recoveryAfterReconnect;
     private infoTask?;
     private checkTask?;
     private recovery?;
@@ -60,6 +61,8 @@ export declare class UpdateStore {
     private remember;
     private forget;
     private guard;
+    /** A failed reconnect must not strand the old applying phase after reads recover. */
+    private resumeRecoveryAfterReconnect;
     start(): Promise<void>;
     setVisible(visible: boolean): void;
     setAutomatic(automatic: boolean): void;
