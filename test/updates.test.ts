@@ -145,7 +145,7 @@ describe('shared update controller', () => {
   });
   it('preserves a failed info response without guessing its type from text and permits a later retry', async () => {
     const s = setup(); s.remote.info.mockResolvedValueOnce({ ok: false, error: { message: 'transport failure: HTTP 404' } } as never);
-    await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, error: '无法读取插件版本：transport failure: HTTP 404' });
+    await s.store.start(); expect(s.store.getSnapshot()).toMatchObject({ checking: false, infoError: '无法读取插件版本：transport failure: HTTP 404', error: '' });
     expect(s.remote.check).not.toHaveBeenCalled();
     await ready(s); expect(s.store.available()).toEqual(target); expect(s.store.getSnapshot().error).toBe('');
   });
@@ -191,7 +191,7 @@ describe('shared update controller', () => {
   });
   it('recovers across client reload and does not resurrect a completed receipt from a late response', async () => {
     const s = setup(); await ready(s); const installed = deferred(); s.installer.installBundle.mockImplementation(() => installed.promise);
-    const pending = s.store.install(target); await Promise.resolve(); await Promise.resolve(); s.store.dispose();
+    const pending = s.store.install(target); await vi.waitFor(() => expect(s.installer.installBundle).toHaveBeenCalledOnce()); s.store.dispose();
     const next = setup(s.preferences, s.receipts); next.setInfo({ installedVersion: target.version, runningVersion: target.version });
     await next.store.start(); await next.store.reconcile(); expect(next.store.getSnapshot().operation?.phase).toBe('done');
     installed.resolve(ok({ changed: true, application: 'applied', stage: 'install', target: target.packageUrl })); await pending;
@@ -206,7 +206,7 @@ describe('shared update controller', () => {
   it('releases a completed receipt after a later manual rollback or source change', async () => {
     const s = setup(); await ready(s); const pending = deferred();
     s.installer.installBundle.mockImplementation(() => pending.promise);
-    const task = s.store.install(target); await Promise.resolve(); await Promise.resolve(); s.store.dispose();
+    const task = s.store.install(target); await vi.waitFor(() => expect(s.installer.installBundle).toHaveBeenCalledOnce()); s.store.dispose();
     pending.resolve(ok({ changed: true, application: 'applied', stage: 'install', target: target.packageUrl })); await task;
     const next = setup(s.preferences, s.receipts); next.setInfo({ source: 'file:/manual-rollback.tgz' });
     await next.store.start(); await next.store.reconcile();
