@@ -5,6 +5,7 @@
 - 检查更新同时刷新已安装和正在运行的版本；安装或激活失败后也重新核对，不再让用户反复点击同一版本。
 - 安装结果未知时仍可检查版本。确认旧请求已不在当前 Host 中并重新读取版本后，可结束本页提示；不冒充取消，也不自动重装。
 - 恢复记录只保存有界摘要和日志路径，不保存完整安装输出；兼容旧记录，损坏或超限时明确提示。
+- 重连读取失败后仍能恢复核对；手动回退会结束旧的待重启提示，不再要求加载已经被替换的版本。
 - English: refresh installation facts on checks and all installer outcomes; recover orphaned update notices through explicit confirmation; keep bounded summaries instead of full logs. Official installation and late-response/source protections remain in place.
 - helper 仍为 0.13.1，内容哈希不变。
 
