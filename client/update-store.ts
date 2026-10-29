@@ -79,6 +79,7 @@ export class UpdateStore {
     private disposed = false;
     private key = '';
     private pending?: UpdateReceipt;
+    private recoveryAfterReconnect = false;
     private infoTask?: Promise<UpdateInfo | undefined>;
     private checkTask?: Promise<void>;
     private recovery?: Promise<void>;
@@ -102,6 +103,7 @@ export class UpdateStore {
             const prefs = read<{ automatic?: boolean; dismissed?: string }>(this.preferences, key);
             const saved = readReceipt(this.receipts, key + ':pending');
             this.pending = saved.receipt;
+            this.recoveryAfterReconnect = Boolean(this.pending);
             this.patch({ release: undefined, operation: undefined, receiptError: saved.error
                 ? t('上次更新记录无法读取。请核对当前版本，并在官方插件页处理。') : '',
                 automatic: prefs?.automatic !== false, dismissed: typeof prefs?.dismissed === 'string' ? prefs.dismissed : '' });
@@ -140,7 +142,8 @@ export class UpdateStore {
         const epoch = this.epoch;
         const task = Promise.resolve().then(async () => {
             if (epoch !== this.epoch || this.disposed) return;
-            await this.readInfo(true);
+            const info = await this.readInfo(true);
+            if (info) this.resumeRecoveryAfterReconnect();
         }).finally(() => { if (this.refreshTask === task) this.refreshTask = undefined; });
         this.refreshTask = task;
         return task;
@@ -158,6 +161,13 @@ export class UpdateStore {
         return !this.disposed && epoch === this.epoch && generation === this.operationGeneration
             && key === this.key && this.state.operation?.requestId === requestId;
     }
+    /** A failed reconnect must not strand the old applying phase after reads recover. */
+    private resumeRecoveryAfterReconnect() {
+        if (!this.recoveryAfterReconnect || this.disposed || this.state.infoError) return;
+        this.recoveryAfterReconnect = false;
+        // Do not make a read-only version check wait for an active installation.
+        if (this.pending) void this.reconcile();
+    }
     async start() {
         const epoch = ++this.epoch;
         this.operationGeneration++;
@@ -165,6 +175,12 @@ export class UpdateStore {
         this.infoTask = undefined; this.checkTask = undefined; this.recovery = undefined; this.refreshTask = undefined;
         clearTimeout(this.timer);
         this.patch({ checking: true, error: '' });
+        this.recoveryAfterReconnect = true;
+        const previous = this.state.operation;
+        if (previous && ['installing', 'applying', 'unknown'].includes(previous.phase)) {
+            this.patch({ operation: previous.requestId ? { ...previous, phase: 'unknown', canDismiss: false, recovering: false,
+                message: t('暂时无法确认更新结果，请稍后重新确认。') } : undefined });
+        }
         const info = await this.readInfo(true);
         if (this.disposed || epoch !== this.epoch) return;
         this.patch({ checking: false });
@@ -172,7 +188,7 @@ export class UpdateStore {
         const saved = readReceipt(this.receipts, this.key + ':pending');
         if (!this.pending) this.pending = saved.receipt;
         this.patch({ receiptError: saved.error ? t('上次更新记录无法读取。请核对当前版本，并在官方插件页处理。') : '' });
-        if (this.pending) void this.reconcile();
+        this.resumeRecoveryAfterReconnect();
         if (this.state.automatic && this.visible) void this.check(false);
     }
     setVisible(visible: boolean) {
@@ -198,9 +214,10 @@ export class UpdateStore {
             const info = force || !this.state.info || this.state.infoError ? this.readInfo(true) : Promise.resolve(this.state.info);
             const release = this.remote.check(force).catch(error => ({ ok: false as const,
                 error: { message: t('检查更新失败：{value1}', { value1: String(error instanceof Error ? error.message : error) }) } }));
-            const [, answer] = await Promise.all([info, release]);
+            const [current, answer] = await Promise.all([info, release]);
             if (this.disposed || epoch !== this.epoch) return;
             this.patch(answer.ok ? { release: answer.value, error: '' } : { release: undefined, error: answer.error.message });
+            if (current) this.resumeRecoveryAfterReconnect();
         })().finally(() => {
             if (this.checkTask === task) this.checkTask = undefined;
             if (epoch !== this.epoch || this.disposed) return;
@@ -362,7 +379,7 @@ export class UpdateStore {
                         ? t('DSH 拒绝直接替换此安装来源，请到官方插件页处理。') : t('安装或激活未完成，请在官方插件页查看诊断。')) } });
         } else if (info?.installedVersion === target.version) {
             this.installed(requestId, target, info);
-        } else if (info && result.application === 'applied') {
+        } else if (info && (result.application === 'applied' || result.application === 'restart-required')) {
             this.forget(requestId);
             this.patch({ operation: { requestId, target, ...details, phase: 'failed',
                 message: t('上次安装已结束，但当前版本或来源已被更改。请核对当前安装后重新检查更新。') } });

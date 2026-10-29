@@ -158,6 +158,77 @@ describe('current installation observations', () => {
 });
 
 describe('unknown results and explicit recovery', () => {
+  it.each(['manual check', 'manager notification'] as const)('recovers a completed applying operation after failed reconnect via %s', async refresh => {
+    const f = setup(); await ready(f);
+    const installed = deferred(); f.installer.installBundle.mockReturnValueOnce(installed.promise);
+    const installation = f.store.install(target); await settle();
+    f.store.progress(f.store.getSnapshot().operation!.requestId, 'applying');
+    f.remote.info.mockRejectedValueOnce(new Error('reconnect version read failed'));
+    await f.store.start();
+    expect(f.store.getSnapshot().operation).toMatchObject({ phase: 'unknown', canDismiss: false, recovering: false });
+    f.setInfo({ installedVersion: target.version, runningVersion: target.version, source: target.packageUrl });
+    installed.resolve(applied()); await installation;
+    if (refresh === 'manual check') await f.store.check(true);
+    else await f.store.refreshInstallation();
+    await vi.waitFor(() => expect(f.store.getSnapshot().operation?.phase).toBe('done'));
+    expect(f.store.busy()).toBe(false);
+    expect(f.store.getSnapshot().infoError).toBe('');
+    expect(f.installer.installBundle).toHaveBeenCalledOnce();
+    expect(f.receipts.getItem(receiptKey)).toBeNull();
+  });
+
+  it('keeps a recovered version check independent of an installation still active after reconnect', async () => {
+    const f = setup(); await ready(f);
+    const installed = deferred(), lookup = deferred();
+    f.installer.installBundle.mockReturnValueOnce(installed.promise);
+    const installation = f.store.install(target); await settle();
+    f.store.progress(f.store.getSnapshot().operation!.requestId, 'applying');
+    f.remote.info.mockRejectedValueOnce(new Error('reconnect version read failed'));
+    await f.store.start();
+    f.installer.waitForInstall.mockReturnValueOnce(lookup.promise);
+    await f.store.check(true);
+    expect(f.store.getSnapshot().checking).toBe(false);
+    expect(f.store.getSnapshot().operation).toMatchObject({ phase: 'unknown', canDismiss: false, recovering: true });
+    expect(f.installer.installBundle).toHaveBeenCalledOnce();
+    f.setInfo({ installedVersion: target.version, runningVersion: target.version, source: target.packageUrl });
+    lookup.resolve(applied()); installed.resolve(applied()); await installation; await f.store.reconcile();
+    expect(f.store.getSnapshot().operation?.phase).toBe('done');
+  });
+
+  it('does not strand a preflight with no dispatched request after reconnect failure', async () => {
+    const f = setup(); await ready(f);
+    const preflight = deferred(); f.remote.info.mockReturnValueOnce(preflight.promise);
+    const installation = f.store.install(target); await settle();
+    expect(f.store.getSnapshot().operation?.requestId).toBe('');
+    f.remote.info.mockRejectedValueOnce(new Error('reconnect version read failed'));
+    await f.store.start(); await f.store.check(true);
+    preflight.resolve(ok(f.info)); await installation;
+    expect(f.store.getSnapshot().operation).toBeUndefined();
+    expect(f.store.busy()).toBe(false);
+    expect(f.installer.installBundle).not.toHaveBeenCalled();
+  });
+
+  it('ends an obsolete restart-required receipt after a later manual rollback', async () => {
+    const f = setup(); await ready(f);
+    const original = { ...f.info };
+    f.installer.installBundle.mockImplementationOnce(async () => {
+      f.setInfo({ installedVersion: target.version, source: target.packageUrl });
+      return ok({ changed: true, application: 'restart-required', stage: 'enable', target: 'dsh-ssh-remote' });
+    });
+    await f.store.install(target);
+    expect(f.store.getSnapshot().operation?.phase).toBe('restart');
+    f.setInfo(original);
+    await f.store.reconcile();
+    expect(f.store.getSnapshot().operation?.phase).toBe('failed');
+    expect(f.store.getSnapshot().operation?.message).toContain('版本或来源已被更改');
+    expect(f.store.getSnapshot().operation?.message).not.toContain('重启以加载');
+    expect(f.receipts.getItem(receiptKey)).toBeNull();
+    expect(f.store.busy()).toBe(false);
+    expect(f.installer.installBundle).toHaveBeenCalledOnce();
+    await f.store.check(true);
+    expect(f.store.available()).toEqual(target);
+  });
+
   it('permits a read-only check without retrying an unknown installation', async () => {
     const f = setup(); await unknown(f);
     const checks = f.remote.check.mock.calls.length;
