@@ -58,7 +58,11 @@ export function mountQuickOpen(ctx: Context, editor: EditorBridge, workbench: Wo
                     if (result.value.sessionId !== sessionId || scope.sidebarRight.mounted.getSnapshot() !== sessionId)
                         throw new Error(t('会话已切换，未打开预览。'));
                     safePreviewPath(result.value.path);
-                    scope.sidebarRight.openResourceIn(sessionId as SessionId, sessionFileAddress(sessionId, result.value.path));
+                    // This action promises a read-only DSH preview. A higher-priority
+                    // third-party editor may read node:fs directly, bypassing SSH.
+                    if (!scope.sidebarRightTabs.get('text'))
+                        throw new Error(t('原生文件预览尚未加载。'));
+                    scope.sidebarRight.openResourceIn(sessionId as SessionId, sessionFileAddress(sessionId, result.value.path), { kind: 'text' });
                 }
                 finally {
                     signal.removeEventListener('abort', abort);

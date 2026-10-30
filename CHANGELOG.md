@@ -1,5 +1,10 @@
 # Changelog / 更新记录
 
+## Unreleased / 未发布
+
+- #40：远程快速打开明确使用 DSH 官方只读预览，避免第三方本机编辑器接管 SSH 文件。显式编辑、会话校验和取消保护不变。此修复不等于支持 better-sidebar 的整套文件树，兼容边界与临时设置见排错文档。
+- English: keep remote quick-open previews on DSH's native `text` viewer; explicit SSH editing and session/cancellation checks are retained. This does not add a remote backend to better-sidebar's file tree.
+
 ## 0.13.3
 
 - 检查更新同时刷新已安装和正在运行的版本；安装或激活失败后也重新核对，不再让用户反复点击同一版本。

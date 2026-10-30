@@ -2,6 +2,18 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## 与 DSH-better-sidebar 同时使用 / Using DSH-better-sidebar
+
+[Issue #40](https://github.com/CrazyShout/dsh-ssh-remote/issues/40)：第三方文件树可能只显示空目录，代码文件也可能打不开。
+
+已核对 `dsh-better-sidebar 0.28.2` 的发布包：它接管 `files` 页签和代码文件的预览，但文件树与编辑器直接读取本机 `node:fs`，不经过 DSH 的 `workspaceFiles` / `fs` 服务。SSH 工作区的本机目录只是占位目录，不是远程文件的镜像，所以这种读取方式看不到远端内容。**当前不能宣称两个插件的文件管理功能完全兼容。**
+
+临时处理：在 better-sidebar 自己的侧栏页签设置中，关闭 **“文件 / Files”** 项（内部标识 `editor`），保留其他页签。其公开实现会同时让出文件树和编辑器，恢复 DSH 自带的文件树、只读预览；这会影响该插件在本地工作区的文件管理功能，不只是 SSH 会话。请先保存它的编辑草稿，再改设置；不要直接编辑或覆盖整份插件配置。
+
+本项目开发分支已让“远程工作台 → 快速打开”的预览明确选择官方 `text` 类型，防止被只支持本机路径的第三方编辑器抢走；显式“编辑”仍使用 SSH 编辑器。**这项修复尚未包含在 0.13.3 Release 中，也没有把 better-sidebar 的文件树改成远程文件树。** 在对方提供远程文件服务接口之前，不要用其文件页向 SSH 占位目录上传、重命名或删除文件来操作远端。
+
+English: better-sidebar 0.28.2 replaces the `files` page and code preview but reads Host files through `node:fs`, bypassing the DSH services routed over SSH. An SSH anchor is not a local mirror. Save drafts, then disable its **Files** tab (`editor`) in its own sidebar settings to return these surfaces to DSH; other tabs can stay enabled, but its local file-management features are also disabled. The development fix explicitly selects the native `text` preview from remote quick-open, retaining the SSH editor for explicit edits. It is **not in Release 0.13.3**, and it does not provide a remote backend for the third-party file tree. Full coexistence remains open in #40.
+
 ## 远程 run_code 与控制连接 / Remote PTC and control transport
 
 0.13.1 修复旧版将本机 Node、bootstrap 和 sandbox runner 路径发送到远端、并丢失独立控制通道的问题（#35）。保持官方 PTC provider，无需改成其他执行器。远端仍需要可用的 Node：
