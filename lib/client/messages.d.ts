@@ -455,6 +455,7 @@ export declare const en: {
     readonly 远程目录浏览: "Remote folder browsing";
     readonly 远程编辑: "Remote editor";
     readonly '\u8FDC\u7A0B\u7F16\u8F91\u5668\u5C1A\u672A\u52A0\u8F7D\u3002': "The remote editor has not loaded yet.";
+    readonly '\u539F\u751F\u6587\u4EF6\u9884\u89C8\u5C1A\u672A\u52A0\u8F7D\u3002': "The native file preview has not loaded yet.";
     readonly '\u8FDC\u7AEF helper \u80FD\u529B\u4E0D\u5B8C\u6574': "Remote helper capabilities are incomplete";
     readonly '\u8FDC\u7AEF\u4E0E\u672C\u5730\u4E0B\u8F7D\u524D\u7F00\u4E0D\u4E00\u81F4\u3002': "Remote and local download prefixes do not match.";
     readonly '\u8FDC\u7AEF\u53D6\u6D88\u5DF2\u786E\u8BA4\u3002\u4ECD\u9700\u91CD\u65B0\u6388\u6743\u539F\u672C\u5730\u76EE\u5F55\u4EE5\u6E05\u7406\u6682\u5B58\uFF1B\u5DF2\u5B8C\u6210\u6587\u4EF6\u4FDD\u7559\u3002': "Remote cancellation confirmed. Reauthorize the original local folder to clean staging; completed files are retained.";

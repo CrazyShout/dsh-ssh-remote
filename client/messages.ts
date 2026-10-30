@@ -455,6 +455,7 @@ export const en = {
   '远程目录浏览': 'Remote folder browsing',
   '远程编辑': 'Remote editor',
   '远程编辑器尚未加载。': 'The remote editor has not loaded yet.',
+  '原生文件预览尚未加载。': 'The native file preview has not loaded yet.',
   '远端 helper 能力不完整': 'Remote helper capabilities are incomplete',
   '远端与本地下载前缀不一致。': 'Remote and local download prefixes do not match.',
   '远端取消已确认。仍需重新授权原本地目录以清理暂存；已完成文件保留。': 'Remote cancellation confirmed. Reauthorize the original local folder to clean staging; completed files are retained.',
