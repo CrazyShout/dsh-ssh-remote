@@ -157,6 +157,20 @@ describe.each([false, ...(realSdk ? [true] : [])])('SSH working directory (publi
     f.setStatGate(undefined);
     expect(await f.directories.set(owner, f.a.anchorPath)).toBe('/code/libvirt');
   });
+
+  it('does not leak directory projection into later work scheduled by a change event', async () => {
+    const f = await fixture(official), owner = f.agent(f.a.anchorPath);
+    const append = owner.session.append;
+    let later!: Promise<string>;
+    owner.session.append = function (type, data) {
+      append.call(this, type, data);
+      later = new Promise(resolveLater => setTimeout(() => resolveLater(f.fs.processPath({
+        targetKey: 'ssh://alpha:2222/code/libvirt/src',
+      })), 10));
+    };
+    await f.directories.set(owner, 'src');
+    expect(await later).toBe('/code/libvirt/src');
+  });
 });
 
 it.skipIf(!realSdk)('reproduces the reported failure with unadapted official working-directory + ripgrep services', async () => {

@@ -22,7 +22,8 @@ export function installRemoteWorkingDirectoryRouter(
   directories: WorkingDirectory, fs: FileSystem, resolve: RemotePathResolver,
   executionPath: (uri: string) => Promise<string>,
 ): { dispose(): Promise<void> } {
-  const current = new AsyncLocalStorage<{ root: string; paths: Map<string, string> } | undefined>();
+  const current = new AsyncLocalStorage<{ root: string; paths: Map<string, string>; active: boolean } | undefined>();
+  const activeRoute = () => { const route = current.getStore(); return route?.active ? route : undefined; };
   const original = { ensure: directories.ensure, set: directories.set,
     resolve: fs.resolve, stat: fs.stat, processPath: fs.processPath };
   const lifetime = new AbortController();
@@ -42,14 +43,14 @@ export function installRemoteWorkingDirectoryRouter(
     return posix.isAbsolute(path) ? formatSshUri({ ...identity, path }) : path;
   };
   fs.resolve = function (path, options) {
-    const route = current.getStore();
+    const route = activeRoute();
     if (route === undefined) return original.resolve.call(this, path, options);
     return original.resolve.call(this, qualify(path, route.root), {
       ...options, cwd: options?.cwd === undefined ? route.root : qualify(options.cwd, route.root),
     });
   };
   fs.stat = async function (target, signal) {
-    const route = current.getStore();
+    const route = activeRoute();
     const info = await original.stat.call(this, target, signal);
     if (route !== undefined && info?.type === 'directory' && String(target.targetKey).startsWith('ssh://')) {
       signal?.throwIfAborted();
@@ -58,7 +59,7 @@ export function installRemoteWorkingDirectoryRouter(
     return info;
   };
   fs.processPath = function (target) {
-    return current.getStore()?.paths.get(String(target.targetKey)) ?? original.processPath.call(this, target);
+    return activeRoute()?.paths.get(String(target.targetKey)) ?? original.processPath.call(this, target);
   };
   const run = (agent: Agent, signal: AbortSignal | undefined, path?: string) => {
     const origin = agent.session.header.cwd;
@@ -71,7 +72,8 @@ export function installRemoteWorkingDirectoryRouter(
         ? original.ensure.call(directories, agent, signal) : original.set.call(directories, agent, path, signal));
     }
     const control = signal === undefined ? lifetime.signal : AbortSignal.any([signal, lifetime.signal]);
-    const result = current.run({ root, paths: new Map() }, async () => {
+    const route = { root, paths: new Map<string, string>(), active: true };
+    const result = current.run(route, async () => {
       control.throwIfAborted();
       const value = path === undefined ? await original.ensure.call(directories, agent, control)
         : await original.set.call(directories, agent, qualify(path, root), control);
@@ -80,7 +82,7 @@ export function installRemoteWorkingDirectoryRouter(
       // Repair previously persisted POSIX-only state via the public setter,
       // not by rewriting the session log or guessing a host from its path.
       return original.set.call(directories, agent, qualify(value, root), control);
-    });
+    }).finally(() => { route.active = false; route.paths.clear(); });
     pending.add(result);
     void result.then(() => pending.delete(result), () => pending.delete(result));
     return result;
