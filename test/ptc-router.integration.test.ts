@@ -32,6 +32,7 @@ async function setup(options: Record<string, unknown> = {}) {
   const policy = { mode: 'danger-full-access' as const, workspaceRoot: '/virtual-anchor' };
   ctx.provide('sandboxPolicy', { defaultMode: policy.mode, resolve: () => policy } as never);
   const runtime = new NodePtcRuntime(ctx, {
+    executionMode: 'per-call',
     timeoutMs: 8000, maxTimeoutMs: 20000, maxOutputBytes: 200000,
     maxMessageBytes: 300000, maxPendingCalls: 16, maxOldGenerationSizeMb: 128, graceMs: 1500,
     ...options,

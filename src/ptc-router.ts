@@ -229,6 +229,7 @@ class RemotePtcProcess implements SubprocessHandle {
   }
   private async run(): Promise<SubprocessOutcome> {
     let opened = false;
+    let started = false;
     try {
       const client = await this.route.client();
       requireCapability(client);
@@ -248,6 +249,7 @@ class RemotePtcProcess implements SubprocessHandle {
         cwd: posix.relative(ws.path, parseSshUri(this.route.uri).path), argv: [...this.spec.argv],
         control: 'pipe', stdin: 'closed', ptcBootstrap: this.route.bootstrap,
       }, { mutation: true, timeoutMs: 20_000 });
+      started = true;
       this.publish();
       if (this.stop.signal.aborted) {
         await this.call('process/terminate', { processId: this.id, operationId: randomUUID(), force: true }, { mutation: true, timeoutMs: 6000 });
@@ -256,7 +258,13 @@ class RemotePtcProcess implements SubprocessHandle {
       return outcome;
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
-      this.control.destroy(error); this.stdout.destroy(error); this.stderr.destroy(error);
+      this.control.destroy(error);
+      if (!started && this.stop.signal.aborted) {
+        // No output reader was started. The SDK now distinguishes a drained
+        // empty stream from a destroyed stream during cancelled allocation.
+        // done still rejects and cleanup below must confirm remote retirement.
+        this.stdout.end(); this.stderr.end();
+      } else { this.stdout.destroy(error); this.stderr.destroy(error); }
       throw error;
     } finally {
       this.publish(); this.wakeRead?.();

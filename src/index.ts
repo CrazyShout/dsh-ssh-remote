@@ -20,6 +20,7 @@ import { TerminalStateManager, SshRemoteTerminalState } from './terminal-state.j
 import { mountRemoteSkills } from './remote-skills.js';
 import { SshRemoteUpdates } from './updates.js';
 import { installRemotePtcRouter } from './ptc-router.js';
+import { installRemoteWorkingDirectoryRouter, type WorkingDirectory } from './working-directory.js';
 import type {} from '@deepseek-ai/dsh-file-reference';
 import type {} from '@deepseek-ai/dsh-fs';
 import type {} from '@deepseek-ai/dsh-shell';
@@ -71,6 +72,12 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     helpers,
   );
   const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
+  const directoryFiber = ctx.inject(['workingDirectory'], scope => {
+    const directories = (scope as Context & { workingDirectory: WorkingDirectory }).workingDirectory;
+    const router = installRemoteWorkingDirectoryRouter(directories, scope.fs, resolveRemotePath,
+      uri => service.executionPath(uri));
+    return () => router.dispose();
+  });
   const userSubprocess = installRemoteUserSubprocessRouter(ctx, ctx.subprocess, helpers, resolveRemotePath, terminalState);
   const ptcFiber = ctx.inject(['ptcRuntime', 'sandbox'], scope => {
     const router = installRemotePtcRouter(scope.ptcRuntime, scope.fs, scope.subprocess, scope.sandbox, helpers, resolveRemotePath);
@@ -124,6 +131,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     // before the host-level helper session is explicitly closed.
     const ptcResults = await Promise.allSettled([ptcFiber.dispose()]);
     const childResults = await Promise.allSettled([
+      directoryFiber.dispose(),
       updatesFiber.dispose(),
       terminalFiber.dispose(),
       shellFiber.dispose(),
