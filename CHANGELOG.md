@@ -3,9 +3,10 @@
 ## 0.13.4
 
 - #42：适配 DSH 0.2.2-rc.1 的工作目录服务；子代理和 `cd` 后的目录保留所属 SSH 主机，不再把远端 POSIX 路径交给本机 glob/grep。旧目录状态通过官方 setter 恢复，不改写历史日志。
+- Host 接口改为由 DSH 提供的可选 peer，避免安装包额外装入一份 SDK，导致作用域身份不一致、远程终端误选本机 Shell。补齐 0.2.2-rc.1 的 prerelease 范围并检查实际安装结果。
 - `run_code` 在启动分配阶段被取消时，正确结束尚未读取的空输出流，避免新版 SDK 误报输出清理失败。真实失败仍保留错误。
 - 新增 0.2.2-rc.1 SDK、安装包与 Windows 工作目录路由 CI。helper 仍为 0.13.1，哈希不变，无新增运行依赖或 Host RPC。
-- English: preserve SSH identity through the official working-directory service, fresh child initialization and cwd changes; recover old POSIX-only cwd state through the public setter. Drain empty output streams after cancelled PTC allocation for the new SDK. Extend SDK/package/Windows routing checks to 0.2.2-rc.1.
+- English: preserve SSH identity through the official working-directory service, fresh child initialization and cwd changes; recover old POSIX-only cwd state through the public setter. Use optional Host peers instead of auto-installing a conflicting SDK identity. Drain empty output streams after cancelled PTC allocation for the new SDK. Extend SDK/package/Windows routing checks to 0.2.2-rc.1.
 
 - #40：远程快速打开明确使用 DSH 官方只读预览，避免第三方本机编辑器接管 SSH 文件。显式编辑、会话校验和取消保护不变。此修复不等于支持 better-sidebar 的整套文件树，兼容边界与临时设置见排错文档。
 - English: keep remote quick-open previews on DSH's native `text` viewer; explicit SSH editing and session/cancellation checks are retained. This does not add a remote backend to better-sidebar's file tree.

@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join, resolve, isAbsolute } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
+import { createRequire } from 'node:module';
 
 const packageManifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const { values } = parseArgs({ options: {
@@ -57,6 +58,16 @@ async function install(spec, version) {
   assert(installedPath.startsWith(await realpath(profile) + '/'), 'Plugin must be installed from the archive, not a source link');
   const installed = JSON.parse(await readFile(join(installedPath, 'package.json'), 'utf8'));
   assert.equal(installed.version, version);
+  if (installed.peerDependenciesMeta?.['@deepseek-ai/dsh-scope']?.optional === true) {
+    const fromPlugin = createRequire(join(installedPath, 'package.json'));
+    for (const name of Object.keys(installed.peerDependencies)) {
+      let resolved;
+      try { resolved = fromPlugin.resolve(name); }
+      catch (error) { if (error.code !== 'MODULE_NOT_FOUND') throw error; }
+      assert(!resolved?.startsWith(await realpath(profile) + '/'), `Host peer ${name} was installed into the plugin profile: ${resolved}`);
+    }
+    report.checks.push('Host peers have no profile-local SDK copies');
+  }
   const profileManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   // rc.2's CLI retains a dependency after a blocked build, so its retry does
   // not auto-enable that now-existing bundle. Simulate the documented plugin
