@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import semver from 'semver';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -61,8 +62,19 @@ describe('release and Git installation package contract', () => {
       .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'));
     expect(peers.length).toBeGreaterThan(0);
     for (const [name, range] of peers) {
-      expect(range, name).toBe('>=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0');
+      expect(range, name).toBe('>=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0');
       expect(manifest.devDependencies[name], name).toBe(process.env.DSH_TEST_SDK_VERSION ?? '0.2.0-rc.2');
+      for (const version of ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.2-rc.1']) {
+        expect(semver.satisfies(version, range as string), `${name}: ${version}`).toBe(true);
+      }
+      expect(semver.satisfies('0.1.7-rc.2', range as string), name).toBe(false);
+      expect(semver.satisfies('0.3.0', range as string), name).toBe(false);
+    }
+  });
+
+  it('uses Host-provided peers instead of auto-installing a second SDK identity', () => {
+    for (const name of Object.keys(manifest.peerDependencies)) {
+      expect(manifest.peerDependenciesMeta[name], name).toEqual({ optional: true });
     }
   });
 });

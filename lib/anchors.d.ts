@@ -12,6 +12,8 @@ export declare class AnchorRegistry {
     constructor(file: string, root: string);
     materialize(uri: string): Promise<SshWorkspaceAnchor>;
     resolve(localPath: string): string | undefined;
+    /** Keep a canonical execution directory routable across Session persistence. */
+    executionPath(uri: string): Promise<string>;
     migrateAliases(aliases: Record<string, string>): Promise<void>;
     private save;
     dispose(): Promise<void>;

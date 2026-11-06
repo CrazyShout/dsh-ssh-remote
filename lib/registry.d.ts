@@ -88,6 +88,8 @@ export declare class SshRemoteService extends TypertRemoteService {
     materializeWorkspace(alias: string, remotePath: string): Promise<SshWorkspaceAnchor>;
     /** Exact anchor/descendant resolver consumed by fs and subprocess routers. */
     resolveRemotePath(localPath: string): string | undefined;
+    /** Internal working-directory projection; not a model tool or Host RPC. */
+    executionPath(uri: string): Promise<string>;
     workspaceInfo(path: string): Promise<RemoteWorkspaceInfo | null>;
     ensureDirectory(uri: string): Promise<void>;
     connectHost(alias: string): Promise<HelperHostStatus>;

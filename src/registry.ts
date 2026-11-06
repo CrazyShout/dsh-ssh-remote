@@ -258,6 +258,11 @@ export class SshRemoteService extends TypertRemoteService {
     return this.anchors.resolve(localPath);
   }
 
+  /** Internal working-directory projection; not a model tool or Host RPC. */
+  executionPath(uri: string): Promise<string> {
+    return this.anchors.executionPath(uri);
+  }
+
   @Remote('workspaceInfo')
   async workspaceInfo(path: string): Promise<RemoteWorkspaceInfo | null> {
     if (!path || path.includes('\0') || path.length > 32_768) return null;
