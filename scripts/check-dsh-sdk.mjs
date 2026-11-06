@@ -37,7 +37,11 @@ const commands = [
     ? ['test/working-directory.test.ts', 'test/runtime-router.test.ts', 'test/remote-skills.test.ts'] : []), '--maxWorkers=1', '--minWorkers=1']],
 ];
 for (const [command, args] of commands) {
-  const result = spawnSync(command, args, { cwd: root, env: { ...process.env, DSH_TEST_SDK_VERSION: version }, stdio: 'inherit' });
+  const result = spawnSync(command, args, { cwd: root, env: { ...process.env, DSH_TEST_SDK_VERSION: version },
+    // npm is a .cmd launcher on Windows; Node cannot exec it directly.
+    // Only the fixed npm commands above use the shell, never user arguments.
+    shell: process.platform === 'win32' && command === 'npm', stdio: 'inherit' });
+  if (result.error) throw result.error;
   assert.equal(result.status, 0, `SDK ${version}: ${command} ${args.join(' ')} failed; retained ${root}`);
 }
 console.log(`DSH SDK ${version}: Host/Client types and ${process.argv[3] ? 'routing' : 'full'} regression suite passed; evidence retained at ${root}`);
