@@ -82,6 +82,8 @@ describe('official locale integration', () => {
       expect(t('连接')).toBe('Подключить');
       expect(localizeSourceText('请在本机终端核对主机指纹；插件不会修改 known_hosts。'))
         .toBe('Проверьте отпечаток хоста в локальном терминале; плагин не изменяет known_hosts.');
+      expect(localizeSourceText('转发进程启动失败：EACCES')).toBe('Не удалось запустить процесс проброса: EACCES');
+      expect(localizeSourceText('forward detail')).toBe('forward detail');
     }
     finally {
       release();

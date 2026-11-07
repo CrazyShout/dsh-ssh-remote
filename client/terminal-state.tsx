@@ -1,4 +1,5 @@
 import { t, localized } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { mountWorkbenchSection, openWorkbench, usePageVisible, type Workbench } from './workbench.js';
 import { useEffect, useRef, useState } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -155,7 +156,7 @@ export function TerminalStatePane({ sessionId, remote, inputActions, active = tr
     return <section aria-label={t('SSH 终端状态')} style={panelStyle}>
     <PanelHeader title={t('终端状态')}><Button size="sm" variant="ghost" onClick={() => refresh.current()}>{t('刷新状态')}</Button></PanelHeader>
     <details><summary>{t('状态感知说明')}</summary><small>{t('仅观察新建的受支持 Bash / Zsh，已有终端不注入。命令行返回不代表后台任务结束；嵌套 SSH、tmux 内部状态未知。不自动发送消息或更改 Agent 目录。')}</small></details>
-    {listError && <div role="alert">{t('状态读取失败，旧结果已标记过期：')}{listError}</div>}
+    {listError && <div role="alert">{t('状态读取失败，旧结果已标记过期：')}{localizeSourceText(listError)}</div>}
     {!rows.length && <p>{t('当前会话尚无终端。请使用侧边栏的“新建终端”。')}</p>}
     {rows.length > 0 && <label>{t('当前会话终端')}<select aria-label={t('当前会话终端')} value={selected} onChange={event => { setSelected(event.target.value); setPreview(''); insertion.current = undefined; generation.current++; setBusy(false); }}>
       {rows.map(item => <option key={item.id} value={item.id}>{item.title} · {item.alias} · {labels()[item.state]}{item.stale ? t('（过期）') : ''}</option>)}
@@ -175,6 +176,6 @@ export function TerminalStatePane({ sessionId, remote, inputActions, active = tr
         <Button variant="ghost" onClick={() => void writeClipboard(preview).then(ok => ok ? setNotice(t('已复制，未发送。')) : setError(t('剪贴板不可用，请在预览框内手动选择复制。')))}>{t('复制片段')}</Button>
       </div>
     </>}
-    {error && <div role="alert">{error}</div>}{notice && <div role="status">{notice}</div>}
+    {error && <div role="alert">{localizeSourceText(error)}</div>}{notice && <div role="status">{localizeSourceText(notice)}</div>}
   </section>;
 }

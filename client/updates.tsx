@@ -1,4 +1,5 @@
 import { t, localized, formatDateTime } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -32,7 +33,7 @@ function OperationDetails({ operation }: { operation: UpdateOperation }) {
     const stage = operation.stage === 'install' ? t('安装') : operation.stage === 'enable' ? t('启用') : operation.stage === 'remove' ? t('卸载') : operation.stage;
     return <details style={hint}>
       <summary style={{ cursor: 'pointer' }}>{t('更新详情')}</summary>
-      {operation.phase === 'failed' && <p style={{ whiteSpace: 'pre-wrap' }}>{operation.message}</p>}
+      {operation.phase === 'failed' && <p style={{ whiteSpace: 'pre-wrap' }}>{localizeSourceText(operation.message)}</p>}
       {stage && <p>{t('处理阶段：{stage}', { stage })}</p>}
       {operation.logPath && <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
         <span>{t('官方安装日志：')}</span>
@@ -53,7 +54,7 @@ export function UpdateSection(props: DetailProps) {
     if (!mine(props))
         return null;
     const { info, release, operation } = state, available = props.updates.available();
-    const busy = props.updates.busy(), failure = state.error || updateFailureText(release);
+    const busy = props.updates.busy(), failure = localizeSourceText(state.error) || updateFailureText(release);
     const installationUnconfirmed = Boolean(state.infoError || state.receiptError);
     const active = operation && (['installing', 'applying', 'unknown'].includes(operation.phase) || operation.recovering);
     const latest = release?.latest;
@@ -68,8 +69,8 @@ export function UpdateSection(props: DetailProps) {
       {state.checking && <span role="status" style={hint}>{t('正在检查…')}</span>}
     </div>
     {info && !state.infoError && info.runningVersion !== info.installedVersion && <p role="status" style={{ margin: 0 }}>{active ? t('已安装 {version}，正在确认是否生效。', { version: info.installedVersion }) : t('已安装 {version}，重新加载或重启后生效。', { version: info.installedVersion })}</p>}
-    {state.infoError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{state.infoError}</p>}
-    {state.receiptError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{state.receiptError}</p>}
+    {state.infoError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{localizeSourceText(state.infoError)}</p>}
+    {state.receiptError && <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{localizeSourceText(state.receiptError)}</p>}
     {!state.checking && failure && <div style={{ display: 'grid', gap: 8 }}>
       <p role="alert" style={{ color: 'var(--dsw-alias-label-error)', margin: 0, overflowWrap: 'anywhere' }}>{failure}</p>
       <details style={hint}><summary style={{ cursor: 'pointer' }}>{t('更新排错建议')}</summary>
@@ -77,7 +78,7 @@ export function UpdateSection(props: DetailProps) {
           <p>{t('失败阶段：{stage}', { stage: release.failure.stage === 'release' ? t('获取版本信息') : t('获取校验清单') })}{release.failure.code ? ` · ${release.failure.code}` : ''}</p>
           <p>{t('检查由运行 DSH 的主机发起。需要代理时，请检查该主机的网络和 DSH 启动环境；不会修改系统代理或跳过证书校验。')}</p>
           {state.automatic && <p>{t('页面可见时约 5 分钟后自动复查，也可点击“检查更新”。')}</p>}
-          {release.failure.kind === 'invalid-response' && <p>{release.error}</p>}
+          {release.failure.kind === 'invalid-response' && <p>{localizeSourceText(release.error)}</p>}
         </> : <p>{t('如果刚升级插件，请先保存工作并重启当前 DSH，再检查更新。其他错误请保留原始详情，在官方插件页核查；不会自动重装。')}</p>}
       </details>
     </div>}
@@ -88,7 +89,7 @@ export function UpdateSection(props: DetailProps) {
       {latest && <a href={latest.url} target="_blank" rel="noreferrer" style={{ ...hint, color: 'var(--dsw-alias-label-link)' }}>{t('更新说明')}</a>}
     </div>
     {operation && <div role={operation.phase === 'failed' ? 'alert' : 'status'} aria-live="polite" style={{ display: 'grid', gap: 8, overflowWrap: 'anywhere', color: operation.phase === 'failed' ? 'var(--dsw-alias-label-error)' : undefined }}>
-      <span>{operation.phase === 'failed' ? t('更新未完成。') : operation.message}</span>
+      <span>{operation.phase === 'failed' ? t('更新未完成。') : localizeSourceText(operation.message)}</span>
       {(operation.phase === 'failed' || operation.logPath) && <OperationDetails key={`${operation.requestId}:${operation.logPath ?? ''}`} operation={operation} />}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {operation.phase === 'installing' && operation.requestId && <Button size="sm" variant="outline" onClick={() => void props.updates.cancel()}>{t('取消安装')}</Button>}

@@ -1,4 +1,5 @@
 import { t } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { mountWorkbenchSection, usePageVisible, type Workbench } from './workbench.js';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -124,9 +125,9 @@ export function TransferPane({ sessionId, getModel, active = true }: {
     </div>
     <Checkbox checked={replace} onChange={setReplace} label={t('允许替换同名文件（开始前校验版本）')}/>
     <details><summary>{t('传输与恢复说明')}</summary><small>{t('单文件 / 单批最多 1 TiB、10,000 项，两个文件并发。关闭面板不停止传输，重启后需重新授权。默认排除凭据、.env、密钥、.git 和缓存，不跟随符号链接。下载保存到授权的本机目录；其他程序的并发写入仍可能冲突。')}</small></details>
-    {[state.error, state.listError].filter(Boolean).map(message => <div key={message} role="alert" style={{ overflowWrap: 'anywhere' }}>{message}</div>)}
-    {state.notice && <div role="status" style={{ overflowWrap: 'anywhere' }}>{state.notice}</div>}
-    {state.failures?.map(file => <div key={file.path} role="alert"><strong>{t('未完成：')}{file.path}</strong><div>{file.message}</div></div>)}
+    {[state.error, state.listError].filter(Boolean).map(message => <div key={message} role="alert" style={{ overflowWrap: 'anywhere' }}>{localizeSourceText(message)}</div>)}
+    {state.notice && <div role="status" style={{ overflowWrap: 'anywhere' }}>{localizeSourceText(state.notice)}</div>}
+    {state.failures?.map(file => <div key={file.path} role="alert"><strong>{t('未完成：')}{file.path}</strong><div>{localizeSourceText(file.message)}</div></div>)}
     <div role="list" aria-label={t('传输任务')} style={{ display: 'grid', gap: 10 }}>
       {state.jobs.map(job => <article role="listitem" key={job.id} style={{ ...cardStyle, overflowWrap: 'anywhere' }}>
         <strong>{job.direction === 'upload' ? t('上传') : t('下载')} · {job.alias} · {job.sources?.join('、') || job.target || t('工作区根目录')}</strong>
@@ -136,7 +137,7 @@ export function TransferPane({ sessionId, getModel, active = true }: {
           {state.progress?.map(file => <div key={file.path} role="status" style={{ fontSize: 12 }}><span>{file.phase} · {file.path}</span><div>{transferSize(file.bytes)} / {transferSize(file.size)}</div><progress max={file.size || 1} value={file.bytes}/></div>)}
         </>}
         <details><summary>{t('任务详情')}</summary><small>{t('任务')}{job.id.slice(0, 8)}{t('· 暂停七天后到期，本地暂存清理需授权。')}</small></details>
-        {job.error && <div role="alert">{job.error}</div>}
+        {job.error && <div role="alert">{localizeSourceText(job.error)}</div>}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
           {!done(job) && job.state !== 'preparing' && state.active !== job.id && <Button variant="primary" size="sm" disabled={!!state.active || (job.direction === 'download' && !directoriesAvailable)} onClick={() => start(job)}>{job.direction === 'download' ? t('授权目录并开始 / 继续') : t('用当前选择开始 / 继续')}</Button>}
           {state.active === job.id && <Button size="sm" variant="primary" onClick={() => run(() => model.pause())}>{t('暂停')}</Button>}

@@ -1,4 +1,5 @@
 import { t } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { mountWorkbenchSection, usePageVisible, type Workbench } from './workbench.js';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -57,7 +58,7 @@ export function PortForwardPane({ sessionId, remote, active = true }: {
     {!nativeHost && state.list && needsBrowser && <Checkbox checked={sameHost} onChange={checked => setConfirmedHost(checked ? state.list!.host : '')} label={t('我确认浏览器就在 DSH 宿主 {value1} 上（仅启用打开网页，不改变监听范围）', { value1: state.list.host })}/>}
     {!sameHost && needsBrowser && <small role="note">{t('确认浏览器位于 DSH 宿主后才可打开网页；否则请复制地址到宿主浏览器。')}</small>}
     {state.list && !state.list.supported && <div role="alert">{t('首版端口转发只支持 macOS / Linux DSH Host。')}</div>}
-    {[state.error, state.listError].filter(Boolean).map(message => <div key={message} role="alert" style={{ overflowWrap: 'anywhere' }}>{message}</div>)}
+    {[state.error, state.listError].filter(Boolean).map(message => <div key={message} role="alert" style={{ overflowWrap: 'anywhere' }}>{localizeSourceText(message)}</div>)}
     {notice && <div role="status">{notice}</div>}
     {state.pending && <div role="status">{t('请求')}{state.pending.localPort} → {state.pending.remotePort}{t('正在建立或等待确认。')}<Button onClick={() => void model.stop(state.pending!.id)}>{t('停止此请求')}</Button></div>}
     <div role="list" aria-label={t('本工作区的端口转发')} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -65,9 +66,9 @@ export function PortForwardPane({ sessionId, remote, active = true }: {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}><strong>127.0.0.1:{row.localPort} → :{row.remotePort}</strong><small role="status">{labels()[row.state]}</small></div>
         {row.state === 'listening' && row.probe.state !== 'reachable' && <>
           <small>{row.probe.state === 'unreachable' ? t('远端端口暂不可达，请确认服务已启动。') : t('远端端口状态尚未确认。')}</small>
-          {row.probe.message && <details><summary>{t('检查详情')}</summary><small>{row.probe.message}</small></details>}
+          {row.probe.message && <details><summary>{t('检查详情')}</summary><small>{localizeSourceText(row.probe.message)}</small></details>}
         </>}
-        {row.error && <div role="alert">{row.error}</div>}
+        {row.error && <div role="alert">{localizeSourceText(row.error)}</div>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           {row.state === 'listening' && <>
             {sameHost ? <a href={forwardUrl(row)} target="_blank" rel="noopener noreferrer" aria-label={t('打开转发网页 {value1}', { value1: row.localPort })}>{t('打开网页')}</a> : <Button disabled>{t('打开网页')}</Button>}
