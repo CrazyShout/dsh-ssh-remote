@@ -512,6 +512,8 @@ export declare const en: {
 };
 export type MessageKey = keyof typeof en;
 export declare const zh: Record<MessageKey, string>;
+/** Russian dictionary. Keys mirror `en`; placeholders are copied from the source copy. */
+export declare const ru: Record<MessageKey, string>;
 /** Prefix the remote environment probe uses for free-form diagnostics. */
 export declare const ENVIRONMENT_CHECK_PREFIX = "\u73AF\u5883\u68C0\u67E5\u5931\u8D25\uFF1A";
 //# sourceMappingURL=messages.d.ts.map
