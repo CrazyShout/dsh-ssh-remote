@@ -6,7 +6,7 @@ import { cardStyle, PanelHeader } from './presentation.js';
 import type { SshRemote, SshConfig, HelperHostDiagnostics } from 'dsh-ssh-remote/ssh';
 import type { ConnectionStatusStore } from './connection-status.js';
 import { usePageVisible } from './workbench.js';
-import { withReadDeadline, withMutationDeadline, messageOf, subtleText, dimmedText, helperStateLabel, helperCapabilitySummary, searchSummary } from './connection-ui.js';
+import { withReadDeadline, withMutationDeadline, messageOf, subtleText, dimmedText, helperStateLabel, helperCapabilitySummary, searchSummary, localizeSourceText } from './connection-ui.js';
 import { MigrationWizard } from './migration.js';
 type HostAction = 'connect' | 'disconnect' | 'retry' | 'diagnostics';
 export function SshRemotePanel({ ssh, connectionStatus }: {
@@ -178,7 +178,7 @@ export function SshRemotePanel({ ssh, connectionStatus }: {
               </div>
               {host.helper.environment?.search.available === false && <div style={subtleText}>{searchSummary(host.helper)}</div>}
               {(hostErrors[host.alias] || host.helper.error) && <div role="alert" style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{hostErrors[host.alias] || host.helper.error}</div>}
-              {host.helper.hint && <div style={{ marginTop: 6, ...subtleText }}>{host.helper.hint}</div>}
+              {host.helper.hint && <div style={{ marginTop: 6, ...subtleText }}>{localizeSourceText(host.helper.hint)}</div>}
               <details><summary style={subtleText}>{t('连接详情')}</summary>
                 <div style={dimmedText}>Helper {host.helper.version || t('尚未握手')} · {helperCapabilitySummary(host.helper.capabilities)}</div>
                 {host.helper.environment?.search.available !== false && <div style={subtleText}>{searchSummary(host.helper)}</div>}
