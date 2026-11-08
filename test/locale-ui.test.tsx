@@ -66,6 +66,15 @@ describe('official locale integration', () => {
       expect(localizeSourceText('请在本机终端核对主机指纹；插件不会修改 known_hosts。'))
         .toBe('Verify the host fingerprint in a local terminal; the plugin does not modify known_hosts.');
       expect(localizeSourceText('host specific detail')).toBe('host specific detail');
+      // A raw diagnostic that resembles a UI label is not a Host template.
+      expect(localizeSourceText('目录：/work/中文 space.txt')).toBe('目录：/work/中文 space.txt');
+      const longDiagnostic = 'x 超过 '.repeat(32768);
+      expect(localizeSourceText(longDiagnostic)).toBe(longDiagnostic);
+      const detail = 'EACCES\n/work/中文 {value1} <script> / file';
+      expect(localizeSourceText(`转发进程启动失败：${detail}`)).toBe(`Failed to start the forward process: ${detail}`);
+      expect(localizeSourceText('转发进程启动失败：')).toBe('Failed to start the forward process: ');
+      expect(localizeSourceText('检查更新失败（HTTP 503），请稍后重试。')).toBe('Update check failed (HTTP 503). Try again later.');
+      expect(localizeSourceText('路径大小写或 Unicode 冲突：Foo / foo')).toBe('Case or Unicode conflict: Foo / foo');
       expect(localizeSourceText(undefined)).toBeUndefined();
       expect(localizeEnvironmentError('环境检查失败：ENOENT')).toBe('Environment check failed: ENOENT');
       expect(localizeEnvironmentError('plain failure')).toBe('plain failure');

@@ -1302,3 +1302,11 @@ export const ru: Record<MessageKey, string> = {
 /** Prefix the remote environment probe uses for free-form diagnostics. */
 export const ENVIRONMENT_CHECK_PREFIX = '环境检查失败：';
 
+/** Only Host-owned formatted messages may be decoded back into translation parameters. */
+export const HOST_MESSAGE_TEMPLATES = [
+  'SSH 拒绝建立本地转发：{value1}',
+  '转发进程启动失败：{value1}',
+  '检查更新失败（HTTP {value1}），请稍后重试。',
+  '路径大小写或 Unicode 冲突：{value1} / {value2}',
+] as const satisfies readonly MessageKey[];
+

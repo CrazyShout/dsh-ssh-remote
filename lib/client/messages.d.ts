@@ -652,4 +652,6 @@ export declare const zh: Record<MessageKey, string>;
 export declare const ru: Record<MessageKey, string>;
 /** Prefix the remote environment probe uses for free-form diagnostics. */
 export declare const ENVIRONMENT_CHECK_PREFIX = "\u73AF\u5883\u68C0\u67E5\u5931\u8D25\uFF1A";
+/** Only Host-owned formatted messages may be decoded back into translation parameters. */
+export declare const HOST_MESSAGE_TEMPLATES: readonly ["SSH 拒绝建立本地转发：{value1}", "转发进程启动失败：{value1}", "检查更新失败（HTTP {value1}），请稍后重试。", "路径大小写或 Unicode 冲突：{value1} / {value2}"];
 //# sourceMappingURL=messages.d.ts.map
