@@ -1,7 +1,7 @@
 import { createElement, useSyncExternalStore, type ReactNode } from 'react';
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client';
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots';
-import { en, zh, type MessageKey } from './messages.js';
+import { en, ru, zh, type MessageKey } from './messages.js';
 
 export const LOCALE_NAMESPACE = 'sshRemote';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -23,6 +23,8 @@ export const formatDateTime = (value: number) => new Intl.DateTimeFormat(binding
 
 export function installLocale(locale: LocaleRuntime): () => void {
   const unregister = locale.register(LOCALE_NAMESPACE, { en, zh });
+  // ru is a language-pack contribution: the built-in pair is zh/en, extra tags use the single-locale form.
+  const unregisterRu = locale.register(LOCALE_NAMESPACE, 'ru', ru);
   const current = {
     translate: locale.bind(LOCALE_NAMESPACE),
     subscribe: (listener: () => void) => locale.subscribe(listener),
@@ -30,7 +32,7 @@ export function installLocale(locale: LocaleRuntime): () => void {
     language: () => locale.getSnapshot().active,
   };
   binding = current;
-  return () => { unregister(); if (binding === current) binding = idle; };
+  return () => { unregisterRu(); unregister(); if (binding === current) binding = idle; };
 }
 
 /** Re-render a slot subtree on the official locale revision, without remounting it. */
