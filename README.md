@@ -22,7 +22,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-r
 
 无需克隆、编译或复制插件目录。安装器仍需联网下载运行依赖。
 
-插件详情中的 **开始使用** 可随时展开查看连接步骤；界面跟随 DSH 的中文／英文设置，不另设语言开关。已有 0.12.0 的用户可直接在插件详情检查更新。
+插件详情中的 **开始使用** 可随时展开查看连接步骤；界面跟随 DSH 的语言设置，提供中文、英文和俄语词典，不另设语言开关。俄语需由 DSH 的语言包提供可选项。已有 0.12.0 的用户可直接在插件详情检查更新。
 
 > **请使用完整地址。** npm 上同名的 `dsh-ssh-remote` 属于其他项目。Desktop 与 Web 使用独立 profile，需分别安装。
 
@@ -119,10 +119,10 @@ ssh -o BatchMode=yes devbox true
 
 源码 `link:` / 本地目录安装只提示版本，使用 Git 同步，不会被安装包覆盖。0.11.2 及更早版本尚无此入口，需要先按上方步骤安装当前版本。也可随时从 [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) 手动选择固定版本；若 DSH 拒绝直接替换某种来源，按官方插件页提示处理，不自动卸载旧版。Web CLI 仍可在同一 profile 再次运行 `add`。
 
-**回退到 0.13.3：** 在插件页安装上一正式版本，或使用：
+**回退到 0.13.4：** 在插件页安装上一正式版本，或使用：
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.3/dsh-ssh-remote-0.13.3.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz'
 ~~~
 
 按提示重启，已迁移的 OpenSSH 配置保留。**0.13.0 及更早版本没有本版的控制连接认证修复；回退仅用于隔离排障，不应作为安全等价版本长期使用。**

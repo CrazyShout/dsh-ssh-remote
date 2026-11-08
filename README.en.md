@@ -20,7 +20,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-r
 
 No clone, build or manual plugin-directory copying. The installer still downloads runtime dependencies.
 
-Expand **Getting started** in the official plugin details for connection steps. The UI follows DSH's Chinese/English preference, without another language switch. Existing 0.12.0 users can check for updates directly in plugin details.
+Expand **Getting started** in the official plugin details for connection steps. The UI follows DSH's language setting, with Chinese, English and Russian dictionaries and no separate switch. Russian must be offered by a DSH language pack. Existing 0.12.0 users can check for updates directly in plugin details.
 
 > **Use the full address.** The npm package named `dsh-ssh-remote` belongs to another project. Desktop and Web have separate profiles and need separate installation.
 
@@ -117,10 +117,10 @@ Check for updates also refreshes local installation facts. When the old request 
 
 Source `link:` / local-directory installs show version information only and must be synchronized with Git; archives never replace them automatically. Version 0.11.2 and earlier need one manual installation of the current release to gain this feature. [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) remain available for manual selection. If DSH refuses to replace a source directly, follow its plugin-page guidance; this feature does not remove the old package first. Web CLI users can still repeat `add` in the same profile.
 
-**Roll back to 0.13.3:** install the previous official release in Plugins, or run:
+**Roll back to 0.13.4:** install the previous official release in Plugins, or run:
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.3/dsh-ssh-remote-0.13.3.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz'
 ~~~
 
 Restart when requested; migrated OpenSSH settings remain. **Version 0.13.0 and earlier lack this release's control-connection authentication fix. Rollback is for isolated diagnostics, not a security-equivalent long-term alternative.**

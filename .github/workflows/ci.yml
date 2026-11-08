@@ -123,7 +123,7 @@ jobs:
       - name: Install file-discovery test dependency
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run test:helper
-      - run: npx vitest run test/helper-python.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts test/transfer-helper.integration.test.ts test/transfers.integration.test.ts test/helper-adapters.integration.test.ts test/terminal-state-helper.integration.test.ts
+      - run: npx vitest run test/helper-python.integration.test.ts test/helper-sandbox-diagnostics.integration.test.ts test/helper-concurrency.integration.test.ts test/editor.integration.test.ts test/discovery.integration.test.ts test/transfer-helper.integration.test.ts test/transfers.integration.test.ts test/helper-adapters.integration.test.ts test/terminal-state-helper.integration.test.ts
 
   bash-44:
     runs-on: ubuntu-22.04
