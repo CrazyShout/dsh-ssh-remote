@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[中文](README.md) · [Download 0.13.4](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.4) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
+[中文](README.md) · [Download 0.13.5](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.5) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 Open an SSH workspace inside DeepSeek Harness. Browse files and run commands in its native panels, with remote editing, `@` references, port forwarding and file transfers. Reuse `~/.ssh/config`; no full DSH installation is needed on the server.
 
@@ -15,7 +15,7 @@ Already have working **DSH** and an **SSH alias**? Start here. Desktop includes 
 3. Choose **Add workspace**, select your SSH host and folder, then use native **Workspace files** and **New terminal**.
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-remote-0.13.5.tgz
 ~~~
 
 No clone, build or manual plugin-directory copying. The installer still downloads runtime dependencies.
@@ -27,7 +27,7 @@ Expand **Getting started** in the official plugin details for connection steps. 
 ### CLI / Web: one install command
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-remote-0.13.5.tgz'
 ~~~
 
 Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its terminal first. **For Desktop, use the application's own Plugins page.**
@@ -40,7 +40,7 @@ Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its termina
 Fixed Git tag (requires local Git):
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.4'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.5'
 ~~~
 
 You can also download the release `.tgz` and enter its absolute path in Plugins. Verify downloads with `SHA256SUMS`. Review dependency-script prompts in the official installer, without globally allowing unknown scripts. Version 0.11.0 removed the `ssh2` / `cpu-features` native-build dependencies.
@@ -94,7 +94,7 @@ Compatibility coverage: **0.2.0-rc.2 / 0.2.1-rc.2 / 0.2.1-rc.3 / 0.2.2-rc.1**. S
 | CLI / Web | Node 22+, `dsh` and `pnpm` on PATH |
 | Basic remote connection | Local OpenSSH and non-interactive authentication; remote Python 3.8+ |
 | Search and `@` completion | Remote ripgrep; Git workspace discovery also needs Git |
-| Restricted model commands | Remote Linux and bubblewrap; not required for browsing or human terminals |
+| Restricted model commands | Remote Linux and working bubblewrap with `--bind-fd` (upstream 0.10.0+ or a distribution backport); not required for browsing or human terminals |
 | Remote `run_code` / PTC | Remote Node 22.13+ with `stripTypeScriptTypes`; restricted execution still requires bubblewrap. Desktop's bundled Node does not install Node on the remote host |
 
 - Editing: complete UTF-8 files, **256 KiB** maximum. Save drafts before restarting.
