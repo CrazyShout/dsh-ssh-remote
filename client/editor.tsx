@@ -1,4 +1,5 @@
 import { t, localized } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -143,7 +144,7 @@ export function RemoteEditorPane({ model }: {
                 fontFamily: 'ui-monospace,monospace', fontSize: 13, lineHeight: 1.6, color: 'var(--dsw-alias-label-primary)',
                 background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}/>
     </>}
-    <div role={['conflict', 'unknown', 'failed'].includes(state.outcome ?? '') ? 'alert' : 'status'} style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{state.message || t('输入远程文本文件路径；仅支持工作区内完整 UTF-8 文本。不自动保存。')}</div>
+    <div role={['conflict', 'unknown', 'failed'].includes(state.outcome ?? '') ? 'alert' : 'status'} style={{ fontSize: 12, overflowWrap: 'anywhere' }}>{localizeSourceText(state.message) || t('输入远程文本文件路径；仅支持工作区内完整 UTF-8 文本。不自动保存。')}</div>
     {state.remoteText !== undefined && <details open><summary>{t('最新远端内容（只读；上方仍是你的草稿）')}</summary>
       <pre style={{ maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{state.remoteText}</pre>
     </details>}

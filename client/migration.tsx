@@ -1,4 +1,5 @@
 import { t } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { useEffect, useRef, useState } from 'react';
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { SshRemote } from 'dsh-ssh-remote/ssh';
@@ -66,7 +67,7 @@ export function MigrationWizard({ ssh, onComplete }: {
                 setAliases(current => ({ ...current, [host.name]: event.target.value }));
                 setPreview(current => current && { ...current, ready: false });
             }}/>
-      {host.error && <span role="alert">{host.error}</span>}
+      {host.error && <span role="alert">{localizeSourceText(host.error)}</span>}
     </label>)}
     {preview && <details open><summary>{t('核对写入差异（仅配置，不读取私钥）')}</summary>
       {(['config', 'fragment'] as const).map(key => <div key={key} style={{ minWidth: 0 }}>

@@ -251,7 +251,7 @@ export function NativePanelActions(props: NativePanelProps) {
         <StatusDot status={status}/>
       </Button>
       </Tooltip>
-      {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{failure.message}</span>}
+      {failure?.key === key && <span role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 11 }}>{localizeSourceText(failure.message)}</span>}
     </div>);
 }
 export function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected) {

@@ -1,5 +1,5 @@
 import { t } from './locale.js';
-import { en, ENVIRONMENT_CHECK_PREFIX, type MessageKey } from './messages.js';
+import { en, ENVIRONMENT_CHECK_PREFIX, HOST_MESSAGE_TEMPLATES, type MessageKey } from './messages.js';
 import type { CSSProperties } from 'react';
 import type { RemoteResult, HelperHostStatus } from 'dsh-ssh-remote/ssh';
 const MUTATION_DEADLINE_MS = 30000;
@@ -43,11 +43,39 @@ export function messageOf(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
 }
 const SOURCE_KEYS = new Set<string>(Object.keys(en));
+// Do not infer patterns from every UI label. Generic leading placeholders can
+// reinterpret raw diagnostics and backtrack quadratically on long error text.
+const SOURCE_TEMPLATES = HOST_MESSAGE_TEMPLATES
+    .map(key => {
+    const parts = key.split(/\{(\w+)\}/gu);
+    const names: string[] = [];
+    let pattern = '^';
+    for (let index = 0; index < parts.length; index += 1) {
+        if (index % 2 === 1) {
+            names.push(parts[index]);
+            pattern += '(.*?)';
+        }
+        else
+            pattern += parts[index].replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    }
+    return { key, names, re: new RegExp(pattern + '$', 'su') };
+})
+    .sort((left, right) => right.key.length - left.key.length);
 /** Host modules return Chinese source copy; translate it when the client dictionary knows that key. */
 export function localizeSourceText(text: string | undefined): string | undefined {
     if (!text)
         return undefined;
-    return SOURCE_KEYS.has(text) ? t(text as MessageKey) : text;
+    if (SOURCE_KEYS.has(text))
+        return t(text as MessageKey);
+    for (const template of SOURCE_TEMPLATES) {
+        const match = template.re.exec(text);
+        if (!match)
+            continue;
+        const params: Record<string, string> = {};
+        template.names.forEach((name, index) => { params[name] = match[index + 1]; });
+        return t(template.key as MessageKey, params);
+    }
+    return text;
 }
 /** The remote environment probe prefixes a free-form diagnostic with a source-copy sentence. */
 export function localizeEnvironmentError(error: string | undefined): string | undefined {

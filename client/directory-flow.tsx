@@ -5,7 +5,7 @@ import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspa
 import { Button, IconFolderCloseRegular, IconPlusOutlineRegular, Input, Modal, Pill } from '@deepseek-ai/dsh-client-ui-primitives';
 import { isDirectoryPickerUnavailable, probeLocalBrowse, windowsDriveAnchors, type LocalAnchor } from './local-browse.js';
 import type { SshRemote, RemoteDirectoryListing, RemoteResult, SshConfig } from 'dsh-ssh-remote/ssh';
-import { asResult, withMutationDeadline, withReadDeadline, withDeadline, READ_DEADLINE_MS, messageOf, subtleText, dimmedText, helperStateLabel, searchSummary } from './connection-ui.js';
+import { asResult, withMutationDeadline, withReadDeadline, withDeadline, READ_DEADLINE_MS, messageOf, subtleText, dimmedText, helperStateLabel, searchSummary, localizeSourceText } from './connection-ui.js';
 /** Which filesystem the combined dialog is currently browsing. */
 type BrowseTarget = {
     kind: 'local';
@@ -381,7 +381,7 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
             {localProbeError && <span role="alert" style={subtleText}>{localProbeError}</span>}
             <div style={hostListStyle}>
               {configLoading && <span role="status" style={subtleText}>{t('正在读取 SSH 主机…')}</span>}
-              {configError && <span role="alert">{configError}</span>}
+              {configError && <span role="alert">{localizeSourceText(configError)}</span>}
               {config?.hosts.map((host) => (<Button key={host.alias} variant="outline" disabled={disabled} onClick={() => void enter({ kind: 'ssh', alias: host.alias })} style={sourceRowStyle}>
                   <strong>{host.alias}</strong>
                   <span style={subtleText}>
@@ -449,7 +449,7 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
 
         {loading && <div role="status" style={subtleText}>{t('正在读取…')}</div>}
         {pathDirty && !loading && !error && <div role="status" style={subtleText}>{t('输入停顿后自动前往；Enter 可立即前往。')}</div>}
-        {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{error}</div>}
+        {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{localizeSourceText(error)}</div>}
       </div>
     </Modal>);
 }
