@@ -2,6 +2,23 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## 已安装 bubblewrap，仍报 E_SANDBOX_UNAVAILABLE / Installed bwrap is not enough
+
+受限命令的探测不仅检查 `bwrap --version`，还实际执行 `--bind-fd`、PID namespace 和私有 `/tmp` 挂载。上游 [0.9.0](https://github.com/containers/bubblewrap/releases/tag/v0.9.0) 没有 `--bind-fd`；它在 [0.10.0](https://github.com/containers/bubblewrap/releases/tag/v0.10.0) 加入，并回补到 [0.6.3](https://github.com/containers/bubblewrap/releases/tag/v0.6.3) 及部分发行版。因此不能只按版本号判断。
+
+先在同一个 SSH 主机检查（把 `devbox` 换成你的 alias）：
+
+```sh
+ssh devbox 'uname -s; command -v bwrap; bwrap --version; bwrap --help | grep -- --bind-fd'
+```
+
+- 没有 `--bind-fd`：更新远端发行版的 bubblewrap，使其提供该能力。插件不会自动安装软件或放开权限。
+- 已有该参数：保留插件诊断中的失败阶段及退出码，检查远端 namespace / 挂载策略；简单的 `--ro-bind / / /bin/true` 成功并不能证明完整探测通过。
+- helper 通过 SSH 在远端运行，代码位于 `~/.local/share/dsh-remote-helper/releases/<sha256>/helper.py`；不在 `~/.dsh-workspace`。诊断里的 `hello.platform` 是远端 helper 的实际系统，不是 Desktop 所在系统。
+- 探测结果按 helper daemon 缓存。更新 bubblewrap 后，先保存工作、停止该连接的任务再断开；等旧 helper 的空闲保留期结束后重新连接，或使用含新 helper 哈希的插件版本。仅刷新页面不保证重做探测。不要清空其他任务的 helper 目录，也不要改成 full-access 来冒充修复。
+
+English: the sandbox probe executes `--bind-fd`, PID namespaces and private `/tmp` mounts, not just a version check. Upstream 0.9.0 lacks FD binds; 0.10.0 introduces them and older distribution packages may backport them. Check the actual help output on the SSH host. If the option exists, investigate the reported probe exit/timeout and the host namespace/mount policy. The helper runs remotely under `~/.local/share/dsh-remote-helper`, not on the Mac or under `~/.dsh-workspace`. Probe results are cached for the daemon lifetime; after changing bwrap, stop this connection's work and let its disconnected daemon expire before reconnecting (or use a plugin with a new helper hash). A page refresh is not a fresh probe. Restricted execution stays fail-closed.
+
 ## 子代理搜索报 ripgrep provider failure / Child search loses SSH routing
 
 [Issue #42](https://github.com/CrazyShout/dsh-ssh-remote/issues/42)：DSH 0.2.2-rc.1 + 插件 0.13.3 创建子代理时，官方工作目录服务将 SSH 占位目录规范化成不带主机身份的 POSIX 路径。后续 glob/grep 可能把该目录当成本机路径；这不代表远端缺少 rg。

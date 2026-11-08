@@ -37,7 +37,7 @@ import termios
 # DSH_BUNDLED_EXTENSIONS
 
 PROTOCOL = "1"
-VERSION = "0.13.1"
+VERSION = "0.13.5"
 MAX_FRAME = 1_048_576
 MAX_READ = 64 * 1024 * 1024
 MAX_INLINE_READ = 512 * 1024
@@ -93,6 +93,7 @@ def login_shell() -> str:
 
 
 _BWRAP_RESULT: Any = False
+_BWRAP_FAILURE = ""
 _SPAWN_BROKER: Any = None
 _SPAWN_BROKER_LOCK = threading.Lock()
 
@@ -128,9 +129,12 @@ def spawn_in_broker(function: Any) -> Any:
 
 
 def bwrap_available() -> Optional[str]:
-    global _BWRAP_RESULT
+    global _BWRAP_RESULT, _BWRAP_FAILURE
     if _BWRAP_RESULT is not False: return _BWRAP_RESULT
-    candidate = shutil.which("bwrap") if platform.system() == "Linux" else None
+    system = platform.system()
+    candidate = shutil.which("bwrap") if system == "Linux" else None
+    _BWRAP_FAILURE = ("remote helper is running on " + system + "; restricted execution requires Linux"
+                      if system != "Linux" else "bwrap was not found in the remote helper PATH")
     if candidate:
         probe_fd = -1
         try:
@@ -141,14 +145,27 @@ def bwrap_available() -> Optional[str]:
                                     "/tmp/dsh-helper-probe", "--", "/bin/true"],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    pass_fds=(probe_fd,), timeout=2, check=False)
+            _BWRAP_FAILURE = "" if probe.returncode == 0 else "remote bwrap probe failed (exit " + str(probe.returncode) + ")"
             candidate = candidate if probe.returncode == 0 else None
-        except (OSError, subprocess.SubprocessError): candidate = None
+        except subprocess.TimeoutExpired:
+            _BWRAP_FAILURE = "remote bwrap probe timed out"; candidate = None
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Keep the diagnostic bounded and free of commands, environment
+            # values or arbitrary stderr. The real probe remains authoritative.
+            _BWRAP_FAILURE = "remote bwrap probe could not run (" + type(exc).__name__ + ")"; candidate = None
         finally:
             if probe_fd >= 0:
                 try: os.close(probe_fd)
                 except OSError: pass
     _BWRAP_RESULT = candidate
     return candidate
+
+
+def bwrap_unavailable_message() -> str:
+    return (_BWRAP_FAILURE + "; restricted execution requires working bubblewrap with --bind-fd, "
+            "PID namespaces and private /tmp mounts. Check bwrap --help on the SSH host; "
+            "upstream 0.9.0 lacks --bind-fd (added in 0.10.0 and backported by some distributions). "
+            "The remote helper is under ~/.local/share/dsh-remote-helper, not ~/.dsh-workspace.")
 
 
 def valid_id(value: Any, field: str) -> str:
@@ -1134,7 +1151,7 @@ class Server:
         cwd = os.path.join(ws.path, *parts); command = list(argv); inherited_fds: Tuple[int, ...] = (); workspace_under_tmp = False
         if ws.access != "danger-full-access":
             bwrap = bwrap_available()
-            if not bwrap: raise RpcError("E_SANDBOX_UNAVAILABLE", "bwrap is required for restricted remote execution")
+            if not bwrap: raise RpcError("E_SANDBOX_UNAVAILABLE", bwrap_unavailable_message())
             command = [bwrap, "--die-with-parent", "--unshare-pid", "--ro-bind", "/", "/",
                        "--proc", "/proc", "--dev", "/dev"]
             if ws.access == "workspace-write":

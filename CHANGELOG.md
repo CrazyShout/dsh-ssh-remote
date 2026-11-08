@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 0.13.5
+
+- #44–#46：补齐 Host 提供的连接与工作台提示翻译，并接入 DSH 官方俄语词典注册。感谢 @rusliksu；俄语用词仍欢迎母语使用者校对。
+- 翻译只匹配明确列出的 Host 模板，避免对全部 UI 文案生成正则导致长错误文本卡顿；不改写未知诊断、文件路径或参数。
+- #47：区分远端系统不支持、找不到 bwrap、实际探测失败和超时。错误明确说明 `--bind-fd` 要求及 helper 的远端位置；README 和排错页补齐发行版回补说明。**不是让不支持 FD 挂载的旧 bubblewrap 绕过限制**，报告者的远端环境仍需确认。
+- helper 更新为 0.13.5，仅改诊断。沙箱命令、权限、SSH 路由与传输格式不变；不新增运行依赖或 RPC。
+- English: localize Host hints/workbench diagnostics and add the Russian dictionary via DSH, contributed by @rusliksu. Limit source-template matching to explicit Host messages and preserve raw diagnostic data. Explain remote sandbox probe failures and the required `--bind-fd` capability, without weakening sandbox enforcement. Helper 0.13.5 changes diagnostics only; the reporter's environment remains to be confirmed.
+
 ## 0.13.4
 
 - #42：适配 DSH 0.2.2-rc.1 的工作目录服务；子代理和 `cd` 后的目录保留所属 SSH 主机，不再把远端 POSIX 路径交给本机 glob/grep。旧目录状态通过官方 setter 恢复，不改写历史日志。

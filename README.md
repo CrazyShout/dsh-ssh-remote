@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[English](README.en.md) · [下载 0.13.4](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.4) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
+[English](README.en.md) · [下载 0.13.5](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.5) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
 
 **远程开发，像在本地一样顺手。**
 
@@ -17,19 +17,19 @@
 3. 点击 **添加工作区**，选择 SSH 主机与远端文件夹，即可使用官方 **工作区文件** 和 **新建终端**。
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-remote-0.13.5.tgz
 ~~~
 
 无需克隆、编译或复制插件目录。安装器仍需联网下载运行依赖。
 
-插件详情中的 **开始使用** 可随时展开查看连接步骤；界面跟随 DSH 的中文／英文设置，不另设语言开关。已有 0.12.0 的用户可直接在插件详情检查更新。
+插件详情中的 **开始使用** 可随时展开查看连接步骤；界面跟随 DSH 的语言设置，提供中文、英文和俄语词典，不另设语言开关。俄语需由 DSH 的语言包提供可选项。已有 0.12.0 的用户可直接在插件详情检查更新。
 
 > **请使用完整地址。** npm 上同名的 `dsh-ssh-remote` 属于其他项目。Desktop 与 Web 使用独立 profile，需分别安装。
 
 ### CLI / Web：一条安装命令
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.5/dsh-ssh-remote-0.13.5.tgz'
 ~~~
 
 安装后重新启动 `dsh web`；已有服务先在它的终端按 Ctrl-C。**Desktop 请使用应用自己的插件页。**
@@ -42,7 +42,7 @@ dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/relea
 固定 Git Tag（需要本机 Git）：
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.4'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.5'
 ~~~
 
 也可下载 Release 的 `.tgz`，在插件页输入其绝对路径；`SHA256SUMS` 用于校验下载包。遇到依赖脚本提示时按官方安装器确认，不要全局放开未知脚本。0.11.0 起已移除 `ssh2` / `cpu-features` 原生构建依赖。
@@ -96,7 +96,7 @@ ssh -o BatchMode=yes devbox true
 | CLI / Web | Node 22+，`dsh` 与 `pnpm` 可用 |
 | 基础远程连接 | 本机 OpenSSH、可用的非交互认证；远端 Python 3.8+ |
 | 文件搜索与 `@` 补全 | 远端 ripgrep；Git 工作区索引还需要 Git |
-| 模型受限命令执行 | 远端 Linux 和 bubblewrap；浏览文件、人工终端不要求它 |
+| 模型受限命令执行 | 远端 Linux 和支持 `--bind-fd` 的可用 bubblewrap（上游 0.10.0+ 或发行版回补）；浏览文件、人工终端不要求它 |
 | 远端 `run_code` / PTC | 远端 Node 22.13+（须支持 `stripTypeScriptTypes`）；受限权限仍需 bubblewrap。Desktop 自带 Node 不等于远端已有 Node |
 
 - 文本编辑：完整 UTF-8 文件，最大 **256 KiB**；重启前保存草稿。
@@ -119,10 +119,10 @@ ssh -o BatchMode=yes devbox true
 
 源码 `link:` / 本地目录安装只提示版本，使用 Git 同步，不会被安装包覆盖。0.11.2 及更早版本尚无此入口，需要先按上方步骤安装当前版本。也可随时从 [Releases](https://github.com/CrazyShout/dsh-ssh-remote/releases) 手动选择固定版本；若 DSH 拒绝直接替换某种来源，按官方插件页提示处理，不自动卸载旧版。Web CLI 仍可在同一 profile 再次运行 `add`。
 
-**回退到 0.13.3：** 在插件页安装上一正式版本，或使用：
+**回退到 0.13.4：** 在插件页安装上一正式版本，或使用：
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.3/dsh-ssh-remote-0.13.3.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.4/dsh-ssh-remote-0.13.4.tgz'
 ~~~
 
 按提示重启，已迁移的 OpenSSH 配置保留。**0.13.0 及更早版本没有本版的控制连接认证修复；回退仅用于隔离排障，不应作为安全等价版本长期使用。**
