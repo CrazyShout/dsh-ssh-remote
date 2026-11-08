@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { en, zh } from '../client/messages.js';
 import { installLocale, localized, t, formatDateTime } from '../client/locale.js';
+import { localizeEnvironmentError, localizeSourceText } from '../client/connection-ui.js';
 import { localeFixture } from './locale-fixture.js';
 import { RemoteEditorPane } from '../client/editor.js';
 import { EditorModel } from '../client/editor-model.js';
@@ -54,6 +55,22 @@ describe('official locale integration', () => {
         ts.forEachChild(node, visit);
       };
       visit(source);
+    }
+  });
+
+  it('translates host-provided connection hints with the active dictionary', () => {
+    const fixture = localeFixture(), release = installLocale(fixture.locale);
+    try {
+      fixture.change('en');
+      expect(localizeSourceText('请在本机终端核对主机指纹；插件不会修改 known_hosts。'))
+        .toBe('Verify the host fingerprint in a local terminal; the plugin does not modify known_hosts.');
+      expect(localizeSourceText('host specific detail')).toBe('host specific detail');
+      expect(localizeSourceText(undefined)).toBeUndefined();
+      expect(localizeEnvironmentError('环境检查失败：ENOENT')).toBe('Environment check failed: ENOENT');
+      expect(localizeEnvironmentError('plain failure')).toBe('plain failure');
+    }
+    finally {
+      release();
     }
   });
 

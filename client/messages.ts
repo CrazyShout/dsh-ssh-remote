@@ -4,6 +4,7 @@ export const en = {
   'DSH 中已找不到这次安装请求。当前版本已重新读取。': 'DSH no longer has this installation request. The current version has been checked again.',
   '当前安装信息未确认': 'Current installation not confirmed',
   '已安装 {version}，正在确认是否生效。': 'Installed {version}; checking activation.',
+  '无法确认这是临时故障，已停止自动重试；请查看诊断后手动重试。': 'This failure could not be confirmed as temporary; automatic retries stopped. Check diagnostics and retry manually.',
   '更新未完成。': 'The update did not finish.',
   '更新详情': 'Update details',
   '处理阶段：{stage}': 'Stage: {stage}',
@@ -11,6 +12,7 @@ export const en = {
   '复制日志路径': 'Copy log path',
   '已复制日志路径。': 'Log path copied.',
   '剪贴板不可用，请手动复制路径。': 'Clipboard unavailable. Copy the path manually.',
+  '环境检查失败：': 'Environment check failed: ',
   '结束这次提示': 'Dismiss this notice',
   '结束这次提示？': 'Dismiss this notice?',
   '只清理本页的旧更新记录，不会取消安装、回退版本或删除文件。这不代表上次安装已取消。': 'This only clears the old update record on this page. It does not cancel installation, roll back a version, or delete files. It does not mean the previous installation was cancelled.',
@@ -29,6 +31,14 @@ export const en = {
   '获取版本信息': 'Release metadata',
   '获取校验清单': 'Checksum manifest',
   '检查由运行 DSH 的主机发起。需要代理时，请检查该主机的网络和 DSH 启动环境；不会修改系统代理或跳过证书校验。': 'Checks run on the DSH host. If a proxy is required, check that host’s network and DSH launch environment. System proxy settings and certificate checks are left unchanged.',
+  '请先在终端验证 SSH alias，并将密钥解锁到 ssh-agent；后台连接无法输入密码或 MFA。': 'Verify the SSH alias in a terminal and unlock the key in ssh-agent; background connections cannot prompt for a password or MFA.',
+  '请在本机终端核对主机指纹；插件不会修改 known_hosts。': 'Verify the host fingerprint in a local terminal; the plugin does not modify known_hosts.',
+  '请检查插件与 helper 版本或安装完整性，再手动重试。': 'Check the plugin and helper versions or installation integrity, then retry manually.',
+  '请检查本机 SSH 配置、主机名以及远端用户目录权限或磁盘空间。': 'Check the local SSH configuration, host name, and the remote home directory permissions or free disk space.',
+  '远端拒绝本次连接，请查看错误原因后手动重试。': 'The remote host rejected this connection; check the error and retry manually.',
+  '远端暂时不可用，将自动退避重试；也可以停止连接。': 'The remote host is temporarily unavailable; retrying with backoff, or you can stop the connection.',
+  '远端需要 PATH 中可用的 Python 3.8 或更新版本。': 'The remote host needs Python 3.8 or newer available in PATH.',
+  '连接暂时中断，将自动退避重试；也可以停止连接。': 'The connection was interrupted; retrying with backoff, or you can stop the connection.',
   '页面可见时约 5 分钟后自动复查，也可点击“检查更新”。': 'Checks resume in about 5 minutes while visible. You can also select Check for updates.',
   '选择文件以预览': 'Select a file to preview',
   '远端端口暂不可达，请确认服务已启动。': 'The remote port is unavailable. Check that the service is running.',
@@ -503,3 +513,7 @@ export const en = {
 
 export type MessageKey = keyof typeof en;
 export const zh = Object.fromEntries(Object.keys(en).map(key => [key, key])) as Record<MessageKey, string>;
+
+/** Prefix the remote environment probe uses for free-form diagnostics. */
+export const ENVIRONMENT_CHECK_PREFIX = '环境检查失败：';
+

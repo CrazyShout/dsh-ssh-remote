@@ -4,6 +4,7 @@ export declare const en: {
     readonly 'DSH \u4E2D\u5DF2\u627E\u4E0D\u5230\u8FD9\u6B21\u5B89\u88C5\u8BF7\u6C42\u3002\u5F53\u524D\u7248\u672C\u5DF2\u91CD\u65B0\u8BFB\u53D6\u3002': "DSH no longer has this installation request. The current version has been checked again.";
     readonly 当前安装信息未确认: "Current installation not confirmed";
     readonly '\u5DF2\u5B89\u88C5 {version}\uFF0C\u6B63\u5728\u786E\u8BA4\u662F\u5426\u751F\u6548\u3002': "Installed {version}; checking activation.";
+    readonly '\u65E0\u6CD5\u786E\u8BA4\u8FD9\u662F\u4E34\u65F6\u6545\u969C\uFF0C\u5DF2\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF1B\u8BF7\u67E5\u770B\u8BCA\u65AD\u540E\u624B\u52A8\u91CD\u8BD5\u3002': "This failure could not be confirmed as temporary; automatic retries stopped. Check diagnostics and retry manually.";
     readonly '\u66F4\u65B0\u672A\u5B8C\u6210\u3002': "The update did not finish.";
     readonly 更新详情: "Update details";
     readonly '\u5904\u7406\u9636\u6BB5\uFF1A{stage}': "Stage: {stage}";
@@ -11,6 +12,7 @@ export declare const en: {
     readonly 复制日志路径: "Copy log path";
     readonly '\u5DF2\u590D\u5236\u65E5\u5FD7\u8DEF\u5F84\u3002': "Log path copied.";
     readonly '\u526A\u8D34\u677F\u4E0D\u53EF\u7528\uFF0C\u8BF7\u624B\u52A8\u590D\u5236\u8DEF\u5F84\u3002': "Clipboard unavailable. Copy the path manually.";
+    readonly '\u73AF\u5883\u68C0\u67E5\u5931\u8D25\uFF1A': "Environment check failed: ";
     readonly 结束这次提示: "Dismiss this notice";
     readonly '\u7ED3\u675F\u8FD9\u6B21\u63D0\u793A\uFF1F': "Dismiss this notice?";
     readonly '\u53EA\u6E05\u7406\u672C\u9875\u7684\u65E7\u66F4\u65B0\u8BB0\u5F55\uFF0C\u4E0D\u4F1A\u53D6\u6D88\u5B89\u88C5\u3001\u56DE\u9000\u7248\u672C\u6216\u5220\u9664\u6587\u4EF6\u3002\u8FD9\u4E0D\u4EE3\u8868\u4E0A\u6B21\u5B89\u88C5\u5DF2\u53D6\u6D88\u3002': "This only clears the old update record on this page. It does not cancel installation, roll back a version, or delete files. It does not mean the previous installation was cancelled.";
@@ -29,6 +31,14 @@ export declare const en: {
     readonly 获取版本信息: "Release metadata";
     readonly 获取校验清单: "Checksum manifest";
     readonly '\u68C0\u67E5\u7531\u8FD0\u884C DSH \u7684\u4E3B\u673A\u53D1\u8D77\u3002\u9700\u8981\u4EE3\u7406\u65F6\uFF0C\u8BF7\u68C0\u67E5\u8BE5\u4E3B\u673A\u7684\u7F51\u7EDC\u548C DSH \u542F\u52A8\u73AF\u5883\uFF1B\u4E0D\u4F1A\u4FEE\u6539\u7CFB\u7EDF\u4EE3\u7406\u6216\u8DF3\u8FC7\u8BC1\u4E66\u6821\u9A8C\u3002': "Checks run on the DSH host. If a proxy is required, check that host’s network and DSH launch environment. System proxy settings and certificate checks are left unchanged.";
+    readonly '\u8BF7\u5148\u5728\u7EC8\u7AEF\u9A8C\u8BC1 SSH alias\uFF0C\u5E76\u5C06\u5BC6\u94A5\u89E3\u9501\u5230 ssh-agent\uFF1B\u540E\u53F0\u8FDE\u63A5\u65E0\u6CD5\u8F93\u5165\u5BC6\u7801\u6216 MFA\u3002': "Verify the SSH alias in a terminal and unlock the key in ssh-agent; background connections cannot prompt for a password or MFA.";
+    readonly '\u8BF7\u5728\u672C\u673A\u7EC8\u7AEF\u6838\u5BF9\u4E3B\u673A\u6307\u7EB9\uFF1B\u63D2\u4EF6\u4E0D\u4F1A\u4FEE\u6539 known_hosts\u3002': "Verify the host fingerprint in a local terminal; the plugin does not modify known_hosts.";
+    readonly '\u8BF7\u68C0\u67E5\u63D2\u4EF6\u4E0E helper \u7248\u672C\u6216\u5B89\u88C5\u5B8C\u6574\u6027\uFF0C\u518D\u624B\u52A8\u91CD\u8BD5\u3002': "Check the plugin and helper versions or installation integrity, then retry manually.";
+    readonly '\u8BF7\u68C0\u67E5\u672C\u673A SSH \u914D\u7F6E\u3001\u4E3B\u673A\u540D\u4EE5\u53CA\u8FDC\u7AEF\u7528\u6237\u76EE\u5F55\u6743\u9650\u6216\u78C1\u76D8\u7A7A\u95F4\u3002': "Check the local SSH configuration, host name, and the remote home directory permissions or free disk space.";
+    readonly '\u8FDC\u7AEF\u62D2\u7EDD\u672C\u6B21\u8FDE\u63A5\uFF0C\u8BF7\u67E5\u770B\u9519\u8BEF\u539F\u56E0\u540E\u624B\u52A8\u91CD\u8BD5\u3002': "The remote host rejected this connection; check the error and retry manually.";
+    readonly '\u8FDC\u7AEF\u6682\u65F6\u4E0D\u53EF\u7528\uFF0C\u5C06\u81EA\u52A8\u9000\u907F\u91CD\u8BD5\uFF1B\u4E5F\u53EF\u4EE5\u505C\u6B62\u8FDE\u63A5\u3002': "The remote host is temporarily unavailable; retrying with backoff, or you can stop the connection.";
+    readonly '\u8FDC\u7AEF\u9700\u8981 PATH \u4E2D\u53EF\u7528\u7684 Python 3.8 \u6216\u66F4\u65B0\u7248\u672C\u3002': "The remote host needs Python 3.8 or newer available in PATH.";
+    readonly '\u8FDE\u63A5\u6682\u65F6\u4E2D\u65AD\uFF0C\u5C06\u81EA\u52A8\u9000\u907F\u91CD\u8BD5\uFF1B\u4E5F\u53EF\u4EE5\u505C\u6B62\u8FDE\u63A5\u3002': "The connection was interrupted; retrying with backoff, or you can stop the connection.";
     readonly '\u9875\u9762\u53EF\u89C1\u65F6\u7EA6 5 \u5206\u949F\u540E\u81EA\u52A8\u590D\u67E5\uFF0C\u4E5F\u53EF\u70B9\u51FB\u201C\u68C0\u67E5\u66F4\u65B0\u201D\u3002': "Checks resume in about 5 minutes while visible. You can also select Check for updates.";
     readonly 选择文件以预览: "Select a file to preview";
     readonly '\u8FDC\u7AEF\u7AEF\u53E3\u6682\u4E0D\u53EF\u8FBE\uFF0C\u8BF7\u786E\u8BA4\u670D\u52A1\u5DF2\u542F\u52A8\u3002': "The remote port is unavailable. Check that the service is running.";
@@ -502,4 +512,6 @@ export declare const en: {
 };
 export type MessageKey = keyof typeof en;
 export declare const zh: Record<MessageKey, string>;
+/** Prefix the remote environment probe uses for free-form diagnostics. */
+export declare const ENVIRONMENT_CHECK_PREFIX = "\u73AF\u5883\u68C0\u67E5\u5931\u8D25\uFF1A";
 //# sourceMappingURL=messages.d.ts.map
