@@ -1,7 +1,7 @@
 import { t, localized } from './locale.js';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { sections, usePageVisible, type Workbench } from './workbench.js';
-import { helperStateLabel } from './connection-ui.js';
+import { helperStateLabel, localizeEnvironmentError, localizeSourceText } from './connection-ui.js';
 import type { ConnectionStatusStore } from './connection-status.js';
 import type { HelperHostStatus } from 'dsh-ssh-remote/ssh';
 import type { Context } from '@deepseek-ai/cordis';
@@ -183,9 +183,9 @@ function connectionPresentation(status: HelperHostStatus | undefined, unavailabl
     const state = status?.status;
     const label = state ? helperStateLabel(state) : t('状态未知');
     const limited = state === 'degraded' && status?.environment?.search.available === false
-        ? status.environment.search.error || t('远程搜索不可用，请检查远端 ripgrep') : '';
+        ? localizeEnvironmentError(status.environment.search.error) || t('远程搜索不可用，请检查远端 ripgrep') : '';
     const detail = state === 'error' || state === 'degraded'
-        ? [status?.error, status?.hint, limited].filter(Boolean).join('；') || (state === 'degraded' ? t('远端 helper 能力不完整') : t('连接失败，请在 SSH 设置中查看详情'))
+        ? [status?.error, localizeSourceText(status?.hint), limited].filter(Boolean).join('；') || (state === 'degraded' ? t('远端 helper 能力不完整') : t('连接失败，请在 SSH 设置中查看详情'))
         : state === undefined ? unavailable || t('尚未获得该主机的连接状态') : '';
     const tone = state === 'connected' ? 'success' : state === 'error' ? 'error'
         : state && state !== 'disconnected' ? 'warn' : 'neutral';

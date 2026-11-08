@@ -8,6 +8,10 @@ export declare function withMutationDeadline<T>(operation: Promise<T>, label: st
 export declare function withReadDeadline<T>(operation: Promise<T>, label: string): Promise<T>;
 export declare function withDeadline<T>(operation: Promise<T>, message: string, milliseconds: number, onTimeout?: () => void): Promise<T>;
 export declare function messageOf(reason: unknown): string;
+/** Host modules return Chinese source copy; translate it when the client dictionary knows that key. */
+export declare function localizeSourceText(text: string | undefined): string | undefined;
+/** The remote environment probe prefixes a free-form diagnostic with a source-copy sentence. */
+export declare function localizeEnvironmentError(error: string | undefined): string | undefined;
 export declare const subtleText: CSSProperties;
 export declare const dimmedText: CSSProperties;
 export declare function helperStateLabel(state: HelperHostStatus['status']): string;

@@ -1,4 +1,5 @@
 import { t } from './locale.js';
+import { en, ENVIRONMENT_CHECK_PREFIX, type MessageKey } from './messages.js';
 import type { CSSProperties } from 'react';
 import type { RemoteResult, HelperHostStatus } from 'dsh-ssh-remote/ssh';
 const MUTATION_DEADLINE_MS = 30000;
@@ -41,6 +42,21 @@ export function withDeadline<T>(operation: Promise<T>, message: string, millisec
 export function messageOf(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
 }
+const SOURCE_KEYS = new Set<string>(Object.keys(en));
+/** Host modules return Chinese source copy; translate it when the client dictionary knows that key. */
+export function localizeSourceText(text: string | undefined): string | undefined {
+    if (!text)
+        return undefined;
+    return SOURCE_KEYS.has(text) ? t(text as MessageKey) : text;
+}
+/** The remote environment probe prefixes a free-form diagnostic with a source-copy sentence. */
+export function localizeEnvironmentError(error: string | undefined): string | undefined {
+    if (!error)
+        return undefined;
+    return error.startsWith(ENVIRONMENT_CHECK_PREFIX)
+        ? `${t(ENVIRONMENT_CHECK_PREFIX)}${error.slice(ENVIRONMENT_CHECK_PREFIX.length)}`
+        : error;
+}
 export const subtleText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 };
 export const dimmedText: CSSProperties = { color: 'var(--dsw-alias-label-dimmed)', fontSize: 11 };
 export function helperStateLabel(state: HelperHostStatus['status']): string {
@@ -65,5 +81,5 @@ export function searchSummary(helper: HelperHostStatus): string {
     if (search === undefined)
         return t('远程搜索：未检查（连接后检查 rg）');
     return search.available
-        ? t('远程搜索：可用{value1}', { value1: search.version ? ` · ${search.version}` : '' }) : t('远程搜索：不可用；请在远端安装 ripgrep，确保 rg 在登录环境 PATH 中，然后点击诊断重新检查。{value1}', { value1: search.error ? ` ${search.error}` : '' });
+        ? t('远程搜索：可用{value1}', { value1: search.version ? ` · ${search.version}` : '' }) : t('远程搜索：不可用；请在远端安装 ripgrep，确保 rg 在登录环境 PATH 中，然后点击诊断重新检查。{value1}', { value1: search.error ? ` ${localizeEnvironmentError(search.error)}` : '' });
 }
