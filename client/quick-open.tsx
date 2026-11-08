@@ -1,4 +1,5 @@
 import { t, localized } from './locale.js';
+import { localizeSourceText } from './connection-ui.js';
 import { mountWorkbenchSection, openWorkbench, usePageVisible, type Workbench } from './workbench.js';
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -272,8 +273,8 @@ export function QuickOpenPane({ sessionId, remote, open, active = true }: PanePr
       {!pending && status && t(' 已索引 {value1} 项{value2}', { value1: status.count, value2: status.complete ? '' : t('（索引不完整，未命中不代表不存在）') })}
       {!pending && status?.unsupported && !status.message ? t(' · {value1} 个文件名不能安全引用或预览', { value1: status.unsupported }) : ''}
     </div>
-    {!pending && status?.message && <details><summary>{t('索引详情')}</summary><small>{status.message}</small></details>}
-    {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', overflowWrap: 'anywhere' }}>{error}</div>}
+    {!pending && status?.message && <details><summary>{t('索引详情')}</summary><small>{localizeSourceText(status.message)}</small></details>}
+    {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)', overflowWrap: 'anywhere' }}>{localizeSourceText(error)}</div>}
     <div ref={list} id={listId} role="listbox" aria-label={t('远程文件搜索结果')} style={{ flex: 1, minHeight: 100, overflow: 'auto', borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 }}>
       {current?.candidates.map((candidate, index) => <div role="option" id={`${listId}-${index}`} aria-selected={selected === index} aria-label={candidate.path} key={candidate.path} title={candidate.path} onClick={() => { setSelectedPath(candidate.path); candidate.kind === 'directory' ? setQuery(`${candidate.path}/`) : choose(candidate.path); }} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '10px 8px', borderRadius: 8,
                 background: selected === index ? 'var(--dsw-alias-bg-hover,rgba(128,128,128,.12))' : undefined }} className="dsh-ssh-file-option">
@@ -351,6 +352,6 @@ export function ReferenceIndexStatus(props: PropsRuntime<'conversation.input.doc
     if (!visible || status?.key !== key || !['building', 'error', 'partial'].includes(status.value.state))
         return null;
     return <small role="status" style={{ display: 'block', overflowWrap: 'anywhere', padding: '4px 0', color: 'var(--dsw-alias-label-secondary)' }}>
-    {status.value.message}
+    {localizeSourceText(status.value.message)}
   </small>;
 }

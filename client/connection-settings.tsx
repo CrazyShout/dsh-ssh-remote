@@ -177,7 +177,7 @@ export function SshRemotePanel({ ssh, connectionStatus }: {
                 {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
               </div>
               {host.helper.environment?.search.available === false && <div style={subtleText}>{searchSummary(host.helper)}</div>}
-              {(hostErrors[host.alias] || host.helper.error) && <div role="alert" style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{hostErrors[host.alias] || host.helper.error}</div>}
+              {(hostErrors[host.alias] || host.helper.error) && <div role="alert" style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{localizeSourceText(hostErrors[host.alias] || host.helper.error)}</div>}
               {host.helper.hint && <div style={{ marginTop: 6, ...subtleText }}>{localizeSourceText(host.helper.hint)}</div>}
               <details><summary style={subtleText}>{t('连接详情')}</summary>
                 <div style={dimmedText}>Helper {host.helper.version || t('尚未握手')} · {helperCapabilitySummary(host.helper.capabilities)}</div>
@@ -215,6 +215,6 @@ export function SshRemotePanel({ ssh, connectionStatus }: {
         </div>)}
 
       {config && config.legacyHostCount > 0 && (<MigrationWizard ssh={ssh} onComplete={() => void load()}/>)}
-      {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)' }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)' }}>{localizeSourceText(error)}</div>}
     </div>);
 }
