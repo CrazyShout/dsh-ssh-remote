@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join, resolve } from 'node:path';
 import { decodeRemoteScript } from './fixtures/remote-script.js';
 import {
   buildRemoteSshInvocation,
   installRemoteFileSystemRouter,
   installRemoteSubprocessRouter,
+  REMOTE_SANDBOX_LAUNCHER,
 } from '../src/runtime-router.js';
 import { AnchorRegistry } from '../src/anchors.js';
 import { SshRemoteService } from '../src/registry.js';
@@ -243,6 +248,193 @@ describe('OpenSSH process invocation', () => {
     expect(decodeRemoteScript(invocation.at(-1))).toContain('--files');
     expect(decodeRemoteScript(invocation.at(-1))).toMatch(/--.*\./u);
     expect(decodeRemoteScript(invocation.at(-1))).not.toContain('ripgrep-darwin-arm64');
+  });
+
+  it('replaces a Windows host executable with the remote PATH command', () => {
+    const invocation = buildRemoteSshInvocation(
+      cwd,
+      ['C:\\Program Files\\Git\\cmd\\git.EXE', '--no-optional-locks', 'rev-parse', '--show-toplevel'],
+      { GIT_TERMINAL_PROMPT: '0' },
+      false,
+    );
+    const script = decodeRemoteScript(invocation.at(-1));
+    expect(script).toContain("'git' '--no-optional-locks' 'rev-parse' '--show-toplevel'");
+    expect(script).not.toContain('Program Files');
+  });
+
+  it('recreates a Windows ACL sandbox with a trusted remote launcher', () => {
+    const invocation = buildRemoteSshInvocation(
+      cwd,
+      [
+        'C:\\Program Files\\DeepSeek Harness\\DeepSeek Harness.exe',
+        'C:\\Program Files\\DeepSeek Harness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-sandbox-windows-acl\\lib\\runner.js',
+        '--workspace', anchor,
+        '--temp', 'C:\\Users\\me\\AppData\\Local\\Temp\\dsh-sandbox',
+        '--mode', 'workspace-write',
+        '--write-sid', 'S-1-5-21-1',
+        '--temp-write-sid', 'S-1-5-21-2',
+        '--', 'C:\\Program Files\\Git\\cmd\\git.EXE', 'rev-parse', '--show-toplevel',
+      ],
+      { GIT_TERMINAL_PROMPT: '0', PATH: '/home/atlas/project/.bin' },
+      false,
+      resolver,
+    );
+    const script = decodeRemoteScript(invocation.at(-1));
+    expect(script).toContain("exec 'python3' '-c'");
+    expect(script).toContain('"mode":"workspace-write"');
+    expect(script).toContain('"root":"/home/atlas/project"');
+    expect(script).toContain('"GIT_TERMINAL_PROMPT":"0"');
+    expect(script).toContain('"PATH":"/home/atlas/project/.bin"');
+    expect(script).toContain('--clearenv');
+    expect(script).toContain('--bind-fd');
+    expect(script).toContain('dsh-remote-helper');
+    expect(script).not.toContain('exec env');
+    expect(script).not.toContain('DeepSeek Harness');
+    expect(script).not.toContain('dsh-sandbox-windows-acl');
+    expect(script).not.toContain('--write-sid');
+  });
+
+  it('keeps a /tmp workspace mapped into the remote sandbox launcher', () => {
+    const tmpCwd = 'ssh://gpu/tmp/project';
+    const script = decodeRemoteScript(buildRemoteSshInvocation(
+      tmpCwd,
+      [
+        'C:\\Program Files\\DeepSeek Harness\\DeepSeek Harness.exe',
+        'C:\\app\\node_modules\\@deepseek-ai\\dsh-sandbox-windows-acl\\lib\\runner.js',
+        '--workspace', anchor,
+        '--temp', 'C:\\temp',
+        '--mode', 'workspace-write',
+        '--', 'C:\\Program Files\\Git\\cmd\\git.EXE', 'status',
+      ],
+      undefined,
+      false,
+      path => path === anchor ? tmpCwd : undefined,
+    ).at(-1));
+    expect(script).toContain('"root":"/tmp/project"');
+    expect(script).toContain('"cwd":"/tmp/project"');
+    expect(script).toContain('--bind-fd');
+  });
+
+  it('rejects a Windows sandbox workspace that is not mapped to the SSH host', () => {
+    expect(() => buildRemoteSshInvocation(
+      cwd,
+      [
+        'C:\\Program Files\\DeepSeek Harness\\DeepSeek Harness.exe',
+        'C:\\app\\node_modules\\@deepseek-ai\\dsh-sandbox-windows-acl\\lib\\runner.js',
+        '--workspace', 'C:\\unmapped',
+        '--temp', 'C:\\temp',
+        '--mode', 'workspace-write',
+        '--', 'C:\\Program Files\\Git\\cmd\\git.EXE', 'status',
+      ],
+      undefined,
+      false,
+      () => undefined,
+    )).toThrow(/workspace is not mapped/u);
+  });
+
+  it('does not treat an unrelated command separator as a Windows sandbox', () => {
+    const script = decodeRemoteScript(buildRemoteSshInvocation(
+      cwd,
+      ['C:\\Tools\\helper.EXE', '--', 'literal-value'],
+      undefined,
+      false,
+    ).at(-1));
+    expect(script).toContain("'helper' '--' 'literal-value'");
+  });
+
+  it.each([
+    '/usr/bin/git',
+    '/opt/wine/tool.exe',
+    './tools/helper.EXE',
+  ])('keeps a POSIX executable path intended for the remote host: %s', executable => {
+    const script = decodeRemoteScript(buildRemoteSshInvocation(
+      cwd,
+      [executable, 'rev-parse', '--show-toplevel'],
+      undefined,
+      false,
+    ).at(-1));
+    expect(script).toContain(executable);
+    expect(script).toContain('rev-parse');
+  });
+
+  it.skipIf(process.platform !== 'linux')('hides helper runtime after rebinding a /tmp workspace', () => {
+    const base = mkdtempSync(join(tmpdir(), 'dsh-sandbox-launcher-'));
+    let createdFallback: string | undefined;
+    try {
+      const bin = join(base, 'bin');
+      const capture = join(base, 'argv.txt');
+      const longBase = join(base, `runtime-${'x'.repeat(100)}`);
+      const runtimeRoot = join(longBase, 'dsh-remote-helper');
+      mkdirSync(bin);
+      mkdirSync(runtimeRoot, { recursive: true });
+      const runtimeBase = join(base, `alias-${'y'.repeat(100)}`);
+      symlinkSync(longBase, runtimeBase, 'dir');
+      const suffix = createHash('sha256').update(join(runtimeBase, 'dsh-remote-helper')).digest('hex').slice(0, 12);
+      const actualFallback = join('/tmp', `dsh-rh-${process.getuid()}-${suffix}`);
+      if (existsSync(actualFallback)) throw new Error(`unexpected fallback collision: ${actualFallback}`);
+      mkdirSync(actualFallback);
+      createdFallback = actualFallback;
+      const fakeBwrap = join(bin, 'bwrap');
+      writeFileSync(fakeBwrap, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$DSH_TEST_CAPTURE"\n');
+      chmodSync(fakeBwrap, 0o755);
+      const result = spawnSync('python3', [
+        '-c', REMOTE_SANDBOX_LAUNCHER,
+        JSON.stringify({
+          mode: 'workspace-write', root: '/tmp', cwd: '/tmp',
+          argv: ['/bin/true'], env: { PATH: '/payload/bin' },
+        }),
+      ], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          XDG_RUNTIME_DIR: runtimeBase,
+          DSH_TEST_CAPTURE: capture,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const args = readFileSync(capture, 'utf8').trim().split('\n');
+      const bindFd = args.indexOf('--bind-fd');
+      const runtimeMount = args.findIndex((value, index) => value === '--tmpfs' && args[index + 1] === runtimeRoot);
+      expect(bindFd).toBeGreaterThan(-1);
+      expect(runtimeMount).toBeGreaterThan(bindFd);
+      expect(args).toContain(actualFallback);
+      const pathEnv = args.findIndex((value, index) => value === '--setenv' && args[index + 1] === 'PATH');
+      expect(pathEnv).toBeGreaterThan(-1);
+      expect(args[pathEnv + 2]).toBe('/payload/bin');
+      expect(args.at(-1)).toBe('/bin/true');
+
+      const nestedWorkspace = join(base, 'workspace');
+      const nestedRuntimeBase = join(nestedWorkspace, 'runtime');
+      const nestedRuntimeRoot = join(nestedRuntimeBase, 'dsh-remote-helper');
+      const nestedCapture = join(base, 'nested-argv.txt');
+      mkdirSync(nestedRuntimeRoot, { recursive: true });
+      const nestedResult = spawnSync('python3', [
+        '-c', REMOTE_SANDBOX_LAUNCHER,
+        JSON.stringify({
+          mode: 'workspace-write', root: nestedWorkspace, cwd: nestedWorkspace,
+          argv: ['/bin/true'], env: {},
+        }),
+      ], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          XDG_RUNTIME_DIR: nestedRuntimeBase,
+          DSH_TEST_CAPTURE: nestedCapture,
+        },
+      });
+      expect(nestedResult.status, nestedResult.stderr).toBe(0);
+      const nestedArgs = readFileSync(nestedCapture, 'utf8').trim().split('\n');
+      const workspaceBind = nestedArgs.indexOf('--bind-fd');
+      const nestedRuntimeMount = nestedArgs.findIndex((value, index) =>
+        value === '--tmpfs' && nestedArgs[index + 1] === nestedRuntimeRoot);
+      expect(workspaceBind).toBeGreaterThan(-1);
+      expect(nestedRuntimeMount).toBeGreaterThan(workspaceBind);
+    } finally {
+      if (createdFallback !== undefined) rmdirSync(createdFallback);
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it('maps packaged ripgrep local anchor roots to remote paths', () => {
