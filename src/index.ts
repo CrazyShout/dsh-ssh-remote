@@ -71,7 +71,7 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     resolveRemotePath,
     helpers,
   );
-  const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath);
+  const restoreSubprocess = installRemoteSubprocessRouter(ctx.subprocess, resolveRemotePath, helpers);
   const directoryFiber = ctx.inject(['workingDirectory'], scope => {
     const directories = (scope as Context & { workingDirectory: WorkingDirectory }).workingDirectory;
     const router = installRemoteWorkingDirectoryRouter(directories, scope.fs, resolveRemotePath,

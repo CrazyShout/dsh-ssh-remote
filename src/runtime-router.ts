@@ -8,7 +8,8 @@ import type {
 } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
-import { isInfrastructureFailureError, RemoteGitProbeFailureCircuit } from './git-probe-circuit.js';
+import { RemoteGitProbeFailureCircuit } from './git-probe-circuit.js';
+import type { RemoteHelperManager } from './helper/manager.js';
 import { parseSshUri, type SshUri } from './types.js';
 import { quotePosix, remoteShCommand } from './ssh-command.js';
 
@@ -196,14 +197,154 @@ function sameRemote(left: SshUri, right: SshUri): boolean {
   return left.host === right.host && left.port === right.port && left.user === right.user;
 }
 
-function remoteArgv(cwd: SshUri, argv: readonly string[], resolveRemotePath?: RemotePathResolver): readonly string[] {
-  const executable = argv[0];
-  if (executable === undefined) return argv;
-  const normalized = executable.replaceAll('\\', '/');
-  if (!/(?:^|\/)@vscode\/ripgrep(?:-[a-z0-9-]+)?\/bin\/rg(?:\.exe)?$/u.test(normalized)) {
-    return argv;
+const PACKAGED_RIPGREP = /(?:^|\/)@vscode\/ripgrep(?:-[a-z0-9-]+)?\/bin\/rg(?:\.exe)?$/u;
+const WINDOWS_ACL_RUNNER = /(?:^|\/)dsh-sandbox-windows-acl\/(?:lib|src)\/runner\.[cm]?[jt]s$/u;
+
+interface RemoteSandbox {
+  mode: 'read-only' | 'workspace-write';
+  root: string;
+}
+
+interface WindowsAclCommand {
+  argv: readonly string[];
+  sandbox?: RemoteSandbox;
+}
+
+interface PreparedRemoteCommand {
+  argv: readonly string[];
+  sandbox?: RemoteSandbox;
+}
+
+export const REMOTE_SANDBOX_LAUNCHER = `
+import hashlib, json, os, re, shutil, sys
+config = json.loads(sys.argv[1])
+mode = config["mode"]
+root = os.path.realpath(config["root"])
+cwd = os.path.realpath(config["cwd"])
+if mode not in ("read-only", "workspace-write"):
+    raise SystemExit("remote sandbox mode is invalid")
+if not os.path.isabs(root) or not os.path.isdir(root) or not os.path.isdir(cwd):
+    raise SystemExit("remote sandbox workspace does not exist")
+if os.path.commonpath((root, cwd)) != root:
+    raise SystemExit("remote sandbox cwd is outside workspace")
+bwrap = shutil.which("bwrap")
+if bwrap is None or not os.path.isabs(bwrap):
+    raise SystemExit("remote sandbox unavailable: bwrap was not found on PATH")
+bwrap = os.path.realpath(bwrap)
+command = [bwrap, "--die-with-parent", "--unshare-pid", "--ro-bind", "/", "/",
+           "--proc", "/proc", "--dev", "/dev"]
+workspace_fd = None
+if mode == "workspace-write":
+    command += ["--tmpfs", "/tmp"]
+    if root == "/tmp" or root.startswith("/tmp/"):
+        workspace_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        os.set_inheritable(workspace_fd, True)
+        command += ["--dir", root, "--bind-fd", str(workspace_fd), root]
+    else:
+        command += ["--bind", root, root]
+private_roots = set()
+runtime_base = os.environ.get("DSH_REMOTE_HELPER_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR")
+if runtime_base:
+    runtime_root_original = os.path.join(runtime_base, "dsh-remote-helper")
+    runtime_root = os.path.realpath(runtime_root_original)
+    private_roots.add(runtime_root)
+    probe_socket = os.path.join(runtime_root_original, "daemon-" + "0" * 16 + ".sock")
+    if len(probe_socket.encode()) >= 100:
+        suffix = hashlib.sha256(runtime_root_original.encode()).hexdigest()[:12]
+        private_roots.add(os.path.realpath(os.path.join("/tmp", "dsh-rh-" + str(os.getuid()) + "-" + suffix)))
+private_roots.add(os.path.realpath("/tmp/dsh-remote-helper-" + str(os.getuid())))
+for private in sorted(private_roots):
+    hidden_by_tmpfs = (mode == "workspace-write"
+                       and private != "/tmp" and private.startswith("/tmp/")
+                       and root not in ("/", "/tmp")
+                       and private != root and not private.startswith(root + "/"))
+    if not hidden_by_tmpfs and os.path.isdir(private):
+        command += ["--tmpfs", private, "--remount-ro", private]
+environment = {key: value for key, value in os.environ.items()
+               if not key.upper().startswith("DSH_")
+               and re.search("KEY|PASSWORD|SECRET|TOKEN", key, re.IGNORECASE) is None}
+environment.update(config.get("env", {}))
+command += ["--clearenv"]
+for key in sorted(environment):
+    command += ["--setenv", key, environment[key]]
+command += ["--chdir", cwd, "--"] + config["argv"]
+os.execv(bwrap, command)
+`.trim();
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('\\\\');
+}
+
+/** Recover the remote command and file policy from DSH's local Windows sandbox wrapper. */
+function unwrapWindowsAclRunner(
+  cwd: SshUri,
+  argv: readonly string[],
+  resolveRemotePath?: RemotePathResolver,
+): WindowsAclCommand {
+  if (!isWindowsAbsolutePath(argv[0] ?? '')) return { argv };
+  const delimiter = argv.indexOf('--');
+  const runner = argv.slice(0, delimiter < 0 ? undefined : delimiter)
+    .findIndex(value => WINDOWS_ACL_RUNNER.test(value.replaceAll('\\', '/')));
+  if (runner === -1) return { argv };
+  // Published DSH uses [node, built runner, ...options, --, ...command].
+  // Never drop unknown Node loaders or wrapper options while claiming the
+  // original policy was preserved. Source-only development runners fail closed.
+  if (runner !== 1
+    || !/\/lib\/runner\.[cm]?js$/u.test(argv[runner].replaceAll('\\', '/'))) {
+    throw new Error('remote subprocess sandbox wrapper has an unsupported runner prefix');
   }
-  const rewritten = ['rg', ...argv.slice(1)];
+  const separator = argv.indexOf('--', 2);
+  if (separator === -1) throw new Error('remote subprocess sandbox wrapper contains no command separator');
+  const command = argv.slice(separator + 1);
+  if (command.length === 0) throw new Error('remote subprocess sandbox wrapper contains no command');
+  const options = new Map<string, string>();
+  const known = new Set(['--workspace', '--temp', '--mode', '--write-sid', '--temp-write-sid']);
+  for (let index = 2; index < separator; index += 2) {
+    const key = argv[index], value = argv[index + 1];
+    if (!known.has(key) || options.has(key) || index + 1 >= separator || !value || value.startsWith('--')) {
+      throw new Error('remote subprocess sandbox wrapper has invalid or unsupported options');
+    }
+    options.set(key, value);
+  }
+  const workspace = options.get('--workspace'), mode = options.get('--mode');
+  const writeSid = options.has('--write-sid'), tempWriteSid = options.has('--temp-write-sid');
+  if (workspace === undefined || !options.has('--temp') || (mode !== 'read-only' && mode !== 'workspace-write')
+    || writeSid !== tempWriteSid || (mode === 'read-only' && writeSid)) {
+    throw new Error('remote subprocess sandbox wrapper has an invalid workspace policy');
+  }
+  const mappedRoot = isSshPath(workspace) ? workspace : resolveRemotePath?.(workspace);
+  if (mappedRoot === undefined) throw new Error('remote subprocess sandbox workspace is not mapped to SSH');
+  const root = parseSshUri(mappedRoot);
+  if (!sameRemote(cwd, root)) throw new Error('remote subprocess sandbox workspace belongs to another SSH host');
+  return { argv: command, sandbox: { mode, root: root.path } };
+}
+
+/** Map a host-only Windows executable path to its command name on the remote PATH. */
+function normalizeWindowsExecutable(executable: string): string {
+  if (!isWindowsAbsolutePath(executable)) return executable;
+  const normalized = executable.replaceAll('\\', '/');
+  const name = normalized.slice(normalized.lastIndexOf('/') + 1).replace(/\.exe$/iu, '');
+  return name.length === 0 ? executable : name;
+}
+
+function remoteArgv(
+  cwd: SshUri,
+  originalArgv: readonly string[],
+  resolveRemotePath?: RemotePathResolver,
+): PreparedRemoteCommand {
+  const unwrapped = unwrapWindowsAclRunner(cwd, originalArgv, resolveRemotePath);
+  const argv = unwrapped.argv;
+  const executable = argv[0];
+  if (executable === undefined) return unwrapped;
+  const normalized = executable.replaceAll('\\', '/');
+  const packagedRipgrep = PACKAGED_RIPGREP.test(normalized);
+  const hostExecutable = normalizeWindowsExecutable(executable);
+  const normalizedArgv = hostExecutable === executable ? argv : [hostExecutable, ...argv.slice(1)];
+  const prepared = (args: readonly string[]): PreparedRemoteCommand => unwrapped.sandbox === undefined
+    ? { argv: args }
+    : { argv: args, sandbox: unwrapped.sandbox };
+  if (!packagedRipgrep) return prepared(normalizedArgv);
+  const rewritten = ['rg', ...normalizedArgv.slice(1)];
   const separator = rewritten.indexOf('--');
   // DSH's glob/grep templates use long flags (values in --flag=value form)
   // followed by optional roots behind `--`. Limit path rewriting to those
@@ -214,7 +355,7 @@ function remoteArgv(cwd: SshUri, argv: readonly string[], resolveRemotePath?: Re
     options.includes('--files')
     || (options.includes('--json') && options.some(value => value.startsWith('--regexp=')))
   );
-  if (!dshSearch) return rewritten;
+  if (!dshSearch) return prepared(rewritten);
   const protect = (args: string[]): string[] => {
     const end = args.indexOf('--');
     // Native grep bypasses ctx.fs. Keep control credentials out of recursive
@@ -228,16 +369,38 @@ function remoteArgv(cwd: SshUri, argv: readonly string[], resolveRemotePath?: Re
       ...args];
   };
   // In particular, pathless grep must search cwd, not the SSH stdin pipe.
-  if (separator === -1) return protect([...rewritten, '--', '.']);
-  if (separator === rewritten.length - 1) return protect([...rewritten, '.']);
-  return protect(rewritten.map((value, index) => {
+  if (separator === -1) return prepared(protect([...rewritten, '--', '.']));
+  if (separator === rewritten.length - 1) return prepared(protect([...rewritten, '.']));
+  return prepared(protect(rewritten.map((value, index) => {
     if (index <= separator) return value;
     const mapped = isSshPath(value) ? value : resolveRemotePath?.(value);
     if (mapped === undefined) return value;
     const mappedUri = parseSshUri(mapped);
     if (!sameRemote(cwd, mappedUri)) throw new Error('remote ripgrep search root belongs to a different SSH host');
     return mappedUri.path;
-  }));
+  })));
+}
+
+function remoteSandboxCommand(
+  cwd: SshUri,
+  sandbox: RemoteSandbox,
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv | undefined,
+): readonly string[] {
+  const environment = Object.fromEntries(Object.entries(env ?? {})
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)));
+  return [
+    // -I excludes cwd/user site/PYTHONPATH before any launcher import occurs.
+    'python3', '-I', '-c', REMOTE_SANDBOX_LAUNCHER,
+    JSON.stringify({
+      mode: sandbox.mode,
+      root: sandbox.root,
+      cwd: cwd.path,
+      argv,
+      env: environment,
+    }),
+  ];
 }
 
 /** Build the local OpenSSH argv used for a remote process or terminal. */
@@ -251,11 +414,16 @@ export function buildRemoteSshInvocation(
   if (argv.length === 0) throw new Error('remote subprocess argv is empty');
   const uri = parseSshUri(cwd);
   const destination = `${uri.user ? `${uri.user}@` : ''}${uri.host}`;
-  const environment = Object.entries(env ?? {})
-    .filter((entry): entry is [string, string] => entry[1] !== undefined)
-    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
-    .map(([key, value]) => quotePosix(`${key}=${value}`));
-  const command = remoteArgv(uri, argv, resolveRemotePath).map(quotePosix);
+  const prepared = remoteArgv(uri, argv, resolveRemotePath);
+  const command = prepared.sandbox === undefined
+    ? prepared.argv.map(quotePosix)
+    : remoteSandboxCommand(uri, prepared.sandbox, prepared.argv, env).map(quotePosix);
+  const environment = prepared.sandbox === undefined
+    ? Object.entries(env ?? {})
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+      .map(([key, value]) => quotePosix(`${key}=${value}`))
+    : [];
   const exec = environment.length > 0
     ? `exec env ${environment.join(' ')} ${command.join(' ')}`
     : `exec ${command.join(' ')}`;
@@ -277,29 +445,33 @@ export function buildRemoteSshInvocation(
 export function installRemoteSubprocessRouter(
   subprocess: SubprocessRuntime,
   resolveRemotePath: RemotePathResolver,
+  connections?: Pick<RemoteHelperManager, 'status' | 'onStatus'>,
 ): () => void {
   const originalSpawn = subprocess.spawn;
   const originalSpawnTerminal = subprocess.spawnTerminal;
-  const gitProbeFailures = new RemoteGitProbeFailureCircuit();
+  const gitProbeFailures = new RemoteGitProbeFailureCircuit(undefined, undefined, connections?.status.bind(connections));
+  const detachStatus = connections?.onStatus(status => gitProbeFailures.connectionChanged(status));
 
   subprocess.spawn = function (spec: SubprocessSpawnSpec) {
     const remoteCwd = isSshPath(spec.cwd) ? spec.cwd : resolveRemotePath(spec.cwd);
     if (remoteCwd === undefined) return originalSpawn.call(subprocess, spec);
-    if (spec.signal?.aborted !== true) gitProbeFailures.assertAllowed(remoteCwd, spec.argv);
     const routed = {
       ...spec,
       argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, false, resolveRemotePath),
       cwd: process.cwd(),
       env: undefined,
     };
+    // A piped stdin payload is not part of the argv/environment fingerprint.
+    const probe = spec.stdio?.stdin === 'pipe' ? undefined
+      : gitProbeFailures.begin(remoteCwd, spec.argv, spec.env, spec.signal);
     let handle: SubprocessHandle;
     try {
       handle = originalSpawn.call(subprocess, routed);
     } catch (error) {
-      if (isInfrastructureFailureError(error, spec.signal)) gitProbeFailures.recordFailure(remoteCwd, spec.argv);
+      gitProbeFailures.launchFailed(probe, error, spec.signal);
       throw error;
     }
-    gitProbeFailures.observe(remoteCwd, spec.argv, handle, spec.signal);
+    gitProbeFailures.observe(probe, handle, spec.signal);
     return handle;
   };
 
@@ -315,6 +487,8 @@ export function installRemoteSubprocessRouter(
   };
 
   return () => {
+    detachStatus?.();
+    gitProbeFailures.dispose();
     subprocess.spawn = originalSpawn;
     subprocess.spawnTerminal = originalSpawnTerminal;
   };

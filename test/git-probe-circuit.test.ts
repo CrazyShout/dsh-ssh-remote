@@ -66,84 +66,110 @@ describe('remote Git probe failure circuit', () => {
     expect(isReadOnlyGitProbeArgv(argv)).toBe(false);
   });
 
-  it.each([127, 255])('opens after exit %i and allows one probe after the cooldown', async exitCode => {
+  const argv = ['git', 'rev-parse', 'HEAD'];
+
+  it.each([127, 255])('opens after exit %i and permits one recovery probe', async exitCode => {
     let now = 1_000;
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => now);
+    const circuit = new RemoteGitProbeFailureCircuit(2_000, () => now);
     const first = handle(Promise.resolve({ exitCode, signal: null }));
-    circuit.assertAllowed(cwd, ['git', 'rev-parse', 'HEAD']);
-    circuit.observe(cwd, ['git', 'rev-parse', 'HEAD'], first);
-    await first.done;
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status', '--short']))
-      .toThrow(RemoteGitProbeCooldownError);
-    now += 29_999;
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status', '--short'])).toThrow(/suppressed/u);
-    now += 1;
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status', '--short'])).not.toThrow();
+    circuit.observe(circuit.begin(cwd, argv), first);
+    await first.done; await settle();
+    expect(() => circuit.begin(cwd, argv)).toThrow(RemoteGitProbeCooldownError);
+    now += 1_999;
+    expect(() => circuit.begin(cwd, argv)).toThrow(/suppressed/u);
+    now++;
+    const retry = circuit.begin(cwd, argv);
+    expect(retry).toBeTypeOf('function');
+    expect(() => circuit.begin(cwd, argv)).toThrow(/still running/u);
+    retry?.('healthy');
+    expect(() => circuit.begin(cwd, argv)).not.toThrow();
   });
 
-  it('keeps expected Git exits and unrelated hosts outside the circuit', async () => {
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => 1_000);
-    const expected = handle(Promise.resolve({ exitCode: 128, signal: null }));
-    circuit.observe(cwd, ['git', 'rev-parse', 'HEAD'], expected);
-    await expected.done;
+  it.each([0, 1, 128])('keeps ordinary Git exit %i outside the circuit', async exitCode => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    circuit.observe(circuit.begin(cwd, argv), handle(Promise.resolve({ exitCode, signal: null })));
     await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'rev-parse', 'HEAD'])).not.toThrow();
-    expect(() => circuit.assertAllowed('ssh://other/home/atlas/project', ['git', 'status'])).not.toThrow();
+    expect(() => circuit.begin(cwd, argv)).not.toThrow();
   });
 
-  it('opens after a transport launch failure', async () => {
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => 1_000);
+  it('opens after a typed transport launch failure but not generic teardown', async () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    circuit.observe(circuit.begin(cwd, argv), handle(Promise.reject(new Error('provider disposed'))));
+    await settle();
     const failure = Object.assign(new Error('ssh spawn failed'), { code: 'ENOENT' });
-    const failed = handle(Promise.reject(failure));
-    circuit.observe(cwd, ['git', 'log', '-1'], failed);
+    circuit.observe(circuit.begin(cwd, argv), handle(Promise.reject(failure)));
     await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'log', '-1'])).toThrow(/SSH or executable failure/u);
+    expect(() => circuit.begin(cwd, argv)).toThrow(/SSH or executable failure/u);
+    expect(() => circuit.begin('ssh://other/repo', argv)).not.toThrow();
   });
 
-  it('does not open or clear for cancellation and generic teardown errors', async () => {
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => 1_000);
-    const aborted = new AbortController();
-    aborted.abort();
-    const abortError = Object.assign(new Error('cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
-    const cancelled = handle(Promise.reject(abortError));
-    circuit.observe(cwd, ['git', 'status'], cancelled, aborted.signal);
+  it('neither opens nor clears an existing failure on cancellation or teardown', async () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    const early = circuit.begin(cwd, argv);
+    const cancelled = circuit.begin(cwd, argv);
+    const teardown = circuit.begin(cwd, argv);
+    early?.('open');
+    const controller = new AbortController(); controller.abort();
+    circuit.observe(cancelled, handle(Promise.resolve({ exitCode: 255, signal: null })), controller.signal);
+    circuit.observe(teardown, handle(Promise.reject(new Error('provider disposed'))));
     await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status'])).not.toThrow();
-    const teardown = handle(Promise.reject(new Error('provider disposed')));
-    circuit.observe(cwd, ['git', 'log', '-1'], teardown);
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'log', '-1'])).not.toThrow();
-
-    const failed = handle(Promise.resolve({ exitCode: 127, signal: null }));
-    circuit.observe(cwd, ['git', 'rev-parse', 'HEAD'], failed);
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status'])).toThrow(/suppressed/u);
-    circuit.observe(cwd, ['git', 'status'], cancelled, aborted.signal);
-    circuit.observe(cwd, ['git', 'log', '-1'], teardown);
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status'])).toThrow(/suppressed/u);
+    expect(() => circuit.begin(cwd, argv)).toThrow(/suppressed/u);
+    expect(circuit.begin(cwd, argv, undefined, controller.signal)).toBeUndefined();
   });
 
-  it('clears an open circuit after an in-flight probe succeeds', async () => {
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => 1_000);
-    const failed = handle(Promise.resolve({ exitCode: 127, signal: null }));
-    circuit.observe(cwd, ['git', 'rev-parse', 'HEAD'], failed);
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'status'])).toThrow(/suppressed/u);
-    const success = handle(Promise.resolve({ exitCode: 0, signal: null }));
-    circuit.observe(cwd, ['git', 'status'], success);
-    await success.done;
-    await settle();
-    expect(() => circuit.assertAllowed(cwd, ['git', 'remote', '-v'])).not.toThrow();
+  it('clears an open circuit when a newer already-running probe succeeds', () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    const failed = circuit.begin(cwd, argv), newer = circuit.begin(cwd, argv);
+    failed?.('open');
+    expect(() => circuit.begin(cwd, argv)).toThrow(/suppressed/u);
+    newer?.('healthy');
+    expect(() => circuit.begin(cwd, argv)).not.toThrow();
   });
 
-  it('bounds retained host circuits', () => {
-    const circuit = new RemoteGitProbeFailureCircuit(30_000, () => 1_000);
-    for (let index = 0; index < 65; index += 1) {
-      circuit.recordFailure(`ssh://host-${index}/repo`, ['git', 'status']);
-    }
-    expect(() => circuit.assertAllowed('ssh://host-0/repo', ['git', 'status'])).not.toThrow();
-    expect(() => circuit.assertAllowed('ssh://host-64/repo', ['git', 'status'])).toThrow(/suppressed/u);
+  it('bounds retained entries and fences completions of evicted entries', () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    const evicted = circuit.begin(cwd, argv);
+    for (let index = 0; index < 65; index++) circuit.begin('ssh://host-' + index + '/repo', argv)?.('open');
+    const replacement = circuit.begin(cwd, argv);
+    evicted?.('open');
+    expect(() => circuit.begin(cwd, argv)).not.toThrow();
+    replacement?.('healthy');
+    expect(() => circuit.begin('ssh://host-64/repo', argv)).toThrow(/suppressed/u);
+  });
+
+  it('does not extend a cooldown for late failures from the same burst', () => {
+    let now = 0;
+    const circuit = new RemoteGitProbeFailureCircuit(2_000, () => now);
+    const a = circuit.begin(cwd, argv), b = circuit.begin(cwd, argv);
+    a?.('open');
+    now = 1_900; b?.('open');
+    now = 2_000;
+    expect(() => circuit.begin(cwd, argv)).not.toThrow();
+  });
+
+  it('releases a cancelled recovery slot without erasing the failure', () => {
+    let now = 0;
+    const circuit = new RemoteGitProbeFailureCircuit(2_000, () => now);
+    circuit.begin(cwd, argv)?.('open'); now = 2_000;
+    const cancelled = circuit.begin(cwd, argv);
+    expect(() => circuit.begin(cwd, argv)).toThrow(/still running/u);
+    cancelled?.('ignore');
+    const retry = circuit.begin(cwd, argv);
+    retry?.('open');
+    expect(() => circuit.begin(cwd, argv)).toThrow(/suppressed/u);
+  });
+
+  it('keeps argv and environment changes independent and canonicalizes env order', () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    circuit.begin(cwd, argv, { PATH: '/old', LANG: 'C' })?.('open');
+    expect(() => circuit.begin(cwd, argv, { LANG: 'C', PATH: '/old' })).toThrow();
+    expect(() => circuit.begin(cwd, argv, { PATH: '/new', LANG: 'C' })).not.toThrow();
+    expect(() => circuit.begin(cwd, ['git', 'status'], { PATH: '/old', LANG: 'C' })).not.toThrow();
+  });
+
+  it('stops retaining outcomes after disposal', () => {
+    const circuit = new RemoteGitProbeFailureCircuit();
+    const late = circuit.begin(cwd, argv); circuit.dispose(); late?.('open');
+    expect(circuit.begin(cwd, argv)).toBeUndefined();
   });
 });
