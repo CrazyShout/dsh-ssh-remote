@@ -1,12 +1,14 @@
 import FileSystem, { FsError, type FsTarget } from '@deepseek-ai/dsh-fs';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type {
+  SubprocessHandle,
   SubprocessRuntime,
   SubprocessSpawnSpec,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
+import { isInfrastructureFailureError, RemoteGitProbeFailureCircuit } from './git-probe-circuit.js';
 import { parseSshUri, type SshUri } from './types.js';
 import { quotePosix, remoteShCommand } from './ssh-command.js';
 
@@ -278,16 +280,27 @@ export function installRemoteSubprocessRouter(
 ): () => void {
   const originalSpawn = subprocess.spawn;
   const originalSpawnTerminal = subprocess.spawnTerminal;
+  const gitProbeFailures = new RemoteGitProbeFailureCircuit();
 
   subprocess.spawn = function (spec: SubprocessSpawnSpec) {
     const remoteCwd = isSshPath(spec.cwd) ? spec.cwd : resolveRemotePath(spec.cwd);
     if (remoteCwd === undefined) return originalSpawn.call(subprocess, spec);
-    return originalSpawn.call(subprocess, {
+    if (spec.signal?.aborted !== true) gitProbeFailures.assertAllowed(remoteCwd, spec.argv);
+    const routed = {
       ...spec,
       argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, false, resolveRemotePath),
       cwd: process.cwd(),
       env: undefined,
-    });
+    };
+    let handle: SubprocessHandle;
+    try {
+      handle = originalSpawn.call(subprocess, routed);
+    } catch (error) {
+      if (isInfrastructureFailureError(error, spec.signal)) gitProbeFailures.recordFailure(remoteCwd, spec.argv);
+      throw error;
+    }
+    gitProbeFailures.observe(remoteCwd, spec.argv, handle, spec.signal);
+    return handle;
   };
 
   subprocess.spawnTerminal = function (spec: SubprocessTerminalSpawnSpec) {

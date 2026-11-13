@@ -211,6 +211,138 @@ describe('remote Workspace routing', () => {
     expect(spawn.mock.calls.at(-1)?.[0]).toBe(localSearch);
     restore();
   });
+
+  it('opens the Git circuit after a synchronous SSH launch failure', () => {
+    const failure = Object.assign(new Error('ssh launch failed'), { code: 'ENOENT' });
+    const spawn = vi.fn(() => { throw failure; });
+    const runtime = { spawn, spawnTerminal: vi.fn(async () => ({ pid: 2 })) };
+    const restore = installRemoteSubprocessRouter(
+      runtime as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      expect(() => runtime.spawn({
+        argv: ['git', 'rev-parse', 'HEAD'],
+        cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never)).toThrow(/ssh launch failed/u);
+      expect(() => runtime.spawn({
+        argv: ['git', 'status', '--short'],
+        cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never)).toThrow(/suppressed/u);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not circuit a remote argv construction error', () => {
+    const spawn = vi.fn(() => ({ done: Promise.resolve({ exitCode: 0, signal: null }) }));
+    const runtime = { spawn, spawnTerminal: vi.fn(async () => ({ pid: 2 })) };
+    const restore = installRemoteSubprocessRouter(
+      runtime as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      expect(() => runtime.spawn({
+        argv: [], cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never)).toThrow(/argv is empty/u);
+      expect(spawn).not.toHaveBeenCalled();
+      runtime.spawn({ argv: ['git', 'status'], cwd: '/anchors/project', stdio: {}, graceMs: 1000 } as never);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not circuit a cancelled Git launch', () => {
+    const abort = Object.assign(new Error('cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
+    const controller = new AbortController();
+    controller.abort();
+    const spawn = vi.fn(() => { throw abort; });
+    const runtime = { spawn, spawnTerminal: vi.fn(async () => ({ pid: 2 })) };
+    const restore = installRemoteSubprocessRouter(
+      runtime as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      expect(() => runtime.spawn({
+        argv: ['git', 'rev-parse', 'HEAD'], cwd: '/anchors/project',
+        stdio: {}, graceMs: 1000, signal: controller.signal,
+      } as never)).toThrow(/cancelled/u);
+      expect(() => runtime.spawn({
+        argv: ['git', 'status', '--short'], cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never)).toThrow(/cancelled/u);
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it('preserves pre-cancellation even while the Git circuit is open', async () => {
+    let finish!: (value: { exitCode: number; signal: null }) => void;
+    const done = new Promise<{ exitCode: number; signal: null }>(resolve => { finish = resolve; });
+    const abort = Object.assign(new Error('cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
+    let calls = 0;
+    const spawn = vi.fn(() => {
+      calls += 1;
+      if (calls === 1) return { done };
+      throw abort;
+    });
+    const runtime = { spawn, spawnTerminal: vi.fn(async () => ({ pid: 2 })) };
+    const restore = installRemoteSubprocessRouter(
+      runtime as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      runtime.spawn({
+        argv: ['git', 'rev-parse', 'HEAD'], cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never);
+      finish({ exitCode: 127, signal: null });
+      await done;
+      await Promise.resolve();
+      await Promise.resolve();
+      const controller = new AbortController();
+      controller.abort();
+      expect(() => runtime.spawn({
+        argv: ['git', 'status'], cwd: '/anchors/project', stdio: {}, graceMs: 1000, signal: controller.signal,
+      } as never)).toThrow(/cancelled/u);
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it('stops repeated remote Git probes after an infrastructure failure', async () => {
+    let finish!: (value: { exitCode: number; signal: null }) => void;
+    const done = new Promise<{ exitCode: number; signal: null }>(resolve => { finish = resolve; });
+    const handle = { done };
+    const spawn = vi.fn(() => handle);
+    const runtime = { spawn, spawnTerminal: vi.fn(async () => ({ pid: 2 })) };
+    const restore = installRemoteSubprocessRouter(
+      runtime as never,
+      path => path === '/anchors/project' ? 'ssh://gpu/home/atlas/project' : undefined,
+    );
+    try {
+      runtime.spawn({
+        argv: ['C:\\Program Files\\Git\\cmd\\git.EXE', 'rev-parse', 'HEAD'],
+        cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never);
+      finish({ exitCode: 127, signal: null });
+      await done;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(() => runtime.spawn({
+        argv: ['git', 'status', '--short'],
+        cwd: '/anchors/project', stdio: {}, graceMs: 1000,
+      } as never)).toThrow(/suppressed/u);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      runtime.spawn({ argv: ['git', 'commit', '-m', 'x'], cwd: '/anchors/project', stdio: {}, graceMs: 1000 } as never);
+      runtime.spawn({ argv: ['git', 'rev-parse', 'HEAD'], cwd: '/tmp', stdio: {}, graceMs: 1000 } as never);
+      expect(spawn).toHaveBeenCalledTimes(3);
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe('OpenSSH process invocation', () => {
