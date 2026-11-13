@@ -280,7 +280,7 @@ describe('OpenSSH process invocation', () => {
       resolver,
     );
     const script = decodeRemoteScript(invocation.at(-1));
-    expect(script).toContain("exec 'python3' '-c'");
+    expect(script).toContain("exec 'python3' '-I' '-c'");
     expect(script).toContain('"mode":"workspace-write"');
     expect(script).toContain('"root":"/home/atlas/project"');
     expect(script).toContain('"GIT_TERMINAL_PROMPT":"0"');
@@ -340,12 +340,19 @@ describe('OpenSSH process invocation', () => {
       false,
     ).at(-1));
     expect(script).toContain("'helper' '--' 'literal-value'");
+    const payload = 'C:\\data\\dsh-sandbox-windows-acl\\lib\\runner.js';
+    expect(decodeRemoteScript(buildRemoteSshInvocation(cwd, ['C:\\Tools\\helper.EXE', '--', payload], undefined, false).at(-1)))
+      .toContain(payload);
+    expect(decodeRemoteScript(buildRemoteSshInvocation(cwd, ['/bin/cat', payload], undefined, false).at(-1)))
+      .toContain("'/bin/cat'");
   });
 
   it.each([
     '/usr/bin/git',
     '/opt/wine/tool.exe',
     './tools/helper.EXE',
+    'tool.exe',
+    '//remote/path/tool.exe',
   ])('keeps a POSIX executable path intended for the remote host: %s', executable => {
     const script = decodeRemoteScript(buildRemoteSshInvocation(
       cwd,
@@ -355,6 +362,42 @@ describe('OpenSSH process invocation', () => {
     ).at(-1));
     expect(script).toContain(executable);
     expect(script).toContain('rev-parse');
+  });
+
+  it('rejects malformed or unknown Windows sandbox prefixes instead of discarding their policy', () => {
+    const runner = 'C:\\app\\node_modules\\@deepseek-ai\\dsh-sandbox-windows-acl\\lib\\runner.js';
+    const valid = ['C:\\app\\node.exe', runner, '--workspace', anchor, '--temp', 'C:\\temp', '--mode', 'read-only'];
+    for (const prefix of [
+      [...valid, '--network', 'deny'],
+      [...valid, '--mode', 'workspace-write'],
+      [...valid, '--write-sid', 'S-1-4-1'],
+      ['C:\\app\\node.exe', '--eval', runner, ...valid.slice(2)],
+      valid.slice(0, -1),
+    ]) expect(() => buildRemoteSshInvocation(cwd, [...prefix, '--', 'git', 'status'], undefined, false, resolver))
+      .toThrow(/sandbox wrapper/u);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not import workspace Python modules before entering the sandbox', () => {
+    const base = mkdtempSync(join(tmpdir(), 'dsh-python-isolation-'));
+    try {
+      const workspace = join(base, 'workspace'), bin = join(base, 'bin');
+      mkdirSync(workspace); mkdirSync(bin);
+      const marker = join(base, 'escaped'), capture = join(base, 'entered');
+      writeFileSync(join(workspace, 'hashlib.py'), `open(${JSON.stringify(marker)}, 'w').write('outside sandbox')\nraise RuntimeError('workspace module ran')\n`);
+      const bwrap = join(bin, 'bwrap');
+      writeFileSync(bwrap, '#!/bin/sh\nprintf entered > "$DSH_TEST_CAPTURE"\n'); chmodSync(bwrap, 0o755);
+      const invocation = buildRemoteSshInvocation(`ssh://gpu${workspace}`, [
+        'C:\\app\\node.exe', 'C:\\app\\node_modules\\@deepseek-ai\\dsh-sandbox-windows-acl\\lib\\runner.js',
+        '--workspace', anchor, '--temp', 'C:\\temp', '--mode', 'read-only', '--', '/bin/true',
+      ], undefined, false, path => path === anchor ? `ssh://gpu${workspace}` : undefined);
+      const result = spawnSync('/bin/sh', ['-c', decodeRemoteScript(invocation.at(-1))], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, PYTHONPATH: workspace, DSH_TEST_CAPTURE: capture },
+      });
+      expect(existsSync(marker), result.stderr).toBe(false);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(capture, 'utf8')).toBe('entered');
+    } finally { rmSync(base, { recursive: true, force: true }); }
   });
 
   it.skipIf(process.platform !== 'linux')('hides helper runtime after rebinding a /tmp workspace', () => {

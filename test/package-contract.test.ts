@@ -64,7 +64,7 @@ describe('release and Git installation package contract', () => {
     for (const [name, range] of peers) {
       expect(range, name).toBe('>=0.2.0-rc.2 <0.3.0 || >=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0');
       expect(manifest.devDependencies[name], name).toBe(process.env.DSH_TEST_SDK_VERSION ?? '0.2.0-rc.2');
-      for (const version of ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.2-rc.1']) {
+      for (const version of ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3']) {
         expect(semver.satisfies(version, range as string), `${name}: ${version}`).toBe(true);
       }
       expect(semver.satisfies('0.1.7-rc.2', range as string), name).toBe(false);

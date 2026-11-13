@@ -278,19 +278,35 @@ function unwrapWindowsAclRunner(
   argv: readonly string[],
   resolveRemotePath?: RemotePathResolver,
 ): WindowsAclCommand {
-  const separator = argv.indexOf('--');
-  if (separator < 1 || !isWindowsAbsolutePath(argv[0] ?? '')) return { argv };
-  const hasRunner = argv.slice(0, separator).some(value => WINDOWS_ACL_RUNNER.test(value.replaceAll('\\', '/')));
-  if (!hasRunner) return { argv };
+  if (!isWindowsAbsolutePath(argv[0] ?? '')) return { argv };
+  const delimiter = argv.indexOf('--');
+  const runner = argv.slice(0, delimiter < 0 ? undefined : delimiter)
+    .findIndex(value => WINDOWS_ACL_RUNNER.test(value.replaceAll('\\', '/')));
+  if (runner === -1) return { argv };
+  // Published DSH uses [node, built runner, ...options, --, ...command].
+  // Never drop unknown Node loaders or wrapper options while claiming the
+  // original policy was preserved. Source-only development runners fail closed.
+  if (runner !== 1
+    || !/\/lib\/runner\.[cm]?js$/u.test(argv[runner].replaceAll('\\', '/'))) {
+    throw new Error('remote subprocess sandbox wrapper has an unsupported runner prefix');
+  }
+  const separator = argv.indexOf('--', 2);
+  if (separator === -1) throw new Error('remote subprocess sandbox wrapper contains no command separator');
   const command = argv.slice(separator + 1);
   if (command.length === 0) throw new Error('remote subprocess sandbox wrapper contains no command');
-  let workspace: string | undefined;
-  let mode: string | undefined;
-  for (let index = 0; index < separator; index += 1) {
-    if (argv[index] === '--workspace') workspace = argv[index + 1];
-    if (argv[index] === '--mode') mode = argv[index + 1];
+  const options = new Map<string, string>();
+  const known = new Set(['--workspace', '--temp', '--mode', '--write-sid', '--temp-write-sid']);
+  for (let index = 2; index < separator; index += 2) {
+    const key = argv[index], value = argv[index + 1];
+    if (!known.has(key) || options.has(key) || index + 1 >= separator || !value || value.startsWith('--')) {
+      throw new Error('remote subprocess sandbox wrapper has invalid or unsupported options');
+    }
+    options.set(key, value);
   }
-  if (workspace === undefined || (mode !== 'read-only' && mode !== 'workspace-write')) {
+  const workspace = options.get('--workspace'), mode = options.get('--mode');
+  const writeSid = options.has('--write-sid'), tempWriteSid = options.has('--temp-write-sid');
+  if (workspace === undefined || !options.has('--temp') || (mode !== 'read-only' && mode !== 'workspace-write')
+    || writeSid !== tempWriteSid || (mode === 'read-only' && writeSid)) {
     throw new Error('remote subprocess sandbox wrapper has an invalid workspace policy');
   }
   const mappedRoot = isSshPath(workspace) ? workspace : resolveRemotePath?.(workspace);
@@ -372,7 +388,8 @@ function remoteSandboxCommand(
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)));
   return [
-    'python3', '-c', REMOTE_SANDBOX_LAUNCHER,
+    // -I excludes cwd/user site/PYTHONPATH before any launcher import occurs.
+    'python3', '-I', '-c', REMOTE_SANDBOX_LAUNCHER,
     JSON.stringify({
       mode: sandbox.mode,
       root: sandbox.root,
