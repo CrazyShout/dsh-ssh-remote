@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { buildRemoteSshInvocation } from '../src/runtime-router.js';
@@ -11,6 +11,9 @@ import { decodeRemoteScript } from './fixtures/remote-script.js';
 it.skipIf(process.env.DSH_REQUIRE_BWRAP !== '1')('runs Windows-routed commands with real remote confinement and private control roots', () => {
   expect(process.platform).toBe('linux');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-routed-sandbox-')));
+  // workspace-write deliberately permits its private /tmp. Use an owned,
+  // normally writable directory outside /tmp to test the read-only boundary.
+  const outsideBase = realpathSync(mkdtempSync(join(homedir(), '.dsh-routed-outside-')));
   const workspace = join(base, 'workspace with space'), runtimeBase = join(workspace, 'runtime');
   const runtime = join(runtimeBase, 'dsh-remote-helper'), auth = join(runtime, 'fixture.sock.auth');
   const anchor = 'C:\\DSH\\anchors\\project';
@@ -47,9 +50,9 @@ it.skipIf(process.env.DSH_REQUIRE_BWRAP !== '1')('runs Windows-routed commands w
     const forbidden = run('read-only', workspace, ['/bin/sh', '-c', `if printf forbidden > ${quote(join(workspace, 'forbidden'))}; then exit 99; fi`]);
     expect(forbidden.status).toBe(0);
     expect(existsSync(join(workspace, 'forbidden'))).toBe(false);
-    const outside = run('workspace-write', workspace, ['/bin/sh', '-c', `if printf forbidden > ${quote(join(base, 'outside'))}; then exit 99; fi`]);
+    const outside = run('workspace-write', workspace, ['/bin/sh', '-c', `if printf forbidden > ${quote(join(outsideBase, 'outside'))}; then exit 99; fi`]);
     expect(outside.status).toBe(0);
-    expect(existsSync(join(base, 'outside'))).toBe(false);
+    expect(existsSync(join(outsideBase, 'outside'))).toBe(false);
     const env = run('read-only', workspace, ['/bin/sh', '-c', 'printf "%s" "$PATH"'], { PATH: '/payload/only' });
     expect(env.status, env.stderr).toBe(0);
     expect(env.stdout).toBe('/payload/only');
@@ -62,5 +65,8 @@ it.skipIf(process.env.DSH_REQUIRE_BWRAP !== '1')('runs Windows-routed commands w
     expect(posix.status, posix.stderr).toBe(0);
     expect(posix.stdout).toBe('POSIX_EXE');
     expect(readFileSync(auth, 'utf8')).toBe('PRIVATE_CONTROL_FIXTURE');
-  } finally { rmSync(base, { recursive: true, force: true }); }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+    rmSync(outsideBase, { recursive: true, force: true });
+  }
 }, 30000);
