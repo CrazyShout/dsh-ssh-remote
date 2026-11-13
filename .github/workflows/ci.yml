@@ -73,7 +73,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx vitest run test/remote-skills.test.ts test/runtime-router.test.ts test/client-ui.test.tsx --maxWorkers=1 --minWorkers=1
+      - run: npx vitest run test/remote-skills.test.ts test/runtime-router.test.ts test/git-probe-circuit.test.ts test/git-probe-recovery.test.ts test/git-probe-router.test.ts test/client-ui.test.tsx --maxWorkers=1 --minWorkers=1
       - name: Check current-directory and child search routing on the new SDK
         run: node scripts/check-dsh-sdk.mjs '0.2.2-rc.3' --routing-only
 

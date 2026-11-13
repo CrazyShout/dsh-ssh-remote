@@ -1,12 +1,15 @@
 import FileSystem, { FsError, type FsTarget } from '@deepseek-ai/dsh-fs';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type {
+  SubprocessHandle,
   SubprocessRuntime,
   SubprocessSpawnSpec,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess';
 import type { TerminalSessionService, TerminalSpawnRequest } from '@deepseek-ai/dsh-terminal';
 import { HelperRemoteFileSystem, type RemoteHelperProvider } from './helper-fs.js';
+import { RemoteGitProbeFailureCircuit } from './git-probe-circuit.js';
+import type { RemoteHelperManager } from './helper/manager.js';
 import { parseSshUri, type SshUri } from './types.js';
 import { quotePosix, remoteShCommand } from './ssh-command.js';
 
@@ -442,19 +445,34 @@ export function buildRemoteSshInvocation(
 export function installRemoteSubprocessRouter(
   subprocess: SubprocessRuntime,
   resolveRemotePath: RemotePathResolver,
+  connections?: Pick<RemoteHelperManager, 'status' | 'onStatus'>,
 ): () => void {
   const originalSpawn = subprocess.spawn;
   const originalSpawnTerminal = subprocess.spawnTerminal;
+  const gitProbeFailures = new RemoteGitProbeFailureCircuit(undefined, undefined, connections?.status.bind(connections));
+  const detachStatus = connections?.onStatus(status => gitProbeFailures.connectionChanged(status));
 
   subprocess.spawn = function (spec: SubprocessSpawnSpec) {
     const remoteCwd = isSshPath(spec.cwd) ? spec.cwd : resolveRemotePath(spec.cwd);
     if (remoteCwd === undefined) return originalSpawn.call(subprocess, spec);
-    return originalSpawn.call(subprocess, {
+    const routed = {
       ...spec,
       argv: buildRemoteSshInvocation(remoteCwd, spec.argv, spec.env, false, resolveRemotePath),
       cwd: process.cwd(),
       env: undefined,
-    });
+    };
+    // A piped stdin payload is not part of the argv/environment fingerprint.
+    const probe = spec.stdio?.stdin === 'pipe' ? undefined
+      : gitProbeFailures.begin(remoteCwd, spec.argv, spec.env, spec.signal);
+    let handle: SubprocessHandle;
+    try {
+      handle = originalSpawn.call(subprocess, routed);
+    } catch (error) {
+      gitProbeFailures.launchFailed(probe, error, spec.signal);
+      throw error;
+    }
+    gitProbeFailures.observe(probe, handle, spec.signal);
+    return handle;
   };
 
   subprocess.spawnTerminal = function (spec: SubprocessTerminalSpawnSpec) {
@@ -469,6 +487,8 @@ export function installRemoteSubprocessRouter(
   };
 
   return () => {
+    detachStatus?.();
+    gitProbeFailures.dispose();
     subprocess.spawn = originalSpawn;
     subprocess.spawnTerminal = originalSpawnTerminal;
   };

@@ -34,7 +34,8 @@ const commands = [
   [process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json', '--noEmit']],
   [process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.client.json', '--noEmit']],
   ['npm', ['test', '--', ...(process.argv[3] === '--routing-only'
-    ? ['test/working-directory.test.ts', 'test/runtime-router.test.ts', 'test/remote-skills.test.ts'] : []), '--maxWorkers=1', '--minWorkers=1']],
+    ? ['test/working-directory.test.ts', 'test/runtime-router.test.ts', 'test/remote-skills.test.ts',
+      'test/git-probe-circuit.test.ts', 'test/git-probe-recovery.test.ts', 'test/git-probe-router.test.ts'] : []), '--maxWorkers=1', '--minWorkers=1']],
 ];
 for (const [command, args] of commands) {
   const result = spawnSync(command, args, { cwd: root, env: { ...process.env, DSH_TEST_SDK_VERSION: version },

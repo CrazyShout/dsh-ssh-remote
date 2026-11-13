@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 0.13.7
+
+- Follow up PR #51: suppress repeated failed read-only Git probes for the exact workspace, argv and environment, rather than blocking an entire SSH host. Thanks to @weijie-5 for the initial implementation.
+- Clear suppression on helper reconnect; use a monotonic 2-second cooldown and one in-flight recovery query when no reconnect event is available. Ordinary health refresh does not erase a genuine failure.
+- Fence stale outcomes, cancelled processes, disposal and cache eviction. Writes, ambiguous commands, piped-input queries, local operations and PTYs remain outside this throttle.
+- Tighten read-only classification for symbolic-ref mutation, output-file options (including abbreviations), config writes and POSIX executable names. Preserve DSH subprocess ownership; helper stays 0.13.5 with unchanged hash.
+- 中文：避免 Git 面板重复失败，同时修复恢复后被旧结果重新拦截、取消误报及跨项目串扰；不改变 SSH、沙箱权限或终端生命周期。
+
 ## 0.13.6
 
 - #49 / #50：修复 Windows Host 的 Git 路径和 ACL sandbox runner 被原样发送到 Linux 远端，导致 Git 面板退出 127。感谢 @weijie-5 的实现与 Windows → Linux 验证。
