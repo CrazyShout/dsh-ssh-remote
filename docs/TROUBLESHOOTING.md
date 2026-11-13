@@ -2,6 +2,14 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## Git 查询暂时冷却 / Git probe cooldown
+
+从 0.13.7 起，`REMOTE_GIT_PROBE_COOLDOWN` 表示同一个远端工作区、同一条只读 Git 查询及环境刚刚发生了可执行程序/SSH 类失败。这不是整台主机断线，也不会停止终端或拦住其他项目。等待约 2 秒后刷新；一次只放行一条恢复查询。若提示恢复查询仍在运行，等待该查询完成或按原功能取消，不会后台自动重试。
+
+从插件连接设置重新连接成功后立即清除冷却；普通心跳不等于 Git 已修复。更改查询或明确传入的环境不会沿用旧失败。请查看首次错误来修复真实原因；冷却不替代缺失的 Git、SSH 或沙箱依赖。
+
+English: the cache is limited to identical read-only probes in one workspace/environment. It clears on helper reconnection, or admits one recovery query after 2 seconds. It does not auto-retry, mark the whole host offline, stop terminals, or throttle writes. A still-running recovery query retains its own DSH cancellation/lifecycle. Inspect the original failure; throttling does not fix missing dependencies.
+
 ## Windows 远程 Git 面板报 127 / Windows Git path sent to Linux
 
 #49 / #50：如果 SSH 文件和终端正常，但 Git 面板报 `git rev-parse failed (127)`，并包含本机 `git.EXE` 或 `DeepSeek Harness.exe` 路径，请升级到 0.13.6。新版将 Windows 可执行路径映射为远端命令，并把已知的 Windows ACL 包装转换为远端受限执行；不会仅剥掉包装后无保护地运行。
