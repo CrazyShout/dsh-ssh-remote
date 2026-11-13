@@ -234,13 +234,49 @@ function directoryProps(ssh: ReturnType<typeof remote>) {
     createLocalDirectory: vi.fn(), createWorkspace: vi.fn(), renameWorkspace: vi.fn(),
   };
 }
-async function openRemote(ssh: ReturnType<typeof remote>) {
-  await render(SshDirectoryFlow, directoryProps(ssh));
+async function openRemote(ssh: ReturnType<typeof remote>, props = directoryProps(ssh)) {
+  await render(SshDirectoryFlow, props);
   const host = [...container.querySelectorAll('button')].find(item => item.querySelector('strong')?.textContent === 'alpha')!;
   await act(async () => host.click());
+  return props;
 }
 
 describe('rendered SSH directory flow', () => {
+  it('uses the parent directory title when the compact workspace name conflicts', async () => {
+    const ssh = remote();
+    const props = directoryProps(ssh);
+    const anchor = {
+      anchorPath: 'C:\\anchors\\schci [5646a0f8]',
+      uri: 'ssh://alpha/code/schci_review/schci',
+      alias: 'alpha',
+      remotePath: '/code/schci_review/schci',
+      title: 'schci · alpha',
+      createdAt: 1,
+    };
+    ssh.browse.mockResolvedValue(ok(listing(anchor.remotePath)));
+    ssh.materializeWorkspace.mockResolvedValue(ok(anchor));
+    props.createWorkspace.mockResolvedValue({
+      workspaceId: 'workspace-1',
+      title: 'schci · alpha [5646a0f8]',
+    });
+    props.renameWorkspace
+      .mockRejectedValueOnce(new Error(
+        "workspace rename failed: workspace/name-conflict: Workspace name 'schci · alpha' is already in use",
+      ))
+      .mockResolvedValueOnce({ workspaceId: 'workspace-1', title: 'schci_review · schci · alpha' });
+
+    await openRemote(ssh, props);
+    expect(button('打开此文件夹').disabled).toBe(false);
+    await click('打开此文件夹');
+
+    expect(ssh.materializeWorkspace).toHaveBeenCalledWith('alpha', anchor.remotePath);
+    expect(props.onError).not.toHaveBeenCalled();
+    expect(props.createWorkspace).toHaveBeenCalledWith({ path: anchor.anchorPath });
+    expect(props.renameWorkspace).toHaveBeenNthCalledWith(1, 'workspace-1', 'schci · alpha');
+    expect(props.renameWorkspace).toHaveBeenNthCalledWith(2, 'workspace-1', 'schci_review · schci · alpha');
+    expect(props.onPicked).toHaveBeenCalledWith(anchor.anchorPath);
+  });
+
   it('shows and browses SSH while the local capability probe is still pending', async () => {
     const ssh = remote(), local = deferred();
     const props = directoryProps(ssh); props.listLocal.mockReturnValue(local.promise);
