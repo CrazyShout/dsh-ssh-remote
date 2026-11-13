@@ -10,7 +10,7 @@ import { formatSshUri, parseSshUri } from '../src/types.js';
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
-const realSdk = process.env.DSH_TEST_SDK_VERSION === '0.2.2-rc.1';
+const realSdk = process.env.DSH_TEST_SDK_VERSION?.startsWith('0.2.2-') === true;
 
 async function fixture(official = false, install = true) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-directory-test-'));

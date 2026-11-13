@@ -10,6 +10,7 @@ export type RemotePathResolver = (path: string) => string | undefined;
  * persisted remote Workspace anchor use the helper.
  */
 export declare function installRemoteFileSystemRouter(fs: FileSystem, resolveRemotePath: RemotePathResolver, helpers: RemoteHelperProvider): () => void;
+export declare const REMOTE_SANDBOX_LAUNCHER: string;
 /** Build the local OpenSSH argv used for a remote process or terminal. */
 export declare function buildRemoteSshInvocation(cwd: string, argv: readonly string[], env: NodeJS.ProcessEnv | undefined, terminal: boolean, resolveRemotePath?: RemotePathResolver): readonly string[];
 /**

@@ -2,6 +2,14 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## Windows 远程 Git 面板报 127 / Windows Git path sent to Linux
+
+#49 / #50：如果 SSH 文件和终端正常，但 Git 面板报 `git rev-parse failed (127)`，并包含本机 `git.EXE` 或 `DeepSeek Harness.exe` 路径，请升级到 0.13.6。新版将 Windows 可执行路径映射为远端命令，并把已知的 Windows ACL 包装转换为远端受限执行；不会仅剥掉包装后无保护地运行。
+
+远端仍需 Git；受限模式还需 Linux 与可用的 bubblewrap。不存在本机执行或自动提升为完全权限的回退。自定义/开发态 runner 或未知包装参数会明确拒绝，不能靠忽略参数来兼容。POSIX 路径（包括 `/opt/tool.exe`）保持原样；本补丁不承诺转换所有本机平台的自定义启动器。
+
+English: 0.13.6 fixes Windows Git/ACL runner paths reaching a Linux SSH workspace. It preserves the selected restricted policy and fails closed for unknown wrapper options, missing bwrap or mismatched SSH roots. Remote Git is still required; POSIX paths are not normalized by filename extension. This targets the published Windows ACL runner, not arbitrary custom launchers or every Host platform.
+
 ## 已安装 bubblewrap，仍报 E_SANDBOX_UNAVAILABLE / Installed bwrap is not enough
 
 受限命令的探测不仅检查 `bwrap --version`，还实际执行 `--bind-fd`、PID namespace 和私有 `/tmp` 挂载。上游 [0.9.0](https://github.com/containers/bubblewrap/releases/tag/v0.9.0) 没有 `--bind-fd`；它在 [0.10.0](https://github.com/containers/bubblewrap/releases/tag/v0.10.0) 加入，并回补到 [0.6.3](https://github.com/containers/bubblewrap/releases/tag/v0.6.3) 及部分发行版。因此不能只按版本号判断。

@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 0.13.6
+
+- #49 / #50：修复 Windows Host 的 Git 路径和 ACL sandbox runner 被原样发送到 Linux 远端，导致 Git 面板退出 127。感谢 @weijie-5 的实现与 Windows → Linux 验证。
+- 仅将 Windows 绝对可执行路径映射为远端命令；POSIX 绝对、相对路径及 `.exe` 文件名保持原样。已知的 Windows ACL 包装保留 read-only / workspace-write 策略；未知参数、重复策略或跨主机映射拒绝执行。
+- 远端启动器保护 helper 控制目录及凭据，工作区位于 `/tmp` 时使用 FD 挂载；调用方环境在沙箱内应用。Python 隔离启动，避免工作区模块在进入沙箱前执行。继续使用官方 subprocess 管理流和生命周期。
+- 增加真实 Linux 沙箱边界测试和 DSH 0.2.2-rc.2 / rc.3 SDK、安装包回归。helper 仍为 0.13.5，哈希不变；无新增运行依赖或 RPC。
+- English: fix Windows-resolved Git and ACL runner routing to Linux SSH workspaces (#49/#50, thanks @weijie-5). Preserve POSIX executable names, including `.exe`; reject ambiguous wrapper policies. Hide helper control roots, bind `/tmp` workspaces by FD, apply caller environment inside the sandbox, and isolate Python startup. Native subprocess stream/lifecycle ownership is retained. Helper 0.13.5 is unchanged; extend SDK/package coverage to DSH 0.2.2-rc.2/rc.3.
+
 ## 0.13.5
 
 - #44–#46：补齐 Host 提供的连接与工作台提示翻译，并接入 DSH 官方俄语词典注册。感谢 @rusliksu；俄语用词仍欢迎母语使用者校对。
