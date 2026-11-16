@@ -4,6 +4,7 @@ import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/cl
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
 import { Button, IconFolderCloseRegular, IconPlusOutlineRegular, Input, Modal, Pill } from '@deepseek-ai/dsh-client-ui-primitives';
 import { isDirectoryPickerUnavailable, probeLocalBrowse, windowsDriveAnchors, type LocalAnchor } from './local-browse.js';
+import { isWorkspaceNameConflict, remoteWorkspaceTitleCandidates } from './workspace-title.js';
 import type { SshRemote, RemoteDirectoryListing, RemoteResult, SshConfig } from 'dsh-ssh-remote/ssh';
 import { asResult, withMutationDeadline, withReadDeadline, withDeadline, READ_DEADLINE_MS, messageOf, subtleText, dimmedText, helperStateLabel, searchSummary, localizeSourceText } from './connection-ui.js';
 /** Which filesystem the combined dialog is currently browsing. */
@@ -260,6 +261,35 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
                 setLoading(false);
         }
     }
+    async function applyRemoteWorkspaceTitle(
+        workspace: WorkspaceView,
+        remotePath: string,
+        host: string,
+        epoch: number,
+    ): Promise<void> {
+        const titles = remoteWorkspaceTitleCandidates(remotePath, host);
+        if (titles.includes(workspace.title))
+            return;
+        let conflict: unknown;
+        for (const title of titles) {
+            // Already-sent mutations may finish, but closing/replacing the
+            // owner must not launch another rename after a late conflict.
+            if (!mounted.current || navigationEpoch.current !== epoch)
+                return;
+            try {
+                await withMutationDeadline(renameWorkspace(workspace.workspaceId, title), t('工作区命名'));
+                return;
+            }
+            catch (reason) {
+                if (!mounted.current || navigationEpoch.current !== epoch)
+                    return;
+                if (!isWorkspaceNameConflict(reason))
+                    throw reason;
+                conflict = reason;
+            }
+        }
+        throw conflict;
+    }
     async function commit() {
         if (!target || !listing || pathDirty)
             return;
@@ -286,11 +316,9 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
                 const workspace = await withMutationDeadline(createWorkspace({ path: result.value.anchorPath }), t('工作区创建'));
                 if (navigationEpoch.current !== epoch)
                     return;
-                if (workspace.title !== result.value.title) {
-                    await withMutationDeadline(renameWorkspace(workspace.workspaceId, result.value.title), t('工作区命名'));
-                    if (navigationEpoch.current !== epoch)
-                        return;
-                }
+                await applyRemoteWorkspaceTitle(workspace, result.value.remotePath, result.value.alias, epoch);
+                if (navigationEpoch.current !== epoch)
+                    return;
                 onPicked(result.value.anchorPath);
             }
             else {
