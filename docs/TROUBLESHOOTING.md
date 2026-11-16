@@ -2,6 +2,14 @@
 
 [中文快速开始](../README.md) · [English quick start](../README.en.md)
 
+## 工作区重名 / Conflicting workspace names
+
+从 0.13.8 起，相同主机上的同名目录会先尝试添加父目录；仍重名时使用完整路径，例如 `/ · host` 和 `/root · host`。已成功采用的候选名称会保留，重复打开不自动缩短。只改变显示名称，不更改远端路径、工作区身份或会话。
+
+关闭目录选择窗口后，不再发起后续命名请求。已经发送的请求仍可能完成，插件不会声称已撤销，也不会删除已创建的工作区。如果全部候选名已被其他工作区占用，会显示错误；可从官方工作区菜单调整冲突的显示名称后重试。超时或其他错误不会触发换名重试。
+
+English: 0.13.8 tries parent-qualified names and then a literal full path for conflicting SSH workspaces. Existing candidate names stay stable. Closing/replacing the flow stops additional rename requests, not mutations already sent. Exhausted names, timeout/unknown outcomes and unrelated errors remain visible; no directory/session deletion or automatic rollback occurs.
+
 ## Git 查询暂时冷却 / Git probe cooldown
 
 从 0.13.7 起，`REMOTE_GIT_PROBE_COOLDOWN` 表示同一个远端工作区、同一条只读 Git 查询及环境刚刚发生了可执行程序/SSH 类失败。这不是整台主机断线，也不会停止终端或拦住其他项目。等待约 2 秒后刷新；一次只放行一条恢复查询。若提示恢复查询仍在运行，等待该查询完成或按原功能取消，不会后台自动重试。

@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 0.13.8
+
+- PR #52: disambiguate SSH workspace names by progressively adding parent directories. Thanks to @weijie-5 for the initial implementation.
+- Preserve compact and existing expanded names; add a literal full-path fallback so `/` and `/root`, or names containing ` · `, remain distinguishable.
+- Stop follow-up renames after the directory flow closes, unmounts or changes generation. Already-sent mutations can still finish; no automatic rollback or workspace deletion.
+- Retry only explicit name conflicts. Timeout/unknown outcomes and unrelated failures stay visible, and exhausting the finite candidates reports the conflict. Helper stays 0.13.5 with unchanged hash; SSH routing and workspace identity are unchanged.
+- 中文：修复工作区同名和关窗后继续重命名的问题；复用官方工作区接口，不改目录、会话或 SSH 配置。
+
 ## 0.13.7
 
 - Follow up PR #51: suppress repeated failed read-only Git probes for the exact workspace, argv and environment, rather than blocking an entire SSH host. Thanks to @weijie-5 for the initial implementation.
