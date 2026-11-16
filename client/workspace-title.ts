@@ -6,8 +6,11 @@
 export function remoteWorkspaceTitleCandidates(remotePath: string, host: string): string[] {
   const components = remotePath.split('/').filter(component => component.length > 0);
   const labels = components.length === 0 ? ['root'] : components;
-  return labels.map((_, index) =>
+  const titles = labels.map((_, index) =>
     `${labels.slice(-(index + 1)).join(' · ')} · ${host}`);
+  // Keep compact/existing titles, but retain literal path boundaries as the
+  // final fallback: / and /root (or a directory containing " · ") differ.
+  return [...new Set([...titles, `${remotePath} · ${host}`])];
 }
 
 /**

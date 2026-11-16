@@ -2,16 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { isWorkspaceNameConflict, remoteWorkspaceTitleCandidates } from '../client/workspace-title.js';
 
 describe('remote workspace titles', () => {
+  it('has distinct final candidates for / and /root', () => {
+    expect(remoteWorkspaceTitleCandidates('/', 'alpha').at(-1))
+      .not.toBe(remoteWorkspaceTitleCandidates('/root', 'alpha').at(-1));
+  });
+
+  it('retains literal path boundaries when directory names contain the title separator', () => {
+    expect(remoteWorkspaceTitleCandidates('/a · b/c', 'alpha').at(-1))
+      .not.toBe(remoteWorkspaceTitleCandidates('/a/b · c', 'alpha').at(-1));
+  });
+
   it('adds parent directories one level at a time', () => {
     expect(remoteWorkspaceTitleCandidates('/code/schci_review/schci', '172.22.1.9')).toEqual([
       'schci · 172.22.1.9',
       'schci_review · schci · 172.22.1.9',
       'code · schci_review · schci · 172.22.1.9',
+      '/code/schci_review/schci · 172.22.1.9',
     ]);
   });
 
   it('keeps a stable title for the remote root', () => {
-    expect(remoteWorkspaceTitleCandidates('/', 'alpha')).toEqual(['root · alpha']);
+    expect(remoteWorkspaceTitleCandidates('/', 'alpha')).toEqual(['root · alpha', '/ · alpha']);
   });
 
   it('recognizes the current Workspace client conflict error', () => {

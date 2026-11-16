@@ -265,19 +265,24 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
         workspace: WorkspaceView,
         remotePath: string,
         host: string,
+        epoch: number,
     ): Promise<void> {
         const titles = remoteWorkspaceTitleCandidates(remotePath, host);
         if (titles.includes(workspace.title))
             return;
         let conflict: unknown;
         for (const title of titles) {
-            if (workspace.title === title)
+            // Already-sent mutations may finish, but closing/replacing the
+            // owner must not launch another rename after a late conflict.
+            if (!mounted.current || navigationEpoch.current !== epoch)
                 return;
             try {
                 await withMutationDeadline(renameWorkspace(workspace.workspaceId, title), t('工作区命名'));
                 return;
             }
             catch (reason) {
+                if (!mounted.current || navigationEpoch.current !== epoch)
+                    return;
                 if (!isWorkspaceNameConflict(reason))
                     throw reason;
                 conflict = reason;
@@ -311,7 +316,7 @@ export function SshDirectoryFlow({ open, busy, onPicked, onCancel, onError, ssh,
                 const workspace = await withMutationDeadline(createWorkspace({ path: result.value.anchorPath }), t('工作区创建'));
                 if (navigationEpoch.current !== epoch)
                     return;
-                await applyRemoteWorkspaceTitle(workspace, result.value.remotePath, result.value.alias);
+                await applyRemoteWorkspaceTitle(workspace, result.value.remotePath, result.value.alias, epoch);
                 if (navigationEpoch.current !== epoch)
                     return;
                 onPicked(result.value.anchorPath);

@@ -242,6 +242,113 @@ async function openRemote(ssh: ReturnType<typeof remote>, props = directoryProps
 }
 
 describe('rendered SSH directory flow', () => {
+  function titleFixture(remotePath = '/work/demo') {
+    const ssh = remote(), props = directoryProps(ssh);
+    const anchor = { anchorPath: '/anchors/demo', uri: `ssh://alpha${remotePath}`,
+      alias: 'alpha', remotePath, title: 'demo · alpha', createdAt: 1 };
+    ssh.browse.mockResolvedValue(ok(listing(remotePath)));
+    ssh.materializeWorkspace.mockResolvedValue(ok(anchor));
+    props.createWorkspace.mockResolvedValue({ workspaceId: 'workspace-1', title: 'generated anchor' });
+    return { ssh, props, anchor };
+  }
+  const nameConflict = () => Object.assign(new Error('name taken'), { rpcError: { code: 'workspace/name-conflict' } });
+
+  it.each(['/', '/root'])('opens %s with a literal path title when root is already taken', async remotePath => {
+    const { ssh, props, anchor } = titleFixture(remotePath);
+    props.renameWorkspace.mockRejectedValueOnce(nameConflict()).mockResolvedValue({});
+    await openRemote(ssh, props); await click('打开此文件夹');
+    expect(props.renameWorkspace.mock.calls).toEqual([
+      ['workspace-1', 'root · alpha'], ['workspace-1', `${remotePath} · alpha`],
+    ]);
+    expect(props.onPicked).toHaveBeenCalledExactlyOnceWith(anchor.anchorPath);
+    expect(props.onError).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing disambiguated title on repeated opens', async () => {
+    const { ssh, props, anchor } = titleFixture();
+    props.createWorkspace.mockResolvedValue({ workspaceId: 'workspace-1', title: '/work/demo · alpha' });
+    await openRemote(ssh, props); await click('打开此文件夹');
+    expect(props.renameWorkspace).not.toHaveBeenCalled();
+    expect(props.onPicked).toHaveBeenCalledExactlyOnceWith(anchor.anchorPath);
+  });
+
+  it('stops after bounded candidates are exhausted and preserves the last conflict', async () => {
+    const { ssh, props } = titleFixture();
+    props.renameWorkspace.mockRejectedValue(nameConflict());
+    await openRemote(ssh, props); await click('打开此文件夹');
+    expect(props.renameWorkspace.mock.calls.map(call => call[1])).toEqual([
+      'demo · alpha', 'work · demo · alpha', '/work/demo · alpha',
+    ]);
+    expect(props.onError).toHaveBeenCalledExactlyOnceWith('name taken');
+    expect(props.onPicked).not.toHaveBeenCalled();
+  });
+
+  it('surfaces non-conflict failures without issuing another rename', async () => {
+    const { ssh, props } = titleFixture();
+    props.renameWorkspace.mockRejectedValue(new Error('connection lost'));
+    await openRemote(ssh, props); await click('打开此文件夹');
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onError).toHaveBeenCalledExactlyOnceWith('connection lost');
+  });
+
+  it('does not retry a timed-out mutation when its late reply is a conflict', async () => {
+    vi.useFakeTimers();
+    const { ssh, props } = titleFixture(), pending = deferred();
+    props.renameWorkspace.mockReturnValue(pending.promise);
+    await openRemote(ssh, props); await click('打开此文件夹');
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_001); });
+    expect(props.onError.mock.calls[0]?.[0]).toContain('结果未知');
+    await act(async () => pending.reject(nameConflict()));
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onPicked).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', 'failure'])('ignores a late %s after the owner closes', async outcome => {
+    const { ssh, props } = titleFixture(), pending = deferred();
+    props.renameWorkspace.mockReturnValue(pending.promise);
+    await openRemote(ssh, props); await click('打开此文件夹');
+    await render(SshDirectoryFlow, { ...props, open: false });
+    await act(async () => outcome === 'success' ? pending.resolve({}) : pending.reject(new Error('offline')));
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onPicked).not.toHaveBeenCalled(); expect(props.onError).not.toHaveBeenCalled();
+  });
+
+  it('does not let a closed flow retry inside a newly opened flow', async () => {
+    const { ssh, props, anchor } = titleFixture(), pending = deferred();
+    props.renameWorkspace.mockReturnValueOnce(pending.promise).mockResolvedValue({});
+    await openRemote(ssh, props); await click('打开此文件夹');
+    await render(SshDirectoryFlow, { ...props, open: false });
+    await render(SshDirectoryFlow, props);
+    await act(async () => pending.reject(nameConflict()));
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onPicked).not.toHaveBeenCalled(); expect(props.onError).not.toHaveBeenCalled();
+    await openRemote(ssh, props); await click('打开此文件夹');
+    expect(props.renameWorkspace).toHaveBeenNthCalledWith(2, 'workspace-1', 'demo · alpha');
+    expect(props.onPicked).toHaveBeenCalledExactlyOnceWith(anchor.anchorPath);
+  });
+
+  it.each(['close', 'unmount', 'replace'])('stops conflict retries after owner %s', async change => {
+    const ssh = remote(), props = directoryProps(ssh), pending = deferred();
+    const anchor = { anchorPath: '/anchors/demo', uri: 'ssh://alpha/work/demo',
+      alias: 'alpha', remotePath: '/work/demo', title: 'demo · alpha', createdAt: 1 };
+    ssh.browse.mockResolvedValue(ok(listing(anchor.remotePath)));
+    ssh.materializeWorkspace.mockResolvedValue(ok(anchor));
+    props.createWorkspace.mockResolvedValue({ workspaceId: 'workspace-1', title: 'generated anchor' });
+    props.renameWorkspace.mockReturnValueOnce(pending.promise).mockResolvedValue({});
+    await openRemote(ssh, props);
+    await click('打开此文件夹');
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    if (change === 'close') await render(SshDirectoryFlow, { ...props, open: false });
+    else if (change === 'unmount') await render('div', {});
+    else await render(SshDirectoryFlow, { ...props, ssh: remote() });
+    await act(async () => pending.reject(Object.assign(new Error('name taken'), {
+      rpcError: { code: 'workspace/name-conflict' },
+    })));
+    expect(props.renameWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onPicked).not.toHaveBeenCalled();
+    expect(props.onError).not.toHaveBeenCalled();
+  });
+
   it('uses the parent directory title when the compact workspace name conflicts', async () => {
     const ssh = remote();
     const props = directoryProps(ssh);
