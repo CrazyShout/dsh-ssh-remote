@@ -1,5 +1,11 @@
 # Changelog / 更新记录
 
+## Unreleased
+
+- 兼容 DSH Forge 的空会话分支控件：搜索并切换本地分支；本地无匹配时查询并 fetch 匹配远端分支；远端分支建立本地跟踪分支；基于当前 HEAD 创建并切换新分支。
+- 分支写操作沿用当前 Session 的 sandbox、working directory 和 Agent maintenance；只读、首轮已开始或 Agent 忙时拒绝，不执行 reset、强制 checkout 或自动 stash。原 worktree 流程保留。
+- English: extend the DSH Forge blank-Session branch control with local switching, targeted remote fetch, tracking-branch creation and new branches from HEAD. Writes use the Session execution world and Agent maintenance, preserve the worktree flow, and never reset, force-checkout or stash.
+
 ## 0.13.8
 
 - PR #52: disambiguate SSH workspace names by progressively adding parent directories. Thanks to @weijie-5 for the initial implementation.

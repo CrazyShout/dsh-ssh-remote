@@ -60,9 +60,12 @@ You can also download the release `.tgz` and enter its absolute path in Plugins.
 | See cwd, exit status and context | Terminal-tab menu **查看 SSH 终端状态** |
 | Access TensorBoard, Jupyter or a dev website | **远程工作台 → 端口转发** |
 | Upload/download files and folders | **远程工作台 → 文件传输** |
+| Search, switch or create a Git branch | Branch control before the first turn in a blank Session (requires DSH Forge) |
 | Use remote skills | Native `/` skill menu in a remote Session |
 
 The **SSH · host** badge opens the unified workbench; blank Sessions show it above the composer. Local Sessions retain their original file and terminal behavior.
+
+With DSH Forge enabled, the blank-Session branch control searches and switches local branches. When no local branch matches, it queries and fetches only matching remote branches; choosing one creates a same-named local tracking branch. A new branch can also be created from the current `HEAD`. Writes use the Session's sandbox, execution directory and Agent maintenance. Read-only Sessions, started turns and busy Agents are refused; the control never runs `reset`, forced checkout or an automatic stash. The existing New worktree flow is preserved.
 
 Connection dots: green = SSH/helper connected; amber = connecting or limited; hollow gray = disconnected or unknown; red = connection error. Hover or keyboard-focus for the full path and explanation. Green does not certify every remote feature.
 

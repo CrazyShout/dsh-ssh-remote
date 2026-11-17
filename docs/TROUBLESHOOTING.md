@@ -18,6 +18,16 @@ English: 0.13.8 tries parent-qualified names and then a literal full path for co
 
 English: the cache is limited to identical read-only probes in one workspace/environment. It clears on helper reconnection, or admits one recovery query after 2 seconds. It does not auto-retry, mark the whole host offline, stop terminals, or throttle writes. A still-running recovery query retains its own DSH cancellation/lifecycle. Inspect the original failure; throttling does not fix missing dependencies.
 
+## 分支列表切换或远端搜索失败 / Branch switch or remote search fails
+
+分支控件只在 **DSH Forge 已启用、会话尚未开始首轮、当前目录是可写的 Git checkout** 时出现。已有对话不会显示该控件，这是 Forge 的会话边界，不是连接失败。
+
+本地没有匹配的分支时，插件会对 `origin`（其次 `upstream`，再按名称）执行 `git ls-remote`，并把命中的 refs 拉到对应远端跟踪命名空间。HTTPS/SSH 认证、主机不可达或远端拒绝 fetch 会显示在菜单内，本地分支仍可使用。选择远端分支会创建同名本地跟踪分支；同名本地分支已存在时不会覆盖。
+
+非 fast-forward 或有冲突的未提交修改由 Git 自身拒绝，插件不使用 `reset`、强制检出或 stash。只读会话、Agent 忙或首轮已开始时也不会执行写操作。受限命令失败时，还需确认远端 Git 和 bubblewrap 可用。
+
+English: the control appears only when DSH Forge is enabled, the Session has not started its first turn, and the cwd is a writable Git checkout. When no local branch matches, the plugin runs `git ls-remote` against `origin`, then `upstream` and other remotes, and fetches only matching refs. Authentication, reachability and fetch errors are shown in the menu without hiding local branches. A remote selection creates a same-named local tracking branch and never overwrites an existing local branch. Git failures are surfaced without reset, forced checkout or automatic stash.
+
 ## Windows 远程 Git 面板报 127 / Windows Git path sent to Linux
 
 #49 / #50：如果 SSH 文件和终端正常，但 Git 面板报 `git rev-parse failed (127)`，并包含本机 `git.EXE` 或 `DeepSeek Harness.exe` 路径，请升级到 0.13.6。新版将 Windows 可执行路径映射为远端命令，并把已知的 Windows ACL 包装转换为远端受限执行；不会仅剥掉包装后无保护地运行。
