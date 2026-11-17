@@ -74,7 +74,11 @@ export interface WorktreeBranchInjected {
   requestWorktree(from: string | null): Promise<{ ok: boolean; message?: string }>;
   cancelWorktree(): Promise<{ ok: boolean; message?: string }>;
   refresh(): Promise<{ ok: boolean; message?: string }>;
-  search(query: string, fetchMissing: boolean, signal?: AbortSignal): Promise<RemoteBranchListing>;
+  search(
+    query: string,
+    options: { includeRemote: boolean; fetchMissing: boolean },
+    signal?: AbortSignal,
+  ): Promise<RemoteBranchListing>;
   switchBranch(ref: string): Promise<RemoteBranchMutation>;
   createBranch(name: string): Promise<RemoteBranchMutation>;
 }
@@ -146,6 +150,10 @@ function messageOf(error: unknown): string {
 
 function sameBranch(item: BranchOption, value: string | null): boolean {
   return value !== null && item.name === value;
+}
+
+function branchMatches(name: string, query: string): boolean {
+  return query.length === 0 || name.toLowerCase().includes(query.toLowerCase());
 }
 
 interface BranchOption {
@@ -236,9 +244,10 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     left: number; width: number; maxHeight: number; top?: number; bottom?: number;
   } | null>(null);
   const [query, setQuery] = useState('');
+  const [localBranches, setLocalBranches] = useState<string[]>([]);
   const [branches, setBranches] = useState<RemoteBranchListing | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetching, setFetching] = useState(false);
+  const [localLoading, setLocalLoading] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(false);
   const [branchError, setBranchError] = useState('');
   const [busy, setBusy] = useState('');
   const [createMode, setCreateMode] = useState(false);
@@ -254,6 +263,9 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const createRef = useRef<HTMLInputElement>(null);
   const requestEpoch = useRef(0);
   const searchAbort = useRef<AbortController | null>(null);
+  const localRequest = useRef<AbortController | null>(null);
+  const localLoaded = useRef(false);
+  const prefetchedSession = useRef<SessionId | null>(null);
   const fetchAttempts = useRef(new Set<string>());
   const composing = useRef(false);
   const mounted = useRef(true);
@@ -268,7 +280,14 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const branchLabel = current ?? (option?.commit ? `${t('分离 HEAD')} @${option.commit}` : t('分离 HEAD'));
 
   useEffect(() => {
+    searchAbort.current?.abort();
+    searchAbort.current = null;
+    localRequest.current = null;
     setCurrentOverride(null);
+    setLocalBranches([]);
+    setBranches(null);
+    localLoaded.current = false;
+    prefetchedSession.current = null;
     previousPanelCurrent.current = panelCurrent;
   }, [props.sessionId]);
 
@@ -300,9 +319,11 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     setCreateMode(false);
     setNewName('');
     setBranchError('');
-    setLoading(false);
-    setFetching(false);
-    searchAbort.current?.abort();
+    setLocalLoading(false);
+    setRemoteLoading(false);
+    if (searchAbort.current !== null && searchAbort.current !== localRequest.current) {
+      searchAbort.current.abort();
+    }
     searchAbort.current = null;
     fetchAttempts.current.clear();
   }, []);
@@ -313,9 +334,14 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
       return;
     }
     locate();
+    const cached = localLoaded.current;
     setQuery('');
-    setBranches(null);
-    setLoading(true);
+    if (!cached) {
+      setLocalBranches([]);
+      setBranches(null);
+    }
+    setLocalLoading(!cached);
+    setRemoteLoading(false);
     setBranchError('');
     setNotice('');
     setActiveIndex(0);
@@ -350,44 +376,99 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     return () => window.cancelAnimationFrame(focus);
   }, [createMode]);
 
-  const load = useCallback(async (text: string, fetchMissing: boolean) => {
+  const loadLocal = useCallback(async () => {
     const epoch = ++requestEpoch.current;
     searchAbort.current?.abort();
     const controller = new AbortController();
     searchAbort.current = controller;
-    setLoading(true);
-    setFetching(fetchMissing);
+    localRequest.current = controller;
+    setLocalLoading(true);
+    setRemoteLoading(false);
     setBranchError('');
     try {
-      const value = await props.search(text, fetchMissing, controller.signal);
+      const value = await props.search('', {
+        includeRemote: false,
+        fetchMissing: false,
+      }, controller.signal);
       if (epoch !== requestEpoch.current || controller.signal.aborted) return;
+      localLoaded.current = true;
+      setLocalBranches(value.local);
       setBranches(value);
       setActiveIndex(0);
     } catch (error) {
       if (epoch !== requestEpoch.current || controller.signal.aborted) return;
       setBranchError(messageOf(error));
     } finally {
-      if (epoch === requestEpoch.current) {
-        setLoading(false);
-        setFetching(false);
-      }
+      if (localRequest.current === controller) localRequest.current = null;
+      if (epoch === requestEpoch.current) setLocalLoading(false);
+    }
+  }, [props.search]);
+
+  const localReady = option !== undefined;
+
+  const loadRemote = useCallback(async (text: string, fetchMissing: boolean) => {
+    const epoch = ++requestEpoch.current;
+    localRequest.current?.abort();
+    localRequest.current = null;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
+    setLocalLoading(false);
+    setRemoteLoading(true);
+    setBranchError('');
+    try {
+      const value = await props.search(text, {
+        includeRemote: true,
+        fetchMissing,
+      }, controller.signal);
+      if (epoch !== requestEpoch.current || controller.signal.aborted) return;
+      setLocalBranches(current => current.length > 0 ? current : value.local);
+      setBranches(value);
+      setActiveIndex(0);
+    } catch (error) {
+      if (fetchMissing) fetchAttempts.current.delete(text);
+      if (epoch !== requestEpoch.current || controller.signal.aborted) return;
+      setBranchError(messageOf(error));
+    } finally {
+      if (epoch === requestEpoch.current) setRemoteLoading(false);
     }
   }, [props.search]);
 
   useEffect(() => {
+    if (!localReady || localLoaded.current || prefetchedSession.current === props.sessionId) return;
+    prefetchedSession.current = props.sessionId;
+    void loadLocal();
+  }, [localReady, props.sessionId, loadLocal]);
+
+  useEffect(() => {
     if (!open || createMode || composing.current) return;
     const normalized = query.trim();
+    if (normalized === '') {
+      if (!localLoaded.current && localRequest.current === null) {
+        void loadLocal();
+      } else if (localLoaded.current) {
+        setRemoteLoading(false);
+        setBranches(current => current === null ? null : {
+          ...current,
+          remote: [],
+          fetched: [],
+          warning: '',
+        });
+      }
+      return;
+    }
     const timer = window.setTimeout(() => {
       const fetchMissing = normalized.length >= 2 && !fetchAttempts.current.has(normalized);
       if (fetchMissing) fetchAttempts.current.add(normalized);
-      void load(normalized, fetchMissing);
-    }, query === '' ? 0 : 250);
+      void loadRemote(normalized, fetchMissing);
+    }, 250);
     return () => window.clearTimeout(timer);
-  }, [open, createMode, query, load, compositionRevision]);
+  }, [open, createMode, query, loadLocal, loadRemote, compositionRevision]);
 
   useEffect(() => () => {
     mounted.current = false;
     requestEpoch.current += 1;
+    localRequest.current?.abort();
     searchAbort.current?.abort();
   }, []);
 
@@ -400,9 +481,12 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
 
   const base = state.worktree.request === null ? current : state.worktree.request.from;
   const selected = requested ? base : current;
-  const options: BranchOption[] = branches === null ? [] : [
-    ...branches.local.map(name => ({ kind: 'local' as const, ref: `refs/heads/${name}`, name })),
-    ...branches.remote.map(item => ({ kind: 'remote' as const, ref: item.ref, name: item.name })),
+  const normalizedQuery = query.trim();
+  const visibleLocal = localBranches.filter(name => branchMatches(name, normalizedQuery));
+  const visibleRemote = normalizedQuery === '' ? [] : (branches?.remote ?? []);
+  const options: BranchOption[] = [
+    ...visibleLocal.map(name => ({ kind: 'local' as const, ref: `refs/heads/${name}`, name })),
+    ...visibleRemote.map(item => ({ kind: 'remote' as const, ref: item.ref, name: item.name })),
   ];
   const branchTip = panel.error !== ''
     ? t('分支状态连接已断开，暂时不能修改分支；正在重试')
@@ -412,6 +496,8 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
 
   const setFreshState = (value: RemoteBranchMutation) => {
     if (value.current !== undefined) setCurrentOverride(value.current);
+    localLoaded.current = false;
+    prefetchedSession.current = null;
   };
 
   const refresh = () => {
@@ -448,7 +534,20 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
       const value = await props.switchBranch(item.ref);
       if (!mounted.current) return;
       setFreshState(value);
-      setNotice(t('已切换到 {branch}', { branch: value.current ?? item.name }));
+      const branch = value.current ?? item.name;
+      if (value.update.status === 'failed') {
+        setNotice(t('已切换到 {branch}，但自动更新失败：{message}', {
+          branch,
+          message: value.update.message,
+        }));
+        refresh();
+        return;
+      }
+      setNotice(value.update.status === 'current'
+        ? t('已切换到 {branch}，分支已是最新', { branch })
+        : value.update.status === 'updated'
+          ? t('已切换到 {branch}，并已拉取最新代码', { branch })
+          : t('已切换到 {branch}', { branch }));
       close();
       refresh();
     } catch (error) {
@@ -513,7 +612,7 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
       close();
       return;
     }
-    if (busy !== '' || loading || options.length === 0) return;
+    if (busy !== '' || localLoading || options.length === 0) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex(index => (index + 1) % options.length);
@@ -549,28 +648,31 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   };
 
   let index = -1;
-  const localButtons = (branches?.local ?? []).map((name) => {
+  const localButtons = visibleLocal.map((name) => {
     index += 1;
     return optionButton({ kind: 'local', ref: `refs/heads/${name}`, name }, index);
   });
-  const remoteButtons = (branches?.remote ?? []).map((item) => {
+  const remoteButtons = visibleRemote.map((item) => {
     index += 1;
     return optionButton({ kind: 'remote', ref: item.ref, name: item.name }, index);
   });
 
   let groupedResults: ReactNode;
-  if (loading) {
+  if (localLoading) {
     groupedResults = createElement('div', { className: 'ssh-branch-state', role: 'status' },
       createElement('span', { className: 'ssh-branch-spin' }),
-      createElement('span', null, fetching ? t('本地没有匹配项，正在查询远端') : t('正在读取分支')));
-  } else if (options.length === 0) {
+      createElement('span', null, t('正在读取本地分支')));
+  } else if (options.length === 0 && !remoteLoading) {
     groupedResults = createElement('div', { className: 'ssh-branch-state' },
-      createElement('span', null, query.trim() === '' ? t('没有匹配的分支') : t('本地和远端都没有匹配分支')));
+      createElement('span', null, normalizedQuery === '' ? t('没有匹配的分支') : t('本地和远端都没有匹配分支')));
   } else {
     groupedResults = createElement(Fragment, null,
       localButtons.length > 0 && createElement('div', null,
         createElement('div', { className: 'ssh-branch-group' }, t('本地')),
         ...localButtons),
+      remoteLoading && createElement('div', { className: 'ssh-branch-state', role: 'status' },
+        createElement('span', { className: 'ssh-branch-spin' }),
+        createElement('span', null, t('正在查询远端分支'))),
       remoteButtons.length > 0 && createElement('div', null,
         createElement('div', { className: 'ssh-branch-group' }, t('远端')),
         ...remoteButtons));
@@ -662,20 +764,31 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
           setCompositionRevision(value => value + 1);
         },
         onChange: (event) => {
+          localRequest.current?.abort();
+          localRequest.current = null;
           searchAbort.current?.abort();
           searchAbort.current = null;
           requestEpoch.current += 1;
-          setQuery(event.currentTarget.value);
-          setBranches(null);
+          const value = event.currentTarget.value;
+          setQuery(value);
+          setLocalLoading(false);
+          setRemoteLoading(value.trim() !== '');
+          setBranches(current => current === null ? null : {
+            ...current,
+            remote: [],
+            fetched: [],
+            warning: '',
+          });
           setBranchError('');
-          setFetching(false);
-          setLoading(true);
         },
         onKeyDown: onSearchKeyDown,
       }),
       notice !== '' && createElement('div', { className: 'ssh-branch-info', role: 'status' }, notice),
       panel.error !== '' && createElement('div', { className: 'ssh-branch-error', role: 'alert' },
         t('分支状态连接已断开，暂时不能修改分支；正在重试')),
+      busy === 'switch' && createElement('div', { className: 'ssh-branch-info', role: 'status' },
+        createElement('span', { className: 'ssh-branch-spin' }),
+        createElement('span', null, t('正在切换并更新分支…'))),
       groupedResults,
       branchError !== '' && createElement('div', { className: 'ssh-branch-error', role: 'alert' }, branchError),
       branches?.fetched.length ? createElement('div', { className: 'ssh-branch-info' },
@@ -737,8 +850,12 @@ export function mountBranchSwitch(ctx: Context): () => Promise<void> {
         const result = await remote.refresh(sessionId);
         return result.ok ? { ok: true } : { ok: false, message: result.error.message };
       },
-      search: (query, fetchMissing, signal) => branchRequest({
-        sessionId, action: 'search', query, fetchMissing,
+      search: (query, options, signal) => branchRequest({
+        sessionId,
+        action: 'search',
+        query,
+        includeRemote: options.includeRemote,
+        fetchMissing: options.fetchMissing,
       }, signal),
       switchBranch: ref => branchRequest({ sessionId, action: 'switch', ref }),
       createBranch: name => branchRequest({ sessionId, action: 'create', name }),

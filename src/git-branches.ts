@@ -1,4 +1,4 @@
-import type { BranchListing, BranchMutation, RemoteBranch } from '../shared/branch-switch.js';
+import type { BranchListing, BranchMutation, BranchUpdate, RemoteBranch } from '../shared/branch-switch.js';
 
 const DEFAULT_LIMIT = 300;
 const FETCH_MATCH_LIMIT = 20;
@@ -95,28 +95,71 @@ async function refExists(git: GitRunner, ref: string): Promise<boolean> {
   return result.exitCode === 0;
 }
 
-async function checkout(git: GitRunner): Promise<{ current: string | null; commit: string | null }> {
-  const branch = await git('symbolic-ref', ['symbolic-ref', '--quiet', '--short', 'HEAD'], [0, 1]);
+async function headCommit(git: GitRunner): Promise<string | null> {
   const commit = await git('rev-parse', ['rev-parse', '--short', 'HEAD'], [0, 128]);
+  return commit.exitCode === 0 ? (lines(commit.stdout)[0] ?? null) : null;
+}
+
+function parseLocalBranches(output: string): Array<{ name: string; commit: string; current: boolean }> {
+  return output.split(/\r?\n/gu).filter(Boolean).flatMap((line) => {
+    const [head, name, commit] = line.split('\t');
+    if (head === undefined || name === undefined || commit === undefined) return [];
+    return [{ name, commit, current: head.trim() === '*' }];
+  });
+}
+
+async function readLocalState(git: GitRunner): Promise<Omit<BranchListing, 'fetched' | 'warning' | 'remote'>> {
+  // One remote command supplies every local branch and the checked-out commit.
+  const refs = await git('for-each-ref', [
+    'for-each-ref', '--sort=-committerdate', '--count=500',
+    '--format=%(HEAD)%09%(refname:short)%09%(objectname:short)', 'refs/heads/',
+  ]);
+  const rows = parseLocalBranches(refs.stdout);
+  let current = rows.find(row => row.current)?.name ?? null;
+  let commit = rows.find(row => row.current)?.commit ?? null;
+  if (current === null) {
+    const head = await git('symbolic-ref', ['symbolic-ref', '--quiet', '--short', 'HEAD'], [0, 1]);
+    current = head.exitCode === 0 ? (lines(head.stdout)[0] ?? null) : null;
+  }
+  if (commit === null) {
+    const head = await git('rev-parse', ['rev-parse', '--short', 'HEAD'], [0, 128]);
+    commit = head.exitCode === 0 ? (lines(head.stdout)[0] ?? null) : null;
+  }
+  const local = unique(rows.map(row => row.name));
   return {
-    current: branch.exitCode === 0 ? (lines(branch.stdout)[0] ?? null) : null,
-    commit: commit.exitCode === 0 ? (lines(commit.stdout)[0] ?? null) : null,
+    current,
+    commit,
+    local: current === null ? local : [current, ...local.filter(name => name !== current)],
   };
 }
 
-async function readRefs(git: GitRunner): Promise<{ localRefs: string[]; remoteRefs: string[] }> {
-  const locals = await git('for-each-ref', [
-    'for-each-ref', '--sort=-committerdate', '--count=500',
-    '--format=%(refname)%09%(symref)', 'refs/heads/',
-  ]);
+async function readRemoteRefs(git: GitRunner): Promise<string[]> {
   const remotes = await git('for-each-ref', [
     'for-each-ref', '--sort=-committerdate', '--count=500',
     '--format=%(refname)%09%(symref)', 'refs/remotes/',
   ]);
-  return {
-    localRefs: parseRefLines(locals.stdout).filter(ref => localName(ref) !== undefined),
-    remoteRefs: parseRefLines(remotes.stdout).filter(ref => remoteParts(ref) !== undefined),
-  };
+  return parseRefLines(remotes.stdout).filter(ref => remoteParts(ref) !== undefined);
+}
+
+function remoteBranches(
+  local: readonly string[],
+  remoteRefs: readonly string[],
+  limit: number,
+  query = '',
+): RemoteBranch[] {
+  const localSet = new Set(local);
+  const remote: RemoteBranch[] = [];
+  const seen = new Set<string>();
+  for (const ref of remoteRefs) {
+    const parts = remoteParts(ref);
+    if (parts === undefined || localSet.has(parts.branch)) continue;
+    const name = `${parts.remote}/${parts.branch}`;
+    if (seen.has(name) || !matches(name, query)) continue;
+    seen.add(name);
+    remote.push({ ref, ...parts, name });
+    if (remote.length === limit) break;
+  }
+  return remote;
 }
 
 /** Build the browser payload from the current branch and Git ref names. */
@@ -129,29 +172,12 @@ export function branchPayload(
 ): Omit<BranchListing, 'fetched' | 'warning'> {
   const discovered = unique(localRefs.map(localName).filter((name): name is string => name !== undefined));
   const local = current === null ? discovered : [current, ...discovered.filter(name => name !== current)];
-  const localSet = new Set(local);
-  const remote: RemoteBranch[] = [];
-  const seen = new Set<string>();
-  for (const ref of remoteRefs) {
-    const parts = remoteParts(ref);
-    if (parts === undefined || localSet.has(parts.branch)) continue;
-    const name = `${parts.remote}/${parts.branch}`;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    remote.push({ ref, ...parts, name });
-  }
   return {
     current,
     commit,
     local: local.slice(0, limit),
-    remote: remote.slice(0, limit),
+    remote: remoteBranches(local, remoteRefs, limit),
   };
-}
-
-async function readState(git: GitRunner, limit: number): Promise<Omit<BranchListing, 'fetched' | 'warning'>> {
-  const head = await checkout(git);
-  const refs = await readRefs(git);
-  return branchPayload(head.current, head.commit, refs.localRefs, refs.remoteRefs, limit);
 }
 
 async function remotesInPreferenceOrder(git: GitRunner): Promise<string[]> {
@@ -197,30 +223,66 @@ async function fetchMatchingRemoteBranches(git: GitRunner, query: string): Promi
  */
 export async function searchBranches(
   git: GitRunner,
-  { query = '', fetchMissing = false, limit = DEFAULT_LIMIT }: {
+  { query = '', fetchMissing = false, includeRemote = true, limit = DEFAULT_LIMIT }: {
     query?: string;
     fetchMissing?: boolean;
+    includeRemote?: boolean;
     limit?: number;
   } = {},
 ): Promise<BranchListing> {
   const normalized = query.trim();
-  let state = await readState(git, limit);
+  const state = await readLocalState(git);
+  let remoteRefs: string[] = [];
   let fetched: string[] = [];
   let warning = '';
-  const hasLocalMatch = state.local.some(name => matches(name, normalized));
-  if (fetchMissing && normalized.length >= 2 && !hasLocalMatch) {
-    const result = await fetchMatchingRemoteBranches(git, normalized);
-    fetched = result.fetched;
-    warning = result.warning;
-    if (fetched.length > 0) state = await readState(git, limit);
+  if (includeRemote) {
+    remoteRefs = await readRemoteRefs(git);
+    if (fetchMissing && normalized.length >= 2) {
+      const result = await fetchMatchingRemoteBranches(git, normalized);
+      fetched = result.fetched;
+      warning = result.warning;
+      if (fetched.length > 0) remoteRefs = await readRemoteRefs(git);
+    }
   }
   return {
     ...state,
-    local: state.local.filter(name => matches(name, normalized)),
-    remote: state.remote.filter(item => matches(item.name, normalized)),
+    local: state.local.filter(name => matches(name, normalized)).slice(0, limit),
+    remote: remoteBranches(state.local, remoteRefs, limit, normalized),
     fetched,
     warning,
   };
+}
+
+async function updateCurrentBranch(git: GitRunner, branch: string): Promise<BranchUpdate> {
+  const upstream = await git(
+    'rev-parse',
+    ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
+    [0, 128],
+  );
+  const tracking = upstream.exitCode === 0 ? (lines(upstream.stdout)[0] ?? '') : '';
+  if (tracking === '') {
+    return { status: 'skipped', message: `Branch ${branch} has no upstream.` };
+  }
+  try {
+    const pulled = await git(
+      'pull',
+      ['pull', '--ff-only', '--no-rebase', '--no-tags'],
+      [0],
+      undefined,
+      120_000,
+    );
+    const output = `${pulled.stderr}\n${pulled.stdout}`;
+    const current = /already up[- ]to[- ]date/iu.test(output);
+    return {
+      status: current ? 'current' : 'updated',
+      message: diagnostic(output, current ? `Branch ${branch} is already current.` : `Updated ${branch} from ${tracking}.`),
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: redactGitText(error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 /** Switch to one verified local branch, or create a local tracking branch from a remote ref. */
@@ -230,10 +292,14 @@ export async function switchBranch(git: GitRunner, ref: string): Promise<BranchM
   const local = localName(ref);
   if (local !== undefined) {
     if (!safeBranchName(local)) throw new GitBranchError('INVALID_BRANCH', `Invalid Git branch name: ${local}`);
-    const before = await checkout(git);
-    if (before.current === local) return { ...before, message: '' };
     const switched = await git('switch', ['switch', local]);
-    return { ...(await checkout(git)), message: diagnostic(switched.stderr, `Switched to ${local}.`) };
+    const update = await updateCurrentBranch(git, local);
+    return {
+      current: local,
+      commit: await headCommit(git),
+      message: diagnostic(switched.stderr, `Switched to ${local}.`),
+      update,
+    };
   }
   const remote = remoteParts(ref);
   if (remote === undefined) throw new GitBranchError('INVALID_BRANCH', `Unsupported branch ref: ${ref}`);
@@ -244,7 +310,13 @@ export async function switchBranch(git: GitRunner, ref: string): Promise<BranchM
   const switched = existing
     ? await git('switch', ['switch', remote.branch])
     : await git('switch', ['switch', '--track', '-c', remote.branch, ref]);
-  return { ...(await checkout(git)), message: diagnostic(switched.stderr, `Switched to ${remote.branch}.`) };
+  const update = await updateCurrentBranch(git, remote.branch);
+  return {
+    current: remote.branch,
+    commit: await headCommit(git),
+    message: diagnostic(switched.stderr, `Switched to ${remote.branch}.`),
+    update,
+  };
 }
 
 /** Create a new local branch from HEAD and switch to it. */
@@ -256,5 +328,10 @@ export async function createBranch(git: GitRunner, name: string): Promise<Branch
     throw new GitBranchError('BRANCH_EXISTS', `Local branch already exists: ${name}`);
   }
   const created = await git('switch', ['switch', '-c', name]);
-  return { ...(await checkout(git)), message: diagnostic(created.stderr, `Created and switched to ${name}.`) };
+  return {
+    current: name,
+    commit: await headCommit(git),
+    message: diagnostic(created.stderr, `Created and switched to ${name}.`),
+    update: { status: 'skipped', message: `New branch ${name} has no upstream.` },
+  };
 }

@@ -26,24 +26,39 @@ function fakeGit(initial: {
   local?: string[];
   remote?: Array<[string, string]>;
   heads?: Array<[string, string]>;
+  upstream?: boolean;
+  pullFails?: boolean;
 } = {}) {
   const state = {
     current: initial.current === undefined ? 'main' : initial.current,
     local: new Set(initial.local ?? ['main']),
     remote: new Map(initial.remote ?? [['origin/main', 'refs/remotes/origin/main']]),
     heads: initial.heads ?? [],
+    upstream: initial.upstream ?? false,
+    pullFails: initial.pullFails ?? false,
     calls: [] as Array<{ name: string; args: string[] }>,
   };
   const git: GitRunner = async (name, args) => {
     const values = [...args];
     state.calls.push({ name, args: values });
     if (name === 'symbolic-ref') return state.current === null ? output('', 1) : output(`${state.current}\n`);
-    if (name === 'rev-parse') return output('abc1234\n');
+    if (name === 'rev-parse') {
+      if (values.includes('@{upstream}')) {
+        return state.upstream && state.current !== null
+          ? output(`origin/${state.current}\n`)
+          : output('', 128, 'no upstream configured');
+      }
+      return output('abc1234\n');
+    }
     if (name === 'for-each-ref') {
       const source = values.at(-1) === 'refs/heads/'
-        ? [...state.local].map(branch => `refs/heads/${branch}\t`)
+        ? [...state.local].map(branch => `${branch === state.current ? '*' : ''}\t${branch}\tabc1234`)
         : [...state.remote.values()].map(ref => `${ref}\t`);
       return output(`${source.join('\n')}\n`);
+    }
+    if (name === 'pull') {
+      if (state.pullFails) throw new GitBranchError('GIT_FAILED', 'pull rejected');
+      return output('Already up to date.\n');
     }
     if (name === 'show-ref') {
       const ref = values.at(-1) ?? '';
@@ -109,12 +124,28 @@ describe('remote branch Git operations', () => {
     expect(payload.remote.map(item => item.name)).toEqual(['origin/feature', 'upstream/feature']);
   });
 
-  it('does not fetch when a local branch matches', async () => {
-    const { git, state } = fakeGit({ local: ['main', 'feature/local'] });
-    const result = await searchBranches(git, { query: 'feature', fetchMissing: true });
+  it('lists only local refs when remote search is disabled', async () => {
+    const { git, state } = fakeGit({
+      local: ['main', 'feature/local'],
+      remote: [['origin/feature/remote', 'refs/remotes/origin/feature/remote']],
+    });
+    const result = await searchBranches(git, { query: '', includeRemote: false, fetchMissing: true });
+    expect(state.calls.filter(call => call.name === 'for-each-ref').map(call => call.args.at(-1)))
+      .toEqual(['refs/heads/']);
     expect(state.calls.some(call => call.name === 'fetch')).toBe(false);
-    expect(result.local).toEqual(['feature/local']);
+    expect(result.local).toEqual(['main', 'feature/local']);
     expect(result.remote).toEqual([]);
+  });
+
+  it('searches remotes even when a local branch matches', async () => {
+    const { git, state } = fakeGit({
+      local: ['main', 'feature/local'],
+      heads: [['feature/remote-only', '1111111']],
+    });
+    const result = await searchBranches(git, { query: 'feature', fetchMissing: true });
+    expect(state.calls.some(call => call.name === 'fetch')).toBe(true);
+    expect(result.local).toEqual(['feature/local']);
+    expect(result.remote.map(item => item.name)).toEqual(['origin/feature/remote-only']);
   });
 
   it('fetches only matching remote heads when no local branch matches', async () => {
@@ -142,23 +173,44 @@ describe('remote branch Git operations', () => {
     expect(result.fetched).toEqual(['origin/feature/remote']);
   });
 
-  it('switches local branches without force', async () => {
+  it('switches local branches without force and skips update without upstream', async () => {
     const { git, state } = fakeGit({ local: ['main', 'dev'] });
     const result = await switchBranch(git, 'refs/heads/dev');
     expect(result.current).toBe('dev');
+    expect(result.update.status).toBe('skipped');
     expect(state.calls.find(call => call.name === 'switch')?.args).toEqual(['switch', 'dev']);
+    expect(state.calls.some(call => call.name === 'pull')).toBe(false);
   });
 
-  it('creates a tracking branch for a remote-only branch', async () => {
+  it('fast-forwards a switched local branch that has an upstream', async () => {
+    const { git, state } = fakeGit({ local: ['main', 'dev'], upstream: true });
+    const result = await switchBranch(git, 'refs/heads/dev');
+    expect(result.update.status).toBe('current');
+    expect(state.calls.find(call => call.name === 'pull')?.args).toEqual([
+      'pull', '--ff-only', '--no-rebase', '--no-tags',
+    ]);
+  });
+
+  it('creates a tracking branch for a remote-only branch and updates it', async () => {
     const { git, state } = fakeGit({
       local: ['main'],
       remote: [['origin/main', 'refs/remotes/origin/main'], ['origin/feature/remote', 'refs/remotes/origin/feature/remote']],
+      upstream: true,
     });
     const result = await switchBranch(git, 'refs/remotes/origin/feature/remote');
     expect(result.current).toBe('feature/remote');
+    expect(result.update.status).toBe('current');
     expect(state.calls.find(call => call.name === 'switch')?.args).toEqual([
       'switch', '--track', '-c', 'feature/remote', 'refs/remotes/origin/feature/remote',
     ]);
+    expect(state.calls.some(call => call.name === 'pull')).toBe(true);
+  });
+
+  it('keeps a successful switch when the automatic update fails', async () => {
+    const { git } = fakeGit({ local: ['main', 'dev'], upstream: true, pullFails: true });
+    const result = await switchBranch(git, 'refs/heads/dev');
+    expect(result.current).toBe('dev');
+    expect(result.update).toMatchObject({ status: 'failed', message: 'pull rejected' });
   });
 
   it('rejects option-like branch names before invoking Git', async () => {
@@ -171,7 +223,9 @@ describe('remote branch Git operations', () => {
 
   it('creates a branch from HEAD and rejects duplicates', async () => {
     const first = fakeGit({ local: ['main'] });
-    expect((await createBranch(first.git, 'feature/new')).current).toBe('feature/new');
+    const created = await createBranch(first.git, 'feature/new');
+    expect(created.current).toBe('feature/new');
+    expect(created.update.status).toBe('skipped');
     expect(first.state.calls.find(call => call.name === 'switch')?.args).toEqual(['switch', '-c', 'feature/new']);
     const second = fakeGit({ local: ['main', 'feature/new'] });
     await expect(createBranch(second.git, 'feature/new')).rejects.toMatchObject<Partial<GitBranchError>>({
@@ -209,7 +263,20 @@ describe('remote branch Git operations', () => {
       const git = runnerFor(repo);
       const listing = await searchBranches(git, { query: 'remote-only', fetchMissing: true });
       expect(listing.fetched).toEqual(['origin/remote-only']);
-      expect((await switchBranch(git, 'refs/remotes/origin/remote-only')).current).toBe('remote-only');
+
+      const publisher = path.join(root, 'publisher');
+      await run('git', ['clone', remote, publisher], { windowsHide: true });
+      await rawGit(publisher, 'config', 'user.name', 'DSH Publisher');
+      await rawGit(publisher, 'config', 'user.email', 'publisher@example.test');
+      await rawGit(publisher, 'switch', '-c', 'remote-only', 'origin/remote-only');
+      await rawGit(publisher, 'commit', '--allow-empty', '-m', 'advance remote-only');
+      const latest = (await rawGit(publisher, 'rev-parse', 'HEAD')).stdout.trim();
+      await rawGit(publisher, 'push', 'origin', 'remote-only');
+
+      const switched = await switchBranch(git, 'refs/remotes/origin/remote-only');
+      expect(switched.current).toBe('remote-only');
+      expect(switched.update.status).toBe('updated');
+      expect((await rawGit(repo, 'rev-parse', 'HEAD')).stdout.trim()).toBe(latest);
       expect((await rawGit(repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')).stdout.trim())
         .toBe('origin/remote-only');
       expect((await createBranch(git, 'feature/from-remote')).current).toBe('feature/from-remote');

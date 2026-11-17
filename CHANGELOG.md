@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- 兼容 DSH Forge 的空会话分支控件：搜索并切换本地分支；本地无匹配时查询并 fetch 匹配远端分支；远端分支建立本地跟踪分支；基于当前 HEAD 创建并切换新分支。
+- 兼容 DSH Forge 的空会话分支控件：首次只读取本地分支，输入搜索后才查询并 fetch 匹配远端分支；远端分支建立本地跟踪分支；基于当前 HEAD 创建并切换新分支。
+- 切换后自动执行 `git pull --ff-only`；未配置上游时跳过，分叉、冲突或网络失败只提示，不强制覆盖。
 - 分支写操作沿用当前 Session 的 sandbox、working directory 和 Agent maintenance；只读、首轮已开始或 Agent 忙时拒绝，不执行 reset、强制 checkout 或自动 stash。原 worktree 流程保留。
-- English: extend the DSH Forge blank-Session branch control with local switching, targeted remote fetch, tracking-branch creation and new branches from HEAD. Writes use the Session execution world and Agent maintenance, preserve the worktree flow, and never reset, force-checkout or stash.
+- English: the Forge blank-Session control loads local branches first, searches remotes only after typing, fetches matching heads, creates tracking branches and branches from HEAD, then attempts an ff-only update after switching. Missing upstreams are skipped; divergence, conflicts and network failures are reported without force. The worktree flow is preserved.
 
 ## 0.13.8
 

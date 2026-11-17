@@ -20,9 +20,10 @@ export declare function branchPayload(current: string | null, commit: string | n
  * Search local branches first. When no local branch matches, ask the preferred
  * remote and fetch only matching heads into remote-tracking namespaces.
  */
-export declare function searchBranches(git: GitRunner, { query, fetchMissing, limit }?: {
+export declare function searchBranches(git: GitRunner, { query, fetchMissing, includeRemote, limit }?: {
     query?: string;
     fetchMissing?: boolean;
+    includeRemote?: boolean;
     limit?: number;
 }): Promise<BranchListing>;
 /** Switch to one verified local branch, or create a local tracking branch from a remote ref. */

@@ -26,9 +26,16 @@ export interface BranchListing {
   warning: string;
 }
 
+/** Result of the automatic ff-only update attempted after a switch. */
+export interface BranchUpdate {
+  status: 'updated' | 'current' | 'skipped' | 'failed';
+  message: string;
+}
+
 /** Checkout identity after a successful branch mutation. */
 export interface BranchMutation {
   current: string | null;
   commit: string | null;
   message: string;
+  update: BranchUpdate;
 }

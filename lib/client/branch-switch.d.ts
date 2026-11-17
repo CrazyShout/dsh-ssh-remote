@@ -62,7 +62,10 @@ export interface WorktreeBranchInjected {
         ok: boolean;
         message?: string;
     }>;
-    search(query: string, fetchMissing: boolean, signal?: AbortSignal): Promise<RemoteBranchListing>;
+    search(query: string, options: {
+        includeRemote: boolean;
+        fetchMissing: boolean;
+    }, signal?: AbortSignal): Promise<RemoteBranchListing>;
     switchBranch(ref: string): Promise<RemoteBranchMutation>;
     createBranch(name: string): Promise<RemoteBranchMutation>;
 }

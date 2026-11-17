@@ -650,8 +650,12 @@ export declare const en: {
     readonly 远端: "Remote";
     readonly 没有匹配的分支: "No matching branches";
     readonly 本地和远端都没有匹配分支: "No matching local or remote branch";
-    readonly 正在读取分支: "Reading branches";
-    readonly '\u672C\u5730\u6CA1\u6709\u5339\u914D\u9879\uFF0C\u6B63\u5728\u67E5\u8BE2\u8FDC\u7AEF': "No local match; checking the remote";
+    readonly 正在读取本地分支: "Reading local branches";
+    readonly 正在查询远端分支: "Searching remote branches";
+    readonly '\u6B63\u5728\u5207\u6362\u5E76\u66F4\u65B0\u5206\u652F\u2026': "Switching and updating the branch...";
+    readonly '\u5DF2\u5207\u6362\u5230 {branch}\uFF0C\u5206\u652F\u5DF2\u662F\u6700\u65B0': "Switched to {branch}; it is already up to date";
+    readonly '\u5DF2\u5207\u6362\u5230 {branch}\uFF0C\u5E76\u5DF2\u62C9\u53D6\u6700\u65B0\u4EE3\u7801': "Switched to {branch} and pulled the latest code";
+    readonly '\u5DF2\u5207\u6362\u5230 {branch}\uFF0C\u4F46\u81EA\u52A8\u66F4\u65B0\u5931\u8D25\uFF1A{message}': "Switched to {branch}, but the automatic update failed: {message}";
     readonly '\u5DF2\u4ECE\u8FDC\u7AEF\u62C9\u53D6 {count} \u4E2A\u5206\u652F': "Fetched {count} branch(es) from the remote";
     readonly '\u8FDC\u7AEF\u67E5\u8BE2\u672A\u5B8C\u6210\uFF1A{message}': "Remote search did not finish: {message}";
     readonly 新建工作树: "New worktree";

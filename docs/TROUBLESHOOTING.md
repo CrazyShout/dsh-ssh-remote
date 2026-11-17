@@ -22,11 +22,11 @@ English: the cache is limited to identical read-only probes in one workspace/env
 
 分支控件只在 **DSH Forge 已启用、会话尚未开始首轮、当前目录是可写的 Git checkout** 时出现。已有对话不会显示该控件，这是 Forge 的会话边界，不是连接失败。
 
-本地没有匹配的分支时，插件会对 `origin`（其次 `upstream`，再按名称）执行 `git ls-remote`，并把命中的 refs 拉到对应远端跟踪命名空间。HTTPS/SSH 认证、主机不可达或远端拒绝 fetch 会显示在菜单内，本地分支仍可使用。选择远端分支会创建同名本地跟踪分支；同名本地分支已存在时不会覆盖。
+菜单打开时只读取并显示本地分支；输入搜索词后才会对 `origin`（其次 `upstream`，再按名称）执行 `git ls-remote`，并把命中的 refs 拉到对应远端跟踪命名空间。HTTPS/SSH 认证、主机不可达或远端拒绝 fetch 会显示在菜单内，本地分支仍可使用。选择远端分支会创建同名本地跟踪分支；同名本地分支已存在时不会覆盖。
 
-非 fast-forward 或有冲突的未提交修改由 Git 自身拒绝，插件不使用 `reset`、强制检出或 stash。只读会话、Agent 忙或首轮已开始时也不会执行写操作。受限命令失败时，还需确认远端 Git 和 bubblewrap 可用。
+切换完成后会自动对所选分支执行 `git pull --ff-only`。没有配置 upstream 的分支会跳过自动更新；网络失败、未提交修改冲突或本地/远端已分叉时，只显示更新失败原因，不会 reset、merge、rebase 或 stash。只读会话、Agent 忙或首轮已开始时不会执行写操作。受限命令失败时，还需确认远端 Git 和 bubblewrap 可用。
 
-English: the control appears only when DSH Forge is enabled, the Session has not started its first turn, and the cwd is a writable Git checkout. When no local branch matches, the plugin runs `git ls-remote` against `origin`, then `upstream` and other remotes, and fetches only matching refs. Authentication, reachability and fetch errors are shown in the menu without hiding local branches. A remote selection creates a same-named local tracking branch and never overwrites an existing local branch. Git failures are surfaced without reset, forced checkout or automatic stash.
+English: opening the control reads local branches only. A search query then runs `git ls-remote` against `origin`, then `upstream` and other remotes, fetching only matching refs. Authentication, reachability and fetch errors are shown without hiding local branches. A remote selection creates a same-named local tracking branch and never overwrites an existing local branch. After switching, an upstream branch is updated with `git pull --ff-only`; missing upstreams are skipped, while network, dirty-worktree or divergent failures are reported without reset, merge, rebase, stash or forced checkout.
 
 ## Windows 远程 Git 面板报 127 / Windows Git path sent to Linux
 

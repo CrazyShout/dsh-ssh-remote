@@ -16,6 +16,10 @@ let root: Root;
 
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -53,11 +57,13 @@ function properties(overrides: Partial<WorktreeBranchInjected> = {}): WorktreeBr
     requestWorktree: vi.fn(async () => ({ ok: true })),
     cancelWorktree: vi.fn(async () => ({ ok: true })),
     refresh: vi.fn(async () => ({ ok: true })),
-    search: vi.fn(async () => ({
+    search: vi.fn(async (query, options) => ({
       current: 'main',
       commit: 'abc1234',
-      local: ['main', 'dev'],
-      remote: [{ ref: 'refs/remotes/origin/feature', remote: 'origin', branch: 'feature', name: 'origin/feature' }],
+      local: ['main', 'dev'].filter(name => query === '' || name.includes(query)),
+      remote: options.includeRemote && query !== ''
+        ? [{ ref: 'refs/remotes/origin/feature', remote: 'origin', branch: 'feature', name: 'origin/feature' }]
+        : [],
       fetched: [],
       warning: '',
     })),
@@ -65,8 +71,14 @@ function properties(overrides: Partial<WorktreeBranchInjected> = {}): WorktreeBr
       current: ref.endsWith('/dev') ? 'dev' : 'feature',
       commit: 'def5678',
       message: '',
+      update: { status: 'current', message: '' },
     })),
-    createBranch: vi.fn(async (name: string) => ({ current: name, commit: 'fedcba9', message: '' })),
+    createBranch: vi.fn(async (name: string) => ({
+      current: name,
+      commit: 'fedcba9',
+      message: '',
+      update: { status: 'skipped', message: '' },
+    })),
     ...overrides,
   };
 }
@@ -75,6 +87,16 @@ function button(text: string): HTMLButtonElement {
   const found = [...container.querySelectorAll('button')].find(node => node.textContent?.includes(text));
   if (!found) throw new Error(`missing button ${text}: ${container.textContent}`);
   return found;
+}
+
+async function setSearch(value: string): Promise<void> {
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索分支"]');
+  if (!input) throw new Error('missing branch search input');
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 describe('remote branch control', () => {
@@ -91,26 +113,42 @@ describe('remote branch control', () => {
     await act(async () => { await Promise.resolve(); });
     await act(async () => button('main').click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain('dev');
+    expect(container.textContent).not.toContain('origin/feature');
+    await setSearch('feature');
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 300)); });
     expect(container.textContent).toContain('origin/feature');
+    await setSearch('dev');
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 300)); });
     await act(async () => button('dev').click());
     expect(props.switchBranch).toHaveBeenCalledWith('refs/heads/dev');
     expect(props.refresh).toHaveBeenCalled();
   });
 
-  it('ignores a stale search response after the query changes', async () => {
+  it('shows local matches immediately and ignores a stale remote response', async () => {
     let resolveStale!: (value: Awaited<ReturnType<WorktreeBranchInjected['search']>>) => void;
     const stale = new Promise<Awaited<ReturnType<WorktreeBranchInjected['search']>>>((resolve) => {
       resolveStale = resolve;
     });
-    let call = 0;
+    let remoteCalls = 0;
     const props = properties({
-      search: vi.fn(async () => {
-        call += 1;
-        if (call === 1) return stale;
+      search: vi.fn(async (_query, options) => {
+        if (!options.includeRemote) {
+          return {
+            current: 'main',
+            commit: 'abc1234',
+            local: ['main', 'dev'],
+            remote: [],
+            fetched: [],
+            warning: '',
+          };
+        }
+        remoteCalls += 1;
+        if (remoteCalls === 1) return stale;
         return {
           current: 'main',
           commit: 'abc1234',
-          local: ['dev'],
+          local: ['main'],
           remote: [],
           fetched: [],
           warning: '',
@@ -121,24 +159,43 @@ describe('remote branch control', () => {
     await act(async () => { await Promise.resolve(); });
     await act(async () => button('main').click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索分支"]')!;
-    const value = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await setSearch('dev');
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 300)); });
+    expect(container.textContent).toContain('dev');
+    expect(container.textContent).toContain('正在查询远端分支');
+    await setSearch('main');
     await act(async () => {
-      value.call(input, 'dev');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
       resolveStale({
         current: 'main',
         commit: 'abc1234',
-        local: ['stale-only'],
-        remote: [],
+        local: ['dev'],
+        remote: [{ ref: 'refs/remotes/origin/stale-only', remote: 'origin', branch: 'stale-only', name: 'origin/stale-only' }],
         fetched: [],
         warning: '',
       });
       await new Promise(resolve => window.setTimeout(resolve, 25));
     });
-    expect(container.textContent).not.toContain('stale-only');
+    expect(container.textContent).not.toContain('origin/stale-only');
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 300)); });
-    expect(container.textContent).toContain('dev');
+    expect(container.textContent).toContain('main');
+  });
+
+  it('keeps the menu open with the switch result when automatic update fails', async () => {
+    const props = properties({
+      switchBranch: vi.fn(async () => ({
+        current: 'dev',
+        commit: 'def5678',
+        message: '',
+        update: { status: 'failed', message: 'network down' },
+      })),
+    });
+    await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => button('main').click());
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
+    await act(async () => button('dev').click());
+    expect(container.textContent).toContain('自动更新失败：network down');
+    expect(container.querySelector('input[aria-label="搜索分支"]')).not.toBeNull();
   });
 
   it('keeps the worktree request flow and sends the selected base', async () => {

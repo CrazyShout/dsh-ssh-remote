@@ -45,6 +45,7 @@ interface BranchRequest {
   sessionId?: unknown;
   action?: unknown;
   query?: unknown;
+  includeRemote?: unknown;
   fetchMissing?: unknown;
   ref?: unknown;
   name?: unknown;
@@ -224,7 +225,8 @@ async function handle(scope: Context, request: Request): Promise<Response> {
       ok: true,
       value: await searchBranches(git, {
         query: typeof payload.query === 'string' ? payload.query.slice(0, 200) : '',
-        fetchMissing: payload.fetchMissing === true && policy.mode !== 'read-only',
+        includeRemote: payload.includeRemote === true,
+        fetchMissing: payload.fetchMissing === true && payload.includeRemote === true && policy.mode !== 'read-only',
       }),
     });
   }
