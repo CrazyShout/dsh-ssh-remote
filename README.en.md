@@ -60,12 +60,12 @@ You can also download the release `.tgz` and enter its absolute path in Plugins.
 | See cwd, exit status and context | Terminal-tab menu **查看 SSH 终端状态** |
 | Access TensorBoard, Jupyter or a dev website | **远程工作台 → 端口转发** |
 | Upload/download files and folders | **远程工作台 → 文件传输** |
-| Search, switch or create a Git branch | Branch control before the first turn in a blank Session (requires DSH Forge) |
+| Search, switch or create a Git branch | **Switch branch** in a blank SSH session (requires Forge; not in the 0.13.8 release) |
 | Use remote skills | Native `/` skill menu in a remote Session |
 
 The **SSH · host** badge opens the unified workbench; blank Sessions show it above the composer. Local Sessions retain their original file and terminal behavior.
 
-With DSH Forge enabled, the blank-Session branch control first reads and shows local branches only. A search query then checks remotes and fetches only matching branches; choosing one creates a same-named local tracking branch. After switching, the control runs `git pull --ff-only` for the selected branch. Branches without an upstream are skipped; network, conflict or divergence failures are reported without forcing an update. A new branch can also be created from the current `HEAD`. Writes use the Session's sandbox, execution directory and Agent maintenance. Read-only Sessions, started turns and busy Agents are refused; the control never runs `reset`, forced checkout or an automatic stash. The existing New worktree flow is preserved.
+With Forge enabled, **Switch branch** appears in blank SSH sessions alongside the official worktree control. Local sessions are unchanged. Searching lists names without writing refs. Selecting a remote head fetches only that head and creates a same-named local tracking branch. After switching, the control runs `git pull --ff-only` for the selected branch. Branches without an upstream are skipped; network, conflict or divergence failures are reported without forcing an update. A new branch can also be created from the current `HEAD`. Writes use the Session's sandbox, execution directory and Agent maintenance. Read-only Sessions, started turns and busy Agents are refused; the control never runs `reset`, forced checkout or an automatic stash. The existing New worktree flow is preserved.
 
 Connection dots: green = SSH/helper connected; amber = connecting or limited; hollow gray = disconnected or unknown; red = connection error. Hover or keyboard-focus for the full path and explanation. Green does not certify every remote feature.
 

@@ -149,7 +149,7 @@ export function BlankNativePanelActions(props: BlankNativePanelProps) {
     return <NativePanelActions {...props} presentation="dock"/>;
 }
 /** Session identity comes from the SDK; SSH identity comes only from the Host's saved mapping. */
-function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionStatus }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo' | 'connectionStatus'>, visible: boolean) {
+export function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionStatus }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo' | 'connectionStatus'>, visible: boolean) {
     const { generation } = useSyncExternalStore(connectionStatus.subscribe, connectionStatus.getSnapshot, connectionStatus.getSnapshot);
     const cwd: string | undefined = useSessions((snapshot: SessionListState) => snapshot.byId[sessionId]?.cwd);
     const key = `${sessionId}\0${cwd ?? ''}`;

@@ -108,7 +108,7 @@ function parseLocalBranches(output: string): Array<{ name: string; commit: strin
   });
 }
 
-async function readLocalState(git: GitRunner): Promise<Omit<BranchListing, 'fetched' | 'warning' | 'remote'>> {
+async function readLocalState(git: GitRunner): Promise<Omit<BranchListing, 'warning' | 'remote'>> {
   // One remote command supplies every local branch and the checked-out commit.
   const refs = await git('for-each-ref', [
     'for-each-ref', '--sort=-committerdate', '--count=500',
@@ -169,7 +169,7 @@ export function branchPayload(
   localRefs: readonly string[],
   remoteRefs: readonly string[],
   limit = DEFAULT_LIMIT,
-): Omit<BranchListing, 'fetched' | 'warning'> {
+): Omit<BranchListing, 'warning'> {
   const discovered = unique(localRefs.map(localName).filter((name): name is string => name !== undefined));
   const local = current === null ? discovered : [current, ...discovered.filter(name => name !== current)];
   return {
@@ -188,7 +188,7 @@ async function remotesInPreferenceOrder(git: GitRunner): Promise<string[]> {
   });
 }
 
-async function fetchMatchingRemoteBranches(git: GitRunner, query: string): Promise<{ fetched: string[]; warning: string }> {
+async function discoverRemoteBranches(git: GitRunner, query: string): Promise<{ refs: string[]; warning: string }> {
   const warnings: string[] = [];
   for (const remote of await remotesInPreferenceOrder(git)) {
     let listed: GitOutput;
@@ -206,26 +206,19 @@ async function fetchMatchingRemoteBranches(git: GitRunner, query: string): Promi
       .filter(item => matches(item.branch, query))
       .slice(0, FETCH_MATCH_LIMIT);
     if (branches.length === 0) continue;
-    const refspecs = branches.map(item => `+${item.ref}:${REMOTE_PREFIX}${remote}/${item.branch}`);
-    try {
-      await git('fetch', ['fetch', '--no-tags', remote, ...refspecs], [0], undefined, 120_000);
-      return { fetched: branches.map(item => `${remote}/${item.branch}`), warning: redactGitText(warnings.join('; ')) };
-    } catch (error) {
-      warnings.push(`${remote}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    return { refs: branches.map(item => `${REMOTE_PREFIX}${remote}/${item.branch}`), warning: redactGitText(warnings.join('; ')) };
   }
-  return { fetched: [], warning: redactGitText(warnings.join('; ')) };
+  return { refs: [], warning: redactGitText(warnings.join('; ')) };
 }
 
 /**
- * Search local branches first. When no local branch matches, ask the preferred
- * remote and fetch only matching heads into remote-tracking namespaces.
+ * Enumerate names only. Fetch an advertised head only after explicit selection.
  */
 export async function searchBranches(
   git: GitRunner,
-  { query = '', fetchMissing = false, includeRemote = true, limit = DEFAULT_LIMIT }: {
+  { query = '', discoverRemote = false, includeRemote = true, limit = DEFAULT_LIMIT }: {
     query?: string;
-    fetchMissing?: boolean;
+    discoverRemote?: boolean;
     includeRemote?: boolean;
     limit?: number;
   } = {},
@@ -233,22 +226,19 @@ export async function searchBranches(
   const normalized = query.trim();
   const state = await readLocalState(git);
   let remoteRefs: string[] = [];
-  let fetched: string[] = [];
   let warning = '';
   if (includeRemote) {
     remoteRefs = await readRemoteRefs(git);
-    if (fetchMissing && normalized.length >= 2) {
-      const result = await fetchMatchingRemoteBranches(git, normalized);
-      fetched = result.fetched;
+    if (discoverRemote && normalized.length >= 2) {
+      const result = await discoverRemoteBranches(git, normalized);
+      remoteRefs = unique([...result.refs, ...remoteRefs]);
       warning = result.warning;
-      if (fetched.length > 0) remoteRefs = await readRemoteRefs(git);
     }
   }
   return {
     ...state,
     local: state.local.filter(name => matches(name, normalized)).slice(0, limit),
     remote: remoteBranches(state.local, remoteRefs, limit, normalized),
-    fetched,
     warning,
   };
 }
@@ -266,7 +256,7 @@ async function updateCurrentBranch(git: GitRunner, branch: string): Promise<Bran
   try {
     const pulled = await git(
       'pull',
-      ['pull', '--ff-only', '--no-rebase', '--no-tags'],
+      ['pull', '--ff-only', '--no-rebase', '--no-autostash', '--no-tags', '--no-recurse-submodules'],
       [0],
       undefined,
       120_000,
@@ -288,10 +278,10 @@ async function updateCurrentBranch(git: GitRunner, branch: string): Promise<Bran
 /** Switch to one verified local branch, or create a local tracking branch from a remote ref. */
 export async function switchBranch(git: GitRunner, ref: string): Promise<BranchMutation> {
   if (!ref || /[\0\r\n]/u.test(ref)) throw new GitBranchError('INVALID_BRANCH', 'A branch ref is required.');
-  if (!(await refExists(git, ref))) throw new GitBranchError('REF_MISSING', `Branch ref does not exist: ${ref}`);
   const local = localName(ref);
   if (local !== undefined) {
     if (!safeBranchName(local)) throw new GitBranchError('INVALID_BRANCH', `Invalid Git branch name: ${local}`);
+    if (!(await refExists(git, ref))) throw new GitBranchError('REF_MISSING', `Branch ref does not exist: ${ref}`);
     const switched = await git('switch', ['switch', local]);
     const update = await updateCurrentBranch(git, local);
     return {
@@ -303,13 +293,17 @@ export async function switchBranch(git: GitRunner, ref: string): Promise<BranchM
   }
   const remote = remoteParts(ref);
   if (remote === undefined) throw new GitBranchError('INVALID_BRANCH', `Unsupported branch ref: ${ref}`);
-  if (!safeBranchName(remote.branch)) {
+  if (!safeRemoteName(remote.remote) || !safeBranchName(remote.branch)) {
     throw new GitBranchError('INVALID_BRANCH', `Invalid Git branch name: ${remote.branch}`);
   }
-  const existing = await refExists(git, `${LOCAL_PREFIX}${remote.branch}`);
-  const switched = existing
-    ? await git('switch', ['switch', remote.branch])
-    : await git('switch', ['switch', '--track', '-c', remote.branch, ref]);
+  if (await refExists(git, `${LOCAL_PREFIX}${remote.branch}`)) {
+    throw new GitBranchError('BRANCH_EXISTS', `Local branch already exists: ${remote.branch}. Select it explicitly.`);
+  }
+  if (!(await remotesInPreferenceOrder(git)).includes(remote.remote)) throw new GitBranchError('REF_MISSING', 'Unknown Git remote.');
+  const valid = await git('check-ref-format', ['check-ref-format', ref], [0, 1]);
+  if (valid.exitCode !== 0) throw new GitBranchError('INVALID_BRANCH', 'Invalid remote branch ref.');
+  await git('fetch', ['fetch', '--no-tags', '--no-recurse-submodules', '--', remote.remote, `+${LOCAL_PREFIX}${remote.branch}:${ref}`], [0], undefined, 120_000);
+  const switched = await git('switch', ['switch', '--track', '-c', remote.branch, ref]);
   const update = await updateCurrentBranch(git, remote.branch);
   return {
     current: remote.branch,
@@ -322,8 +316,8 @@ export async function switchBranch(git: GitRunner, ref: string): Promise<BranchM
 /** Create a new local branch from HEAD and switch to it. */
 export async function createBranch(git: GitRunner, name: string): Promise<BranchMutation> {
   if (!safeBranchName(name)) throw new GitBranchError('INVALID_BRANCH', 'A valid branch name is required.');
-  const checked = await git('check-ref-format', ['check-ref-format', '--branch', name], [0, 1]);
-  if (checked.exitCode !== 0) throw new GitBranchError('INVALID_BRANCH', `Invalid Git branch name: ${name}`);
+  const checked = await git('check-ref-format', ['check-ref-format', '--branch', name], [0, 1, 128]);
+  if (checked.exitCode !== 0 || checked.stdout.trimEnd() !== name) throw new GitBranchError('INVALID_BRANCH', `Invalid Git branch name: ${name}`);
   if (await refExists(git, `${LOCAL_PREFIX}${name}`)) {
     throw new GitBranchError('BRANCH_EXISTS', `Local branch already exists: ${name}`);
   }

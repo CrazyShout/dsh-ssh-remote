@@ -136,8 +136,8 @@ describe('client lifecycle', () => {
     const dispose = await apply(ctx as never);
 
     expect(events).toEqual([
-      'inject:remote.forgePanel,slots,locale',
-      'register:forge-panel.worktree',
+      'inject:remote.forgePanel,remote.sshRemote,sshConnectionStatus,slots,locale',
+      'register:dsh-ssh-remote.branch-switch',
       'remote:mount',
       'inject:remote.sshRemote,connection',
       'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
@@ -172,8 +172,8 @@ describe('client lifecycle', () => {
     await dispose?.();
 
     expect(events).toEqual([
-      'inject:remote.forgePanel,slots,locale',
-      'register:forge-panel.worktree',
+      'inject:remote.forgePanel,remote.sshRemote,sshConnectionStatus,slots,locale',
+      'register:dsh-ssh-remote.branch-switch',
       'remote:mount',
       'inject:remote.sshRemote,connection',
       'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
@@ -195,7 +195,7 @@ describe('client lifecycle', () => {
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',
       'remote:dispose',
-      'dispose:forge-panel.worktree',
+      'dispose:dsh-ssh-remote.branch-switch',
     ]);
   });
 

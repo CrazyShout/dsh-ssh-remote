@@ -2,7 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorktreeBranchControl, type WorktreeBranchInjected } from '../client/branch-switch.js';
+import { RemoteBranchEntry, WorktreeBranchControl, type WorktreeBranchInjected } from '../client/branch-switch.js';
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   IconBranchOutlineRegular: () => null,
@@ -54,8 +54,6 @@ function properties(overrides: Partial<WorktreeBranchInjected> = {}): WorktreeBr
       yield panel();
       await new Promise<void>((resolve) => signal.addEventListener('abort', resolve, { once: true }));
     },
-    requestWorktree: vi.fn(async () => ({ ok: true })),
-    cancelWorktree: vi.fn(async () => ({ ok: true })),
     refresh: vi.fn(async () => ({ ok: true })),
     search: vi.fn(async (query, options) => ({
       current: 'main',
@@ -64,7 +62,6 @@ function properties(overrides: Partial<WorktreeBranchInjected> = {}): WorktreeBr
       remote: options.includeRemote && query !== ''
         ? [{ ref: 'refs/remotes/origin/feature', remote: 'origin', branch: 'feature', name: 'origin/feature' }]
         : [],
-      fetched: [],
       warning: '',
     })),
     switchBranch: vi.fn(async (ref: string) => ({
@@ -100,18 +97,41 @@ async function setSearch(value: string): Promise<void> {
 }
 
 describe('remote branch control', () => {
+  it('does not mount the picker or run Git for a local session, including after a late SSH lookup', async () => {
+    const props = properties();
+    const snapshot = { generation: 1 };
+    const status = { getSnapshot: () => snapshot, subscribe: () => () => {} };
+    let answer!: (value: unknown) => void;
+    const lookup = vi.fn((cwd: string) => cwd === '/anchor'
+      ? new Promise(resolve => { answer = resolve; })
+      : Promise.resolve({ ok: true, value: null }));
+    const render = async (id: string, cwd: string) => act(async () => root.render(createElement(RemoteBranchEntry, {
+      ...props, sessionId: id, workspaceInfo: lookup, connectionStatus: status,
+      useSessions: (select: (s: unknown) => unknown) => select({ byId: { [id]: { cwd } } }),
+    } as never)));
+    await render('a', '/anchor');
+    await render('b', '/local');
+    await act(async () => answer({ ok: true, value: { host: 'test' } }));
+    expect(props.search).not.toHaveBeenCalled();
+    expect(container.querySelector('button')).toBeNull();
+    await render('c', '/anchor');
+    await act(async () => answer({ ok: true, value: { host: 'test' } }));
+    expect(button('切换分支')).toBeTruthy();
+    expect(props.search).toHaveBeenCalledOnce();
+  });
+
   it('keeps hook order when the panel moves from loading to ready', async () => {
     await act(async () => root.render(createElement(WorktreeBranchControl, properties() as never)));
     await act(async () => { await Promise.resolve(); });
-    expect(container.textContent).toContain('main');
-    expect(container.textContent).toContain('新建工作树');
+    expect(container.textContent).toContain('切换分支');
+    expect(container.textContent).not.toContain('新建工作树');
   });
 
   it('opens a searchable local and remote branch list and switches locally', async () => {
     const props = properties();
     await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
     await act(async () => { await Promise.resolve(); });
-    await act(async () => button('main').click());
+    await act(async () => button('切换分支').click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
     expect(container.textContent).toContain('dev');
     expect(container.textContent).not.toContain('origin/feature');
@@ -139,7 +159,6 @@ describe('remote branch control', () => {
             commit: 'abc1234',
             local: ['main', 'dev'],
             remote: [],
-            fetched: [],
             warning: '',
           };
         }
@@ -150,14 +169,13 @@ describe('remote branch control', () => {
           commit: 'abc1234',
           local: ['main'],
           remote: [],
-          fetched: [],
           warning: '',
         };
       }),
     });
     await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
     await act(async () => { await Promise.resolve(); });
-    await act(async () => button('main').click());
+    await act(async () => button('切换分支').click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
     await setSearch('dev');
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 300)); });
@@ -170,7 +188,6 @@ describe('remote branch control', () => {
         commit: 'abc1234',
         local: ['dev'],
         remote: [{ ref: 'refs/remotes/origin/stale-only', remote: 'origin', branch: 'stale-only', name: 'origin/stale-only' }],
-        fetched: [],
         warning: '',
       });
       await new Promise(resolve => window.setTimeout(resolve, 25));
@@ -191,19 +208,21 @@ describe('remote branch control', () => {
     });
     await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
     await act(async () => { await Promise.resolve(); });
-    await act(async () => button('main').click());
+    await act(async () => button('切换分支').click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
     await act(async () => button('dev').click());
     expect(container.textContent).toContain('自动更新失败：network down');
     expect(container.querySelector('input[aria-label="搜索分支"]')).not.toBeNull();
   });
 
-  it('keeps the worktree request flow and sends the selected base', async () => {
-    const props = properties();
+  it('leaves worktree creation to Forge and disables switching while a request is pending', async () => {
+    const props = properties({ follow: async function* (signal) {
+      const state = panel();
+      yield { ...state, worktree: { ...state.worktree, request: { from: 'main' } } };
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    } });
     await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
-    await act(async () => { await Promise.resolve(); });
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    await act(async () => checkbox.click());
-    expect(props.requestWorktree).toHaveBeenCalledWith('main');
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(button('切换分支').disabled).toBe(true);
   });
 });

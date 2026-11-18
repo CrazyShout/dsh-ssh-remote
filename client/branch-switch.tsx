@@ -20,6 +20,8 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { BranchListing, BranchMutation } from 'dsh-ssh-remote/branch-switch';
+import type { ConnectionStatusStore } from './connection-status.js';
+import { useRemoteWorkspace } from './native-panels.js';
 import { localized, t } from './locale.js';
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -63,20 +65,16 @@ interface ForgePanelStream extends AsyncIterable<ForgePanelState> {
 
 interface ForgePanelRemote {
   follow(sessionId: SessionId, signal: AbortSignal): ForgePanelStream;
-  requestWorktree(sessionId: SessionId, from: string | null): Promise<RemoteResult<void>>;
-  cancelWorktree(sessionId: SessionId): Promise<RemoteResult<void>>;
   refresh(sessionId: SessionId): Promise<RemoteResult<void>>;
 }
 
 export interface WorktreeBranchInjected {
   sessionId: SessionId;
   follow(signal: AbortSignal): ForgePanelStream;
-  requestWorktree(from: string | null): Promise<{ ok: boolean; message?: string }>;
-  cancelWorktree(): Promise<{ ok: boolean; message?: string }>;
   refresh(): Promise<{ ok: boolean; message?: string }>;
   search(
     query: string,
-    options: { includeRemote: boolean; fetchMissing: boolean },
+    options: { includeRemote: boolean; discoverRemote: boolean },
     signal?: AbortSignal,
   ): Promise<RemoteBranchListing>;
   switchBranch(ref: string): Promise<RemoteBranchMutation>;
@@ -134,10 +132,6 @@ const CSS = `
 .ssh-branch-button:disabled { opacity: .55; cursor: default; }
 .ssh-branch-spin { width: 12px; height: 12px; flex: none; box-sizing: border-box; border: 1.5px solid var(--dsw-alias-border-l3);
   border-top-color: var(--dsw-alias-label-secondary); border-radius: 50%; animation: ssh-branch-spin .8s linear infinite; }
-.ssh-branch-checkbox { display: inline-flex; align-items: center; gap: 6px; min-width: 0;
-  color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap; }
-.ssh-branch-checkbox input { width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-brand-primary); }
-.ssh-branch-checkbox[data-disabled] { opacity: .55; }
 .ssh-branch-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @keyframes ssh-branch-spin { to { transform: rotate(360deg); } }
@@ -254,7 +248,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const [newName, setNewName] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [notice, setNotice] = useState('');
-  const [worktreePending, setWorktreePending] = useState<boolean | null>(null);
   const [compositionRevision, setCompositionRevision] = useState(0);
   const rootRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -266,7 +259,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const localRequest = useRef<AbortController | null>(null);
   const localLoaded = useRef(false);
   const prefetchedSession = useRef<SessionId | null>(null);
-  const fetchAttempts = useRef(new Set<string>());
   const composing = useRef(false);
   const mounted = useRef(true);
 
@@ -274,9 +266,9 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const previousPanelCurrent = useRef(panelCurrent);
   const current = currentOverride ?? panelCurrent;
   const held = state !== null && state.worktree.creation !== null;
-  const requested = worktreePending ?? ((state?.worktree.request ?? null) !== null);
+  const requested = state?.worktree.request != null;
   const usable = option?.blocker === null;
-  const canMutate = panel.error === '' && usable && !held && busy === '' && worktreePending === null;
+  const canMutate = panel.error === '' && usable && !held && busy === '' && !requested;
   const branchLabel = current ?? (option?.commit ? `${t('分离 HEAD')} @${option.commit}` : t('分离 HEAD'));
 
   useEffect(() => {
@@ -325,7 +317,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
       searchAbort.current.abort();
     }
     searchAbort.current = null;
-    fetchAttempts.current.clear();
   }, []);
 
   const openMenu = () => {
@@ -388,7 +379,7 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     try {
       const value = await props.search('', {
         includeRemote: false,
-        fetchMissing: false,
+        discoverRemote: false,
       }, controller.signal);
       if (epoch !== requestEpoch.current || controller.signal.aborted) return;
       localLoaded.current = true;
@@ -406,7 +397,7 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
 
   const localReady = option !== undefined;
 
-  const loadRemote = useCallback(async (text: string, fetchMissing: boolean) => {
+  const loadRemote = useCallback(async (text: string, discoverRemote: boolean) => {
     const epoch = ++requestEpoch.current;
     localRequest.current?.abort();
     localRequest.current = null;
@@ -419,14 +410,13 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     try {
       const value = await props.search(text, {
         includeRemote: true,
-        fetchMissing,
+        discoverRemote,
       }, controller.signal);
       if (epoch !== requestEpoch.current || controller.signal.aborted) return;
       setLocalBranches(current => current.length > 0 ? current : value.local);
       setBranches(value);
       setActiveIndex(0);
     } catch (error) {
-      if (fetchMissing) fetchAttempts.current.delete(text);
       if (epoch !== requestEpoch.current || controller.signal.aborted) return;
       setBranchError(messageOf(error));
     } finally {
@@ -451,25 +441,26 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
         setBranches(current => current === null ? null : {
           ...current,
           remote: [],
-          fetched: [],
           warning: '',
         });
       }
       return;
     }
     const timer = window.setTimeout(() => {
-      const fetchMissing = normalized.length >= 2 && !fetchAttempts.current.has(normalized);
-      if (fetchMissing) fetchAttempts.current.add(normalized);
-      void loadRemote(normalized, fetchMissing);
+      const discoverRemote = normalized.length >= 2;
+      void loadRemote(normalized, discoverRemote);
     }, 250);
     return () => window.clearTimeout(timer);
   }, [open, createMode, query, loadLocal, loadRemote, compositionRevision]);
 
-  useEffect(() => () => {
-    mounted.current = false;
-    requestEpoch.current += 1;
-    localRequest.current?.abort();
-    searchAbort.current?.abort();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      requestEpoch.current += 1;
+      localRequest.current?.abort();
+      searchAbort.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -479,10 +470,9 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
 
   if (state === null || option === undefined) return null;
 
-  const base = state.worktree.request === null ? current : state.worktree.request.from;
-  const selected = requested ? base : current;
+  const selected = current;
   const normalizedQuery = query.trim();
-  const visibleLocal = localBranches.filter(name => branchMatches(name, normalizedQuery));
+  const visibleLocal = [...new Set([...localBranches, ...(branches?.local ?? [])])].filter(name => branchMatches(name, normalizedQuery));
   const visibleRemote = normalizedQuery === '' ? [] : (branches?.remote ?? []);
   const options: BranchOption[] = [
     ...visibleLocal.map(name => ({ kind: 'local' as const, ref: `refs/heads/${name}`, name })),
@@ -490,9 +480,7 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   ];
   const branchTip = panel.error !== ''
     ? t('分支状态连接已断开，暂时不能修改分支；正在重试')
-    : requested
-      ? `${t('分支')}: ${base ?? 'HEAD'}`
-      : `${branchLabel}\n${t('选择或切换分支')}`;
+    : `${branchLabel}\n${t('选择或切换分支')}`;
 
   const setFreshState = (value: RemoteBranchMutation) => {
     if (value.current !== undefined) setCurrentOverride(value.current);
@@ -514,15 +502,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
 
   const choose = async (item: BranchOption | undefined) => {
     if (item === undefined || busy !== '' || !canMutate) return;
-    if (requested) {
-      const result = await props.requestWorktree(item.name);
-      if (!result.ok) {
-        setBranchError(t('分支操作失败：{message}', { message: result.message ?? 'request failed' }));
-        return;
-      }
-      close();
-      return;
-    }
     if (sameBranch(item, current)) {
       close();
       return;
@@ -577,33 +556,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     } finally {
       if (mounted.current) setBusy('');
     }
-  };
-
-  const toggleWorktree = (checked: boolean) => {
-    if (!canMutate) return;
-    setWorktreePending(checked);
-    setBranchError('');
-    void (async () => {
-      try {
-        const result = checked ? await props.requestWorktree(current) : await props.cancelWorktree();
-        if (!mounted.current) return;
-        if (!result.ok) {
-          const message = t('新建工作树失败：{message}', { message: result.message ?? 'request failed' });
-          setNotice(message);
-          locate();
-          setOpen(true);
-        } else {
-          refresh();
-        }
-      } catch (error) {
-        if (!mounted.current) return;
-        setNotice(t('新建工作树失败：{message}', { message: messageOf(error) }));
-        locate();
-        setOpen(true);
-      } finally {
-        if (mounted.current) setWorktreePending(null);
-      }
-    })();
   };
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -686,27 +638,15 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
       title: branchTip,
       'aria-haspopup': 'dialog',
       'aria-expanded': open,
-      disabled: held || busy !== '',
+      disabled: held || requested || busy !== '',
       onClick: openMenu,
     },
     createElement(IconBranchOutlineRegular, { size: 14 }),
-    createElement('span', { className: 'ssh-branch-name' }, requested ? (base ?? 'HEAD') : branchLabel),
+    createElement('span', { className: 'ssh-branch-name' }, t('切换分支')),
     createElement(IconChevronDownOutlineRegular, {
       size: 12,
       className: open ? 'ssh-branch-chevron ssh-branch-chevron-open' : 'ssh-branch-chevron',
-    })),
-    createElement('label', {
-      className: 'ssh-branch-checkbox',
-      'data-disabled': !usable || held || worktreePending !== null ? '' : undefined,
-      title: usable ? t('新建工作树') : t('当前工作区不能新建工作树'),
-    },
-    createElement('input', {
-      type: 'checkbox',
-      checked: requested,
-      disabled: !usable || held || worktreePending !== null || busy !== '',
-      onChange: event => toggleWorktree(event.currentTarget.checked),
-    }),
-    createElement('span', null, t('新建工作树'))));
+    })));
 
   const createForm = createElement('form', {
     className: 'ssh-branch-form',
@@ -776,7 +716,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
           setBranches(current => current === null ? null : {
             ...current,
             remote: [],
-            fetched: [],
             warning: '',
           });
           setBranchError('');
@@ -791,8 +730,6 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
         createElement('span', null, t('正在切换并更新分支…'))),
       groupedResults,
       branchError !== '' && createElement('div', { className: 'ssh-branch-error', role: 'alert' }, branchError),
-      branches?.fetched.length ? createElement('div', { className: 'ssh-branch-info' },
-        t('已从远端拉取 {count} 个分支', { count: branches.fetched.length })) : null,
       branches?.warning ? createElement('div', { className: 'ssh-branch-info' },
         t('远端查询未完成：{message}', { message: branches.warning })) : null),
     createElement('div', { className: 'ssh-branch-footer' },
@@ -831,21 +768,27 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     createElement('span', { className: 'ssh-branch-sr', role: 'status', 'aria-live': 'polite' }, notice, panel.error));
 }
 
-/** Register the Forge-compatible branch control when the official panel is mounted. */
+type MappedBranchProps = PropsRuntime<'conversation.hero.options'> & WorktreeBranchInjected &
+  Pick<Parameters<typeof useRemoteWorkspace>[0], 'workspaceInfo' | 'connectionStatus'>;
+
+/** A new session never inherits the previous session's checkout or pending replies. */
+export function RemoteBranchEntry(props: MappedBranchProps) {
+  const { key, info } = useRemoteWorkspace(props, true);
+  return info ? createElement(WorktreeBranchControl, { ...props, key }) : null;
+}
+
+/** Register alongside (not instead of) Forge's official worktree control. */
 export function mountBranchSwitch(ctx: Context): () => Promise<void> {
-  const fiber = ctx.inject(['remote.forgePanel', 'slots', 'locale'], (scope) => {
+  const fiber = ctx.inject(['remote.forgePanel', 'remote.sshRemote', 'sshConnectionStatus', 'slots', 'locale'], (scope) => {
     const remote = (scope.remote as typeof scope.remote & { forgePanel: ForgePanelRemote }).forgePanel;
-    const face = (sessionId: SessionId): WorktreeBranchInjected => ({
+    const face = (sessionId: SessionId): WorktreeBranchInjected & {
+      connectionStatus: ConnectionStatusStore;
+      workspaceInfo: typeof scope.remote.sshRemote.workspaceInfo;
+    } => ({
+      connectionStatus: scope.sshConnectionStatus,
+      workspaceInfo: (path: string) => scope.remote.sshRemote.workspaceInfo(path),
       sessionId,
       follow: signal => remote.follow(sessionId, signal),
-      requestWorktree: async from => {
-        const result = await remote.requestWorktree(sessionId, from);
-        return result.ok ? { ok: true } : { ok: false, message: result.error.message };
-      },
-      cancelWorktree: async () => {
-        const result = await remote.cancelWorktree(sessionId);
-        return result.ok ? { ok: true } : { ok: false, message: result.error.message };
-      },
       refresh: async () => {
         const result = await remote.refresh(sessionId);
         return result.ok ? { ok: true } : { ok: false, message: result.error.message };
@@ -855,18 +798,18 @@ export function mountBranchSwitch(ctx: Context): () => Promise<void> {
         action: 'search',
         query,
         includeRemote: options.includeRemote,
-        fetchMissing: options.fetchMissing,
+        discoverRemote: options.discoverRemote,
       }, signal),
       switchBranch: ref => branchRequest({ sessionId, action: 'switch', ref }),
       createBranch: name => branchRequest({ sessionId, action: 'create', name }),
     });
     return scope.slots.inject('conversation.hero.options', () => scope.slots.register({
       name: 'conversation.hero.options',
-      id: 'forge-panel.worktree',
-      priority: -200,
+      id: 'dsh-ssh-remote.branch-switch',
+      order: 10,
       locale: 'sshRemote',
       inject: face,
-    }, localized(WorktreeBranchControl)));
+    }, localized(RemoteBranchEntry)));
   });
   return async () => { await fiber.dispose(); };
 }

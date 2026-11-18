@@ -20,8 +20,6 @@ export interface BranchListing {
   local: string[];
   /** Matching remote-tracking branches whose local names do not already exist. */
   remote: RemoteBranch[];
-  /** Remote branches fetched by this search. */
-  fetched: string[];
   /** A non-fatal remote lookup or fetch diagnostic. */
   warning: string;
 }

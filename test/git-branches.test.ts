@@ -129,7 +129,7 @@ describe('remote branch Git operations', () => {
       local: ['main', 'feature/local'],
       remote: [['origin/feature/remote', 'refs/remotes/origin/feature/remote']],
     });
-    const result = await searchBranches(git, { query: '', includeRemote: false, fetchMissing: true });
+    const result = await searchBranches(git, { query: '', includeRemote: false, discoverRemote: true });
     expect(state.calls.filter(call => call.name === 'for-each-ref').map(call => call.args.at(-1)))
       .toEqual(['refs/heads/']);
     expect(state.calls.some(call => call.name === 'fetch')).toBe(false);
@@ -142,35 +142,31 @@ describe('remote branch Git operations', () => {
       local: ['main', 'feature/local'],
       heads: [['feature/remote-only', '1111111']],
     });
-    const result = await searchBranches(git, { query: 'feature', fetchMissing: true });
-    expect(state.calls.some(call => call.name === 'fetch')).toBe(true);
+    const result = await searchBranches(git, { query: 'feature', discoverRemote: true });
+    expect(state.calls.some(call => call.name === 'fetch')).toBe(false);
     expect(result.local).toEqual(['feature/local']);
     expect(result.remote.map(item => item.name)).toEqual(['origin/feature/remote-only']);
   });
 
-  it('fetches only matching remote heads when no local branch matches', async () => {
+  it('discovers matching remote heads without touching refs', async () => {
     const { git, state } = fakeGit({
       local: ['main'],
       heads: [['feature/remote-only', '1111111'], ['release/other', '2222222']],
     });
-    const result = await searchBranches(git, { query: 'remote-only', fetchMissing: true });
-    expect(state.calls.find(call => call.name === 'fetch')?.args).toEqual([
-      'fetch', '--no-tags', 'origin',
-      '+refs/heads/feature/remote-only:refs/remotes/origin/feature/remote-only',
-    ]);
-    expect(result.fetched).toEqual(['origin/feature/remote-only']);
+    const result = await searchBranches(git, { query: 'remote-only', discoverRemote: true });
+    expect(state.calls.some(call => call.name === 'fetch')).toBe(false);
     expect(result.remote.map(item => item.name)).toEqual(['origin/feature/remote-only']);
   });
 
-  it('refreshes an existing remote-tracking ref when no local branch matches', async () => {
+  it('does not rewrite an existing tracking ref during search', async () => {
     const { git, state } = fakeGit({
       local: ['main'],
       remote: [['origin/main', 'refs/remotes/origin/main'], ['origin/feature/remote', 'refs/remotes/origin/feature/remote']],
       heads: [['feature/remote', '3333333']],
     });
-    const result = await searchBranches(git, { query: 'remote', fetchMissing: true });
-    expect(state.calls.some(call => call.name === 'fetch')).toBe(true);
-    expect(result.fetched).toEqual(['origin/feature/remote']);
+    const result = await searchBranches(git, { query: 'remote', discoverRemote: true });
+    expect(state.calls.some(call => call.name === 'fetch')).toBe(false);
+    expect(result.remote.map(item => item.name)).toEqual(['origin/feature/remote']);
   });
 
   it('switches local branches without force and skips update without upstream', async () => {
@@ -187,7 +183,7 @@ describe('remote branch Git operations', () => {
     const result = await switchBranch(git, 'refs/heads/dev');
     expect(result.update.status).toBe('current');
     expect(state.calls.find(call => call.name === 'pull')?.args).toEqual([
-      'pull', '--ff-only', '--no-rebase', '--no-tags',
+      'pull', '--ff-only', '--no-rebase', '--no-autostash', '--no-tags', '--no-recurse-submodules',
     ]);
   });
 
@@ -200,10 +196,17 @@ describe('remote branch Git operations', () => {
     const result = await switchBranch(git, 'refs/remotes/origin/feature/remote');
     expect(result.current).toBe('feature/remote');
     expect(result.update.status).toBe('current');
+    expect(state.calls.find(call => call.name === 'fetch')?.args).toEqual(['fetch', '--no-tags', '--no-recurse-submodules', '--', 'origin', '+refs/heads/feature/remote:refs/remotes/origin/feature/remote']);
     expect(state.calls.find(call => call.name === 'switch')?.args).toEqual([
       'switch', '--track', '-c', 'feature/remote', 'refs/remotes/origin/feature/remote',
     ]);
     expect(state.calls.some(call => call.name === 'pull')).toBe(true);
+  });
+
+  it('does not switch or pull a same-named local branch created since the search', async () => {
+    const { git, state } = fakeGit({ local: ['main', 'topic'], remote: [['origin/topic', 'refs/remotes/origin/topic']] });
+    await expect(switchBranch(git, 'refs/remotes/origin/topic')).rejects.toMatchObject({ code: 'BRANCH_EXISTS' });
+    expect(state.calls.some(call => ['fetch', 'switch', 'pull'].includes(call.name))).toBe(false);
   });
 
   it('keeps a successful switch when the automatic update fails', async () => {
@@ -243,7 +246,7 @@ describe('remote branch Git operations', () => {
       }
       return git(name, args, allowed, overrides, timeout);
     };
-    const result = await searchBranches(leaking, { query: 'remote', fetchMissing: true });
+    const result = await searchBranches(leaking, { query: 'remote', discoverRemote: true });
     expect(result.warning).toBe('origin: fatal https://[REDACTED]@example.test/repo');
   });
 
@@ -261,8 +264,9 @@ describe('remote branch Git operations', () => {
       await rawGit(repo, 'push', 'origin', 'main:refs/heads/remote-only');
       await rawGit(repo, 'update-ref', '-d', 'refs/remotes/origin/remote-only');
       const git = runnerFor(repo);
-      const listing = await searchBranches(git, { query: 'remote-only', fetchMissing: true });
-      expect(listing.fetched).toEqual(['origin/remote-only']);
+      const listing = await searchBranches(git, { query: 'remote-only', discoverRemote: true });
+      expect(listing.remote.map(item => item.name)).toEqual(['origin/remote-only']);
+      await expect(rawGit(repo, 'show-ref', '--verify', 'refs/remotes/origin/remote-only')).rejects.toThrow();
 
       const publisher = path.join(root, 'publisher');
       await run('git', ['clone', remote, publisher], { windowsHide: true });
@@ -275,7 +279,7 @@ describe('remote branch Git operations', () => {
 
       const switched = await switchBranch(git, 'refs/remotes/origin/remote-only');
       expect(switched.current).toBe('remote-only');
-      expect(switched.update.status).toBe('updated');
+      expect(switched.update.status).toBe('current');
       expect((await rawGit(repo, 'rev-parse', 'HEAD')).stdout.trim()).toBe(latest);
       expect((await rawGit(repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')).stdout.trim())
         .toBe('origin/remote-only');

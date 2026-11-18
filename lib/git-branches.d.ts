@@ -15,14 +15,13 @@ export declare class GitBranchError extends Error {
 /** Redact credentials that a remote URL may echo in a Git diagnostic. */
 export declare function redactGitText(value: string): string;
 /** Build the browser payload from the current branch and Git ref names. */
-export declare function branchPayload(current: string | null, commit: string | null, localRefs: readonly string[], remoteRefs: readonly string[], limit?: number): Omit<BranchListing, 'fetched' | 'warning'>;
+export declare function branchPayload(current: string | null, commit: string | null, localRefs: readonly string[], remoteRefs: readonly string[], limit?: number): Omit<BranchListing, 'warning'>;
 /**
- * Search local branches first. When no local branch matches, ask the preferred
- * remote and fetch only matching heads into remote-tracking namespaces.
+ * Enumerate names only. Fetch an advertised head only after explicit selection.
  */
-export declare function searchBranches(git: GitRunner, { query, fetchMissing, includeRemote, limit }?: {
+export declare function searchBranches(git: GitRunner, { query, discoverRemote, includeRemote, limit }?: {
     query?: string;
-    fetchMissing?: boolean;
+    discoverRemote?: boolean;
     includeRemote?: boolean;
     limit?: number;
 }): Promise<BranchListing>;

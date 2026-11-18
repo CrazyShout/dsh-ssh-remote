@@ -12,12 +12,13 @@ function mount(options: {
   events?: Array<{ type: string }>;
   mode?: 'read-only' | 'workspace-write' | 'danger-full-access';
   agent?: unknown;
-  subprocess?: unknown;
+  execute?: (...args: any[]) => Promise<any>;
+  cwd?: string;
   lookupError?: Error;
 } = {}) {
   const routes: CapturedRoute[] = [];
   const session = {
-    id: 'session-1',
+    id: 'session-1', header: { cwd: options.cwd ?? '/repo' },
     snapshotEvents: () => options.events ?? [],
   };
   const scope = {
@@ -32,17 +33,15 @@ function mount(options: {
     typert: {
       lookups: {
         get: () => ({
-          resolve: async () => {
+          resolve: async (id: string) => {
             if (options.lookupError) throw options.lookupError;
-            return session;
+            return { ...session, id };
           },
         }),
       },
     },
     workingDirectory: { get: () => '/repo' },
     sandboxPolicy: { resolve: () => ({ mode: options.mode ?? 'danger-full-access' }) },
-    sandbox: {},
-    subprocess: options.subprocess ?? {},
     agents: { get: () => options.agent },
     effect: (effect: () => unknown) => effect(),
   };
@@ -51,7 +50,10 @@ function mount(options: {
       return callback(scope);
     },
   };
-  mountBranchSwitchHttp(ctx as never);
+  mountBranchSwitchHttp(ctx as never, {
+    resolve: path => path === '/repo' ? 'ssh://host/repo' : undefined,
+    execute: options.execute ?? (async () => { throw new Error('unexpected remote command'); }),
+  });
   return routes[0]!;
 }
 
@@ -64,11 +66,11 @@ function request(body: Record<string, unknown>): Request {
 }
 
 describe('SSH branch Host route', () => {
-  it('registers one authenticated buffered POST route', () => {
+  it('registers one authenticated streaming POST route', () => {
     const route = mount();
     expect(route.path).toBe('/api/ssh-branches');
     expect(route.methods).toEqual(['POST']);
-    expect(route.requestBody).toBe('buffered');
+    expect(route.requestBody).toBe('streaming');
   });
 
   it('maps a missing Session lookup to a stable not-found response', async () => {
@@ -99,23 +101,26 @@ describe('SSH branch Host route', () => {
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: { code: 'SESSION_BUSY' } });
   });
 
-  it('claims Agent maintenance before resolving the Git executable', async () => {
+  it('claims Agent maintenance before running Git on the assigned SSH helper', async () => {
     let claimed = false;
     const runMaintenance = vi.fn(async (task: (signal: AbortSignal) => Promise<unknown>) => {
       claimed = true;
       return await task(new AbortController().signal);
     });
-    const resolveExecutable = vi.fn(async () => {
+    const execute = vi.fn(async (uri, spec) => {
+      expect(uri).toBe('ssh://host/repo');
+      expect(spec.workdir).toBe(uri);
       expect(claimed).toBe(true);
       throw new Error('git unavailable');
     });
-    const route = mount({ agent: { runMaintenance }, subprocess: { resolveExecutable } });
+    const route = mount({ agent: { runMaintenance }, execute });
     const response = await route.fetch(request({
       sessionId: 'session-1', action: 'switch', ref: 'refs/heads/dev',
     }));
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: 'GIT_FAILED', message: 'git unavailable' } });
     expect(runMaintenance).toHaveBeenCalledTimes(1);
-    expect(resolveExecutable).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('rejects writes in a read-only Session before starting Git', async () => {
@@ -125,6 +130,47 @@ describe('SSH branch Host route', () => {
     }));
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: { code: 'READ_ONLY' } });
+  });
+
+  it('never operates on a local session even if its cwd service points to an SSH anchor', async () => {
+    const execute = vi.fn();
+    const route = mount({ cwd: '/local', execute });
+    for (const action of ['search', 'switch', 'create']) {
+      const res = await route.fetch(request({ sessionId: 'session-1', action }));
+      await expect(res.json()).resolves.toMatchObject({ ok: false, error: { code: 'NOT_REMOTE' } });
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('serializes changes to one SSH worktree across different sessions and releases on failure', async () => {
+    let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { entered = resolve; });
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const agent = { runMaintenance: (work: (signal: AbortSignal) => Promise<unknown>) => work(new AbortController().signal) };
+    const route = mount({ agent, execute: async (_uri, spec) => ({
+      async result() {
+        if (spec.command.includes("'--show-toplevel'")) return {
+          exitCode: 0, stdout: { text: '/repo\n' }, stderr: { text: '' },
+        };
+        entered(); await wait;
+        throw new Error('fixture failed');
+      },
+    }) });
+    const create = (sessionId: string) => route.fetch(request({ sessionId, action: 'create', name: 'topic' }));
+    const first = create('first');
+    await held;
+    try {
+      const second = await create('second');
+      await expect(second.json()).resolves.toMatchObject({ error: { code: 'SESSION_BUSY' } });
+    } finally { release(); }
+    expect((await first).status).toBe(500);
+    await expect((await create('third')).json()).resolves.toMatchObject({ error: { message: 'fixture failed' } });
+  });
+
+  it('bounds the actual body even when the Content-Length header is missing', async () => {
+    const response = await mount().fetch(request({ query: 'x'.repeat(65536) }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: 'BAD_REQUEST' } });
   });
 
   it('rejects malformed requests without touching Git', async () => {

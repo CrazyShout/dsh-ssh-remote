@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { RemoteHelperManager } from './helper/manager.js';
 import { hasConcreteSshAlias } from './ssh-config.js';
 import { SshRemoteService, LegacySshRemoteSettingsSchema, type LegacySshConfig } from './registry.js';
-import { installRemoteShellRouter, RemoteShellProcessTracker } from './helper-shell.js';
+import { executeRemoteShell, installRemoteShellRouter, RemoteShellProcessTracker } from './helper-shell.js';
 import {
   installRemoteFileSystemRouter,
   installRemoteSubprocessRouter,
@@ -66,7 +66,10 @@ export function apply(ctx: Context, config: LegacySshConfig) {
     return terminalState.mount(scope.terminalController);
   });
   const disposeTransferHttp = mountTransferHttp(ctx, transfers);
-  const disposeBranchSwitchHttp = mountBranchSwitchHttp(ctx);
+  const disposeBranchSwitchHttp = mountBranchSwitchHttp(ctx, {
+    resolve: resolveRemotePath,
+    execute: (uri, spec) => executeRemoteShell(uri, spec, helpers, resolveRemotePath, shellProcesses),
+  });
   const referencesFiber = ctx.inject(['fileReferences'], scope => installRemoteFileReferencesRouter(scope.fileReferences, fileIndex, resolveRemotePath));
   const restoreFileSystem = installRemoteFileSystemRouter(
     ctx.fs,

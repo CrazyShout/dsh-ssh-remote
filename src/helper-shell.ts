@@ -97,15 +97,21 @@ export function installRemoteShellRouter(
   shell.execute = async function (spec: ShellExecSpec): Promise<ShellExecution> {
     const uri = resolveRemoteExecutionUri(spec.workdir, spec.sandboxPolicy, resolveRemotePath);
     if (uri === undefined) return originalExecute.call(shell, spec);
-    const process = new RemoteShellProcess(uri, spec, helpers, resolveRemotePath);
-    processes?.track(process);
-    await process.waitUntilPrepared();
-    return process;
+    return executeRemoteShell(uri, spec, helpers, resolveRemotePath, processes);
   };
 
   return () => {
     shell.execute = originalExecute;
   };
+}
+
+/** Execute on the specified helper only, including when a UI operation has no Agent context. */
+export async function executeRemoteShell(uri: string, spec: ShellExecSpec, helpers: RemoteHelperProvider,
+  resolveRemotePath: RemotePathResolver, tracker?: RemoteShellProcessTracker): Promise<ShellExecution> {
+  const process = new RemoteShellProcess(uri, spec, helpers, resolveRemotePath);
+  tracker?.track(process);
+  await process.waitUntilPrepared();
+  return process;
 }
 
 /** Owns helper background jobs across shell-provider reloads and plugin teardown. */

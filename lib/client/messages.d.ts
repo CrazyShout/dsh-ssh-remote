@@ -651,6 +651,7 @@ export declare const en: {
     readonly 没有匹配的分支: "No matching branches";
     readonly 本地和远端都没有匹配分支: "No matching local or remote branch";
     readonly 正在读取本地分支: "Reading local branches";
+    readonly 切换分支: "Switch branch";
     readonly 正在查询远端分支: "Searching remote branches";
     readonly '\u6B63\u5728\u5207\u6362\u5E76\u66F4\u65B0\u5206\u652F\u2026': "Switching and updating the branch...";
     readonly '\u5DF2\u5207\u6362\u5230 {branch}\uFF0C\u5206\u652F\u5DF2\u662F\u6700\u65B0': "Switched to {branch}; it is already up to date";
