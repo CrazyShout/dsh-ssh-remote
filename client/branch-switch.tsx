@@ -197,9 +197,14 @@ function usePanel(follow: (signal: AbortSignal) => ForgePanelStream, sessionId: 
   return snapshot;
 }
 
-function optionOf(state: ForgePanelState | null): { blocker: string | null; current: string | null; commit: string | null } | undefined {
+function optionOf(state: ForgePanelState | null, listing: RemoteBranchListing | null): { blocker: string | null; current: string | null; commit: string | null } | undefined {
   if (state === null || !state.worktree.editable) return undefined;
-  if (state.worktree.blocker === 'not-git' || state.checkout.state !== 'ready') return undefined;
+  if (state.worktree.blocker === 'not-git') return undefined;
+  // Forge may try the Host's sandbox executable on Linux over SSH. Only a
+  // successful helper-side read can stand in for that failed checkout probe.
+  if (state.checkout.state === 'failed' && listing !== null)
+    return { blocker: state.worktree.blocker, current: listing.current, commit: listing.commit };
+  if (state.checkout.state !== 'ready') return undefined;
   return {
     blocker: state.worktree.blocker,
     current: state.checkout.checkout.branch,
@@ -231,7 +236,6 @@ async function branchRequest<T>(payload: Record<string, unknown>, signal?: Abort
 export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.options'> & WorktreeBranchInjected): ReactNode {
   const panel = usePanel(props.follow, props.sessionId);
   const state = panel.state;
-  const option = optionOf(state);
   const [currentOverride, setCurrentOverride] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<{
@@ -240,6 +244,7 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
   const [query, setQuery] = useState('');
   const [localBranches, setLocalBranches] = useState<string[]>([]);
   const [branches, setBranches] = useState<RemoteBranchListing | null>(null);
+  const option = optionOf(state, branches);
   const [localLoading, setLocalLoading] = useState(false);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [branchError, setBranchError] = useState('');
@@ -395,7 +400,8 @@ export function WorktreeBranchControl(props: PropsRuntime<'conversation.hero.opt
     }
   }, [props.search]);
 
-  const localReady = option !== undefined;
+  const localReady = option !== undefined || (state?.worktree.editable === true
+    && state.worktree.blocker !== 'not-git' && state.checkout.state === 'failed');
 
   const loadRemote = useCallback(async (text: string, discoverRemote: boolean) => {
     const epoch = ++requestEpoch.current;

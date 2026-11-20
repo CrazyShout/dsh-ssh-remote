@@ -97,6 +97,22 @@ async function setSearch(value: string): Promise<void> {
 }
 
 describe('remote branch control', () => {
+  it.each([true, false])('checks the SSH checkout when the Forge host probe fails (remote Git: %s)', async (isRepo) => {
+    const props = properties({ follow: async function* (signal) {
+      yield { ...panel(), checkout: { state: 'failed', message: 'host sandbox not executable on SSH target' } };
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    } });
+    if (!isRepo) vi.mocked(props.search).mockRejectedValue(new Error('not a Git repository'));
+    await act(async () => root.render(createElement(WorktreeBranchControl, props as never)));
+    expect(props.search).toHaveBeenCalledWith('', { includeRemote: false, discoverRemote: false }, expect.any(AbortSignal));
+    expect(container.textContent?.includes('切换分支')).toBe(isRepo);
+    if (isRepo) {
+      await act(async () => button('切换分支').click());
+      await act(async () => button('dev').click());
+      expect(props.switchBranch).toHaveBeenCalledWith('refs/heads/dev');
+    } else expect(props.switchBranch).not.toHaveBeenCalled();
+  });
+
   it('does not mount the picker or run Git for a local session, including after a late SSH lookup', async () => {
     const props = properties();
     const snapshot = { generation: 1 };
