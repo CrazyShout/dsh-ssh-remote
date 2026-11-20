@@ -1,4 +1,4 @@
-import type { ShellExecutor, ShellProcess } from '@deepseek-ai/dsh-shell';
+import type { ShellExecution, ShellExecSpec, ShellExecutor, ShellProcess } from '@deepseek-ai/dsh-shell';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { RemoteHelperProvider } from './helper-fs.js';
 import type { RemotePathResolver } from './runtime-router.js';
@@ -10,6 +10,8 @@ import type { RemotePathResolver } from './runtime-router.js';
  * remote process; local workdirs fall through to the stock executor untouched.
  */
 export declare function installRemoteShellRouter(shell: ShellExecutor, helpers: RemoteHelperProvider, resolveRemotePath: RemotePathResolver, processes?: RemoteShellProcessTracker): () => void;
+/** Execute on the specified helper only, including when a UI operation has no Agent context. */
+export declare function executeRemoteShell(uri: string, spec: ShellExecSpec, helpers: RemoteHelperProvider, resolveRemotePath: RemotePathResolver, tracker?: RemoteShellProcessTracker): Promise<ShellExecution>;
 /** Owns helper background jobs across shell-provider reloads and plugin teardown. */
 export declare class RemoteShellProcessTracker {
     private readonly processes;

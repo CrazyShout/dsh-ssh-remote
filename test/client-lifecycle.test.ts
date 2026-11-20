@@ -136,6 +136,8 @@ describe('client lifecycle', () => {
     const dispose = await apply(ctx as never);
 
     expect(events).toEqual([
+      'inject:remote.forgePanel,remote.sshRemote,sshConnectionStatus,slots,locale',
+      'register:dsh-ssh-remote.branch-switch',
       'remote:mount',
       'inject:remote.sshRemote,connection',
       'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
@@ -155,7 +157,7 @@ describe('client lifecycle', () => {
       'inject:remote.sshRemoteUpdates,remote.pluginManager,slots,pluginNavigation',
     ]);
 
-    const flow = (childScope.slots.register.mock.calls[1][0] as any).inject();
+    const flow = (childScope.slots.register.mock.calls[2][0] as any).inject();
     const controller = new AbortController();
     await expect(flow.pickLocal(controller.signal)).resolves.toBe(desktopPicker ? '/desktop-local' : nativeAvailable ? '/native-local' : '/local');
     await flow.listLocal('/local');
@@ -170,6 +172,8 @@ describe('client lifecycle', () => {
     await dispose?.();
 
     expect(events).toEqual([
+      'inject:remote.forgePanel,remote.sshRemote,sshConnectionStatus,slots,locale',
+      'register:dsh-ssh-remote.branch-switch',
       'remote:mount',
       'inject:remote.sshRemote,connection',
       'inject:remote.sshRemote,slots,workspaces,sshConnectionStatus',
@@ -191,6 +195,7 @@ describe('client lifecycle', () => {
       'dispose:conversation.hero.workspace.directoryFlow',
       'dispose:ssh-remote',
       'remote:dispose',
+      'dispose:dsh-ssh-remote.branch-switch',
     ]);
   });
 

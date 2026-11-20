@@ -18,6 +18,16 @@ English: 0.13.8 tries parent-qualified names and then a literal full path for co
 
 English: the cache is limited to identical read-only probes in one workspace/environment. It clears on helper reconnection, or admits one recovery query after 2 seconds. It does not auto-retry, mark the whole host offline, stop terminals, or throttle writes. A still-running recovery query retains its own DSH cancellation/lifecycle. Inspect the original failure; throttling does not fix missing dependencies.
 
+## 分支切换或远端搜索失败 / Branch switch or remote search fails
+
+“切换分支”只在 **已映射的 SSH 工作区、DSH Forge 已启用、会话尚未开始首轮、当前目录是可写的 Git checkout** 时出现。已有对话不会显示该控件，这是 Forge 的会话边界，不是连接失败。
+
+菜单打开时只读取并显示本地分支；输入搜索词后才会对 `origin`（其次 `upstream`，再按名称）执行 `git ls-remote`，搜索不写入 refs；选定远端分支后才 fetch 该 head。HTTPS/SSH 认证、主机不可达或远端拒绝 fetch 会显示在菜单内，本地分支仍可使用。选择远端分支会创建同名本地跟踪分支；同名本地分支已存在时不会覆盖。
+
+切换完成后会自动对所选分支执行 `git pull --ff-only`。没有配置 upstream 的分支会跳过自动更新；网络失败、未提交修改冲突或本地/远端已分叉时，只显示更新失败原因，不会 reset、merge、rebase 或 stash。只读会话、Agent 忙或首轮已开始时不会执行写操作。受限命令失败时，还需确认远端 Git 和 bubblewrap 可用。
+
+English: opening the control reads local branches only. A search query then runs `git ls-remote` against `origin`, then `upstream` and other remotes, listing names without updating refs; only the selected head is fetched upon switching. Authentication, reachability and fetch errors are shown without hiding local branches. A remote selection creates a same-named local tracking branch and never overwrites an existing local branch. After switching, an upstream branch is updated with `git pull --ff-only`; missing upstreams are skipped, while network, dirty-worktree or divergent failures are reported without reset, merge, rebase, stash or forced checkout.
+
 ## Windows 远程 Git 面板报 127 / Windows Git path sent to Linux
 
 #49 / #50：如果 SSH 文件和终端正常，但 Git 面板报 `git rev-parse failed (127)`，并包含本机 `git.EXE` 或 `DeepSeek Harness.exe` 路径，请升级到 0.13.6。新版将 Windows 可执行路径映射为远端命令，并把已知的 Windows ACL 包装转换为远端受限执行；不会仅剥掉包装后无保护地运行。
@@ -57,11 +67,13 @@ English: 0.13.4 adapts the official working-directory service so child initializ
 
 已核对 `dsh-better-sidebar 0.28.2` 的发布包：它接管 `files` 页签和代码文件的预览，但文件树与编辑器直接读取本机 `node:fs`，不经过 DSH 的 `workspaceFiles` / `fs` 服务。SSH 工作区的本机目录只是占位目录，不是远程文件的镜像，所以这种读取方式看不到远端内容。**当前不能宣称两个插件的文件管理功能完全兼容。**
 
+[0.32.1 的文件树](https://github.com/omdsh-dev/DSH-better-sidebar/blob/v0.32.1/src/fs-tree.ts#L169) 仍直接读取本机目录。
+
 临时处理：在 better-sidebar 自己的侧栏页签设置中，关闭 **“文件 / Files”** 项（内部标识 `editor`），保留其他页签。其公开实现会同时让出文件树和编辑器，恢复 DSH 自带的文件树、只读预览；这会影响该插件在本地工作区的文件管理功能，不只是 SSH 会话。请先保存它的编辑草稿，再改设置；不要直接编辑或覆盖整份插件配置。
 
 0.13.4 已让“远程工作台 → 快速打开”的预览明确选择官方 `text` 类型，防止被只支持本机路径的第三方编辑器抢走；显式“编辑”仍使用 SSH 编辑器。**这没有把 better-sidebar 的文件树改成远程文件树。** 在对方提供远程文件服务接口之前，不要用其文件页向 SSH 占位目录上传、重命名或删除文件来操作远端。
 
-English: better-sidebar 0.28.2 replaces the `files` page and code preview but reads Host files through `node:fs`, bypassing the DSH services routed over SSH. An SSH anchor is not a local mirror. Save drafts, then disable its **Files** tab (`editor`) in its own sidebar settings to return these surfaces to DSH; other tabs can stay enabled, but its local file-management features are also disabled. Version 0.13.4 explicitly selects the native `text` preview from remote quick-open, retaining the SSH editor for explicit edits. It does not provide a remote backend for the third-party file tree. Full coexistence remains open in #40.
+English: better-sidebar 0.28.2 replaces the `files` page and code preview but reads Host files through `node:fs`, bypassing the DSH services routed over SSH. An SSH anchor is not a local mirror. Save drafts, then disable its **Files** tab (`editor`) in its own sidebar settings to return these surfaces to DSH; other tabs can stay enabled, but its local file-management features are also disabled. [better-sidebar 0.32.1 still uses its Host-side reader](https://github.com/omdsh-dev/DSH-better-sidebar/blob/v0.32.1/src/fs-tree.ts#L169). SSH Remote 0.13.4 explicitly selects the native `text` preview from remote quick-open, retaining the SSH editor for explicit edits. It does not provide a remote backend for the third-party file tree. Full coexistence remains open in #40.
 
 ## 远程 run_code 与控制连接 / Remote PTC and control transport
 

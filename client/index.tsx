@@ -15,6 +15,7 @@ import { mountPortForwards } from './port-forwards.js';
 import { mountTransfers } from './transfers.js';
 import { mountTerminalState } from './terminal-state.js';
 import { mountPluginUpdates } from './updates.js';
+import { mountBranchSwitch } from './branch-switch.js';
 import type { EditorBridge } from './file-search-types.js';
 
 import type { DirectoryService } from 'dsh-ssh-remote/ssh';
@@ -35,6 +36,7 @@ export async function apply(ctx: ClientContext) {
   };
   try {
     releases.push(installLocale(ctx.locale));
+    releases.push(mountBranchSwitch(ctx));
     const workbench = new Workbench();
     releases.push(await ctx.remote.$mount(TYPERT_REMOTE));
     releases.push(mountConnectionStatus(ctx));

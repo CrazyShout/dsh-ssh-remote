@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[中文](README.md) · [Download 0.13.8](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.8) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
+[中文](README.md) · [Download 0.14.0](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.14.0) · [Changelog](CHANGELOG.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 Open an SSH workspace inside DeepSeek Harness. Browse files and run commands in its native panels, with remote editing, `@` references, port forwarding and file transfers. Reuse `~/.ssh/config`; no full DSH installation is needed on the server.
 
@@ -15,7 +15,7 @@ Already have working **DSH** and an **SSH alias**? Start here. Desktop includes 
 3. Choose **Add workspace**, select your SSH host and folder, then use native **Workspace files** and **New terminal**.
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.8/dsh-ssh-remote-0.13.8.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.14.0/dsh-ssh-remote-0.14.0.tgz
 ~~~
 
 No clone, build or manual plugin-directory copying. The installer still downloads runtime dependencies.
@@ -27,7 +27,7 @@ Expand **Getting started** in the official plugin details for connection steps. 
 ### CLI / Web: one install command
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.8/dsh-ssh-remote-0.13.8.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.14.0/dsh-ssh-remote-0.14.0.tgz'
 ~~~
 
 Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its terminal first. **For Desktop, use the application's own Plugins page.**
@@ -40,7 +40,7 @@ Restart `dsh web` afterwards; stop an existing server with Ctrl-C in its termina
 Fixed Git tag (requires local Git):
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.8'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.14.0'
 ~~~
 
 You can also download the release `.tgz` and enter its absolute path in Plugins. Verify downloads with `SHA256SUMS`. Review dependency-script prompts in the official installer, without globally allowing unknown scripts. Version 0.11.0 removed the `ssh2` / `cpu-features` native-build dependencies.
@@ -60,9 +60,12 @@ You can also download the release `.tgz` and enter its absolute path in Plugins.
 | See cwd, exit status and context | Terminal-tab menu **查看 SSH 终端状态** |
 | Access TensorBoard, Jupyter or a dev website | **远程工作台 → 端口转发** |
 | Upload/download files and folders | **远程工作台 → 文件传输** |
+| Search, switch or create a Git branch | **Switch branch** in a blank SSH session (requires Forge) |
 | Use remote skills | Native `/` skill menu in a remote Session |
 
 The **SSH · host** badge opens the unified workbench; blank Sessions show it above the composer. Local Sessions retain their original file and terminal behavior.
+
+With Forge enabled, **Switch branch** appears in blank SSH sessions alongside the official worktree control. Local sessions are unchanged. Searching lists names without writing refs. Selecting a remote head fetches only that head and creates a same-named local tracking branch. After switching, the control runs `git pull --ff-only` for the selected branch. Branches without an upstream are skipped; network, conflict or divergence failures are reported without forcing an update. A new branch can also be created from the current `HEAD`. Writes use the Session's sandbox, execution directory and Agent maintenance. Read-only Sessions, started turns and busy Agents are refused; the control never runs `reset`, forced checkout or an automatic stash. The existing New worktree flow is preserved.
 
 Connection dots: green = SSH/helper connected; amber = connecting or limited; hollow gray = disconnected or unknown; red = connection error. Hover or keyboard-focus for the full path and explanation. Green does not certify every remote feature.
 

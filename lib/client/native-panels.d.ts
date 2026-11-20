@@ -40,6 +40,12 @@ export declare function mountNativePanels(ctx: Context, workbench: Workbench): (
 export declare function RemoteToolsTitle(): import("react").JSX.Element;
 /** The official header hides its utilities while a real Session is still blank. */
 export declare function BlankNativePanelActions(props: BlankNativePanelProps): import("react").JSX.Element | null;
+/** Session identity comes from the SDK; SSH identity comes only from the Host's saved mapping. */
+export declare function useRemoteWorkspace({ sessionId, useSessions, workspaceInfo, connectionStatus }: Pick<NativePanelProps, 'sessionId' | 'useSessions' | 'workspaceInfo' | 'connectionStatus'>, visible: boolean): {
+    key: string;
+    info: RemoteWorkspaceInfo | null;
+    pending: boolean;
+};
 export declare function NativePanelActions(props: NativePanelProps): import("react").JSX.Element | null;
 export declare function RemoteToolsPane(props: PropsRuntime<'sidebar.right.pane.tab'> & NativePanelInjected): import("react").JSX.Element;
 export {};
