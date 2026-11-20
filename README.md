@@ -1,6 +1,6 @@
 ![dsh-ssh-remote — Your remote workspace. Right here.](docs/images/banner.png)
 
-[English](README.en.md) · [下载 0.13.8](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.13.8) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
+[English](README.en.md) · [下载 0.14.0](https://github.com/CrazyShout/dsh-ssh-remote/releases/tag/v0.14.0) · [更新记录](CHANGELOG.md) · [排错](docs/TROUBLESHOOTING.md)
 
 **远程开发，像在本地一样顺手。**
 
@@ -17,7 +17,7 @@
 3. 点击 **添加工作区**，选择 SSH 主机与远端文件夹，即可使用官方 **工作区文件** 和 **新建终端**。
 
 ~~~text
-https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.8/dsh-ssh-remote-0.13.8.tgz
+https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.14.0/dsh-ssh-remote-0.14.0.tgz
 ~~~
 
 无需克隆、编译或复制插件目录。安装器仍需联网下载运行依赖。
@@ -29,7 +29,7 @@ https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.8/dsh-ssh-r
 ### CLI / Web：一条安装命令
 
 ~~~sh
-dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.13.8/dsh-ssh-remote-0.13.8.tgz'
+dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/releases/download/v0.14.0/dsh-ssh-remote-0.14.0.tgz'
 ~~~
 
 安装后重新启动 `dsh web`；已有服务先在它的终端按 Ctrl-C。**Desktop 请使用应用自己的插件页。**
@@ -42,7 +42,7 @@ dsh plugin --profile web add 'https://github.com/CrazyShout/dsh-ssh-remote/relea
 固定 Git Tag（需要本机 Git）：
 
 ~~~sh
-dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.8'
+dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.14.0'
 ~~~
 
 也可下载 Release 的 `.tgz`，在插件页输入其绝对路径；`SHA256SUMS` 用于校验下载包。遇到依赖脚本提示时按官方安装器确认，不要全局放开未知脚本。0.11.0 起已移除 `ssh2` / `cpu-features` 原生构建依赖。
@@ -62,7 +62,7 @@ dsh plugin --profile web add 'github:CrazyShout/dsh-ssh-remote#v0.13.8'
 | 查看目录、命令退出码与上下文 | 终端页签菜单 **查看 SSH 终端状态** |
 | 访问 TensorBoard、Jupyter、开发网页 | **远程工作台 → 端口转发** |
 | 上传、下载文件或目录 | **远程工作台 → 文件传输** |
-| 搜索、切换或新建 Git 分支 | SSH 空会话的 **切换分支**（需要 DSH Forge，0.13.8 发布包不含此功能） |
+| 搜索、切换或新建 Git 分支 | SSH 空会话的 **切换分支**（需要 DSH Forge） |
 | 使用远端 skill | 当前远程会话的原生 `/` 技能菜单 |
 
 顶部 **SSH · 主机** 打开统一远程工作台；空会话入口在输入框上方。本地会话仍使用原来的文件和终端，不会被接管。
